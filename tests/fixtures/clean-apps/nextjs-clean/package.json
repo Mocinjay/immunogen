@@ -1,0 +1,15 @@
+{
+  "name": "nextjs-clean",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Phase 5 integration fixture: a safe Next.js app exercising every FP-prone-but-safe pattern, with stack gates active and zero findings expected.",
+  "dependencies": {
+    "next": "14.2.0",
+    "react": "18.3.0",
+    "react-dom": "18.3.0",
+    "stripe": "14.25.0",
+    "@supabase/supabase-js": "2.45.0",
+    "firebase": "10.13.0",
+    "lodash": "4.17.21"
+  }
+}

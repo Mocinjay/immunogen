@@ -1,0 +1,189 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { osvDetector } from "./osv-detector.js";
+
+import type { DetectorContext, StackHints } from "../../core/types.js";
+import type { OsvResult } from "./osv-client.js";
+
+// queryOsvBatch is mocked at the module boundary so this test suite NEVER
+// performs a real network call (per the project's offline-deterministic
+// test mandate and the plan's pattern_analog note: "queryOsvBatch is a
+// separate module import so the test can stub it").
+const queryOsvBatchMock = vi.fn<(queries: Array<{ name: string; version: string }>) => Promise<OsvResult[]>>();
+
+vi.mock("./osv-client.js", () => ({
+  queryOsvBatch: (queries: Array<{ name: string; version: string }>) => queryOsvBatchMock(queries),
+}));
+
+/** Minimal StackHints fixture — osvDetector reads ctx.content only, never ctx.stackHints. */
+const STACK_HINTS: StackHints = {
+  frameworks: new Set(),
+  hasSupabase: false,
+  hasFirebase: false,
+  hasStripe: false,
+  hasEnvFiles: false,
+  hasMcpJson: false,
+  hasClaudeSkills: false,
+  hasCursorRules: false,
+};
+
+/** Builds a DetectorContext literal for a package.json's `content`, without the ingestion layer. */
+function makeContext(content: string, filePath = "package.json"): DetectorContext {
+  return {
+    filePath,
+    content,
+    stackHints: STACK_HINTS,
+    fileSet: new Map(),
+  };
+}
+
+const VULNERABLE_PACKAGE_JSON = JSON.stringify(
+  {
+    name: "fixture-app",
+    version: "1.0.0",
+    dependencies: {
+      lodash: "4.17.20",
+    },
+  },
+  null,
+  2,
+);
+
+const CLEAN_PACKAGE_JSON = JSON.stringify(
+  {
+    name: "fixture-app",
+    version: "1.0.0",
+    dependencies: {
+      lodash: "4.17.21",
+      axios: "1.7.0",
+    },
+  },
+  null,
+  2,
+);
+
+afterEach(() => {
+  queryOsvBatchMock.mockReset();
+});
+
+describe("osvDetector — vulnerable via fallback path (OSV stubbed to fail)", () => {
+  it("emits a DEP-01 finding for lodash AND exactly one DEP-OFFLINE sentinel", async () => {
+    queryOsvBatchMock.mockRejectedValue(new Error("network unavailable"));
+    const ctx = makeContext(VULNERABLE_PACKAGE_JSON);
+
+    const findings = await osvDetector.detect(ctx);
+
+    const depFindings = findings.filter((finding) => finding.ruleId === "DEP-01");
+    expect(depFindings.length).toBeGreaterThanOrEqual(1);
+    expect(depFindings.some((finding) => finding.message.includes("lodash"))).toBe(true);
+    expect(depFindings[0]).toMatchObject({ category: "deps" });
+
+    const offlineFindings = findings.filter((finding) => finding.ruleId === "DEP-OFFLINE");
+    expect(offlineFindings).toHaveLength(1);
+    expect(offlineFindings[0]).toMatchObject({ category: "deps", severity: "INFO" });
+  });
+});
+
+describe("osvDetector — vulnerable via OSV path (network succeeds)", () => {
+  it("emits a DEP-01 finding carrying the OSV vuln id, with NO DEP-OFFLINE sentinel", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "GHSA-osv-test-1234" }] }]);
+    const ctx = makeContext(JSON.stringify({ dependencies: { "some-pkg": "1.0.0" } }));
+
+    const findings = await osvDetector.detect(ctx);
+
+    const depFindings = findings.filter((finding) => finding.ruleId === "DEP-01");
+    expect(depFindings).toHaveLength(1);
+    expect(depFindings[0]?.message).toContain("GHSA-osv-test-1234");
+
+    const offlineFindings = findings.filter((finding) => finding.ruleId === "DEP-OFFLINE");
+    expect(offlineFindings).toHaveLength(0);
+  });
+});
+
+describe("osvDetector — clean, online", () => {
+  it("returns zero DEP-01 and zero DEP-OFFLINE findings when OSV reports no vulns", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [] }, { vulns: [] }]);
+    const ctx = makeContext(CLEAN_PACKAGE_JSON);
+
+    const findings = await osvDetector.detect(ctx);
+
+    expect(findings.filter((finding) => finding.ruleId === "DEP-01")).toHaveLength(0);
+    expect(findings.filter((finding) => finding.ruleId === "DEP-OFFLINE")).toHaveLength(0);
+  });
+});
+
+describe("osvDetector — offline degradation is VISIBLE, never silent", () => {
+  it("with clean deps and OSV timing out, returns zero vuln findings but exactly one DEP-OFFLINE sentinel", async () => {
+    queryOsvBatchMock.mockRejectedValue(new Error("timeout"));
+    const ctx = makeContext(CLEAN_PACKAGE_JSON);
+
+    const findings = await osvDetector.detect(ctx);
+
+    expect(findings.filter((finding) => finding.ruleId === "DEP-01")).toHaveLength(0);
+    const offlineFindings = findings.filter((finding) => finding.ruleId === "DEP-OFFLINE");
+    expect(offlineFindings).toHaveLength(1);
+    expect(offlineFindings[0]).toMatchObject({
+      ruleId: "DEP-OFFLINE",
+      category: "deps",
+      severity: "INFO",
+    });
+    expect(offlineFindings[0]?.message.toLowerCase()).toContain("offline");
+  });
+});
+
+describe("osvDetector — privacy (only name/version/ecosystem ever sent to OSV)", () => {
+  it("the request payload built for OSV contains ONLY name + version (queryOsvBatch's own argument), never other package.json fields", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [] }]);
+    const packageJsonWithExtraFields = JSON.stringify({
+      name: "fixture-app",
+      author: "someone@example.com",
+      scripts: { build: "do-the-thing --secret=abc123" },
+      dependencies: { "some-pkg": "1.0.0" },
+    });
+    const ctx = makeContext(packageJsonWithExtraFields);
+
+    await osvDetector.detect(ctx);
+
+    expect(queryOsvBatchMock).toHaveBeenCalledTimes(1);
+    const calledWith = queryOsvBatchMock.mock.calls[0]?.[0];
+    expect(calledWith).toBeDefined();
+    const serialized = JSON.stringify(calledWith);
+    expect(serialized).not.toContain("author");
+    expect(serialized).not.toContain("someone@example.com");
+    expect(serialized).not.toContain("scripts");
+    expect(serialized).not.toContain("secret=abc123");
+    // Every query entry exposes only name + version (no other package.json keys leak through).
+    for (const query of calledWith ?? []) {
+      expect(Object.keys(query).sort()).toEqual(["name", "version"]);
+    }
+  });
+});
+
+describe("osvDetector — no-throw contract", () => {
+  it("resolves to [] (or just DEP-OFFLINE) for a malformed package.json, never rejects", async () => {
+    queryOsvBatchMock.mockResolvedValue([]);
+    const ctx = makeContext("{ this is not valid json !!!");
+
+    await expect(osvDetector.detect(ctx)).resolves.toBeInstanceOf(Array);
+    const findings = await osvDetector.detect(ctx);
+    expect(findings.filter((finding) => finding.ruleId === "DEP-01")).toHaveLength(0);
+  });
+
+  it("never rejects even when queryOsvBatch itself throws synchronously", async () => {
+    queryOsvBatchMock.mockImplementation(() => {
+      throw new Error("synchronous failure");
+    });
+    const ctx = makeContext(CLEAN_PACKAGE_JSON);
+
+    await expect(osvDetector.detect(ctx)).resolves.toBeInstanceOf(Array);
+  });
+});
+
+describe("osvDetector — config", () => {
+  it("declares category deps, name osv, requiresNetwork true, and globs package.json", () => {
+    expect(osvDetector.config.name).toBe("osv");
+    expect(osvDetector.config.category).toBe("deps");
+    expect(osvDetector.config.requiresNetwork).toBe(true);
+    expect(osvDetector.config.globs).toContain("package.json");
+  });
+});

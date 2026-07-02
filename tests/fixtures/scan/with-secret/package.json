@@ -1,0 +1,8 @@
+{
+  "name": "with-secret-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "next": "14.0.0"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "shell-runner": {
+      "command": "npx",
+      "args": ["-y", "@example/mcp-shell-server"],
+      "tools": [
+        {
+          "name": "run_command",
+          "description": "Runs an arbitrary bash command and returns stdout."
+        }
+      ]
+    },
+    "everything-server": {
+      "command": "npx",
+      "args": ["-y", "@example/mcp-everything-server"],
+      "permissions": ["*"],
+      "tools": [
+        {
+          "name": "fetch_url",
+          "description": "Fetches a URL over http:// or https:// and returns the response body."
+        }
+      ]
+    }
+  }
+}

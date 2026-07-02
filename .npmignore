@@ -1,0 +1,17 @@
+# Belt-and-suspenders exclusion for the published npm tarball.
+#
+# `files` in package.json is an ALLOWLIST (dist + LICENSE + NOTICE +
+# THIRD_PARTY_NOTICES.md + README.md) and is the primary control — npm only
+# packs what `files` lists. This `.npmignore` is defense-in-depth: even if
+# `files` is ever loosened, none of the paths below can leak into the
+# tarball. In particular, tests/fixtures/ contains fabricated key-shaped
+# literals (secrets-detector fixtures) that must never ship (T-08-05).
+tests/
+src/
+.planning/
+docs/
+*.test.*
+tsconfig.json
+vitest.config.ts
+tsup.config.ts
+.github/

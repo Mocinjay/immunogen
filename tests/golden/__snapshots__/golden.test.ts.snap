@@ -1,0 +1,54 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`golden suite — vulnerable fixtures assert exact ruleId/count summaries > ai-layer-rules: normalized finding summary matches the committed snapshot 1`] = `
+{
+  "AILAYER-01": 1,
+  "AILAYER-02": 1,
+}
+`;
+
+exports[`golden suite — vulnerable fixtures assert exact ruleId/count summaries > mcp-least-privilege: normalized finding summary matches the committed snapshot 1`] = `
+{
+  "AILAYER-04": 2,
+}
+`;
+
+exports[`golden suite — vulnerable fixtures assert exact ruleId/count summaries > mcp-tool-poisoning: normalized finding summary matches the committed snapshot 1`] = `
+{
+  "AILAYER-03": 1,
+  "AILAYER-04": 1,
+}
+`;
+
+exports[`golden suite — vulnerable fixtures assert exact ruleId/count summaries > nextjs-kitchen-sink: normalized finding summary matches the committed snapshot 1`] = `
+{
+  "AUTH-01": 3,
+  "AUTH-02": 1,
+  "AUTH-03": 1,
+  "BUNDLE-01": 2,
+  "CONFIG-01": 1,
+  "CONFIG-02": 1,
+  "CORS-01": 1,
+  "DEP-01": 1,
+  "DEP-OFFLINE": 1,
+  "HDR-01": 1,
+  "INJECT-01": 1,
+  "LEGAL-01": 1,
+  "PAY-01": 1,
+  "SEC-01": 2,
+  "SEC-04": 3,
+  "SEC-05": 1,
+  "SEC-06": 1,
+  "STORAGE-01": 1,
+  "STORAGE-02": 1,
+}
+`;
+
+exports[`golden suite — vulnerable fixtures assert exact ruleId/count summaries > scan-with-secret: normalized finding summary matches the committed snapshot 1`] = `
+{
+  "DEP-01": 1,
+  "DEP-OFFLINE": 1,
+  "LEGAL-01": 1,
+  "SEC-01": 1,
+}
+`;

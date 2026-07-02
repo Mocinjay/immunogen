@@ -1,0 +1,440 @@
+/**
+ * secretsDetector — text-only CAT-1 (Leaked Secrets) detector.
+ *
+ * Three passes over `ctx.content`, split into lines once:
+ *
+ *   Pass A (provider-key regex, SEC-01/02/03): rigid, low-FP key formats
+ *   (Stripe `sk_live_`, AWS `AKIA...`, OpenAI `sk-...`) per FEATURES.md
+ *   CAT-1's "V1 PICK". Each match is CRITICAL/HIGH confidence — the format
+ *   itself is the provider's own naming convention, near-zero FP risk.
+ *
+ *   Pass A2 (Supabase service_role JWT, SEC-04 — plan 05-01): two
+ *   independent signals, both CRITICAL/HIGH, both emitting ruleId "SEC-04":
+ *   (a) decode the middle (payload) segment of any `eyJ...`-shaped JWT and
+ *   flag when the decoded text contains `"role":"service_role"`; (b) flag a
+ *   line referencing the `SUPABASE_SERVICE_ROLE_KEY` identifier outright,
+ *   no JWT required. This branch runs ahead of Pass B and claims its own
+ *   matched spans so a service_role JWT cannot ALSO double-fire SEC-06's
+ *   keyword-anchored entropy pass on the same literal.
+ *
+ *   Pass B (keyword-anchored Shannon entropy, SEC-06): a quoted string
+ *   literal >=40 chars with entropy >=4.0 is flagged ONLY when its own line
+ *   also contains a secret/key/token/password-family keyword — this is the
+ *   FEATURES.md "False Positive Management Strategy" CAT-1 row's documented
+ *   keyword-anchor mitigation, preventing UUID/hash false positives.
+ *
+ * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` opens
+ * with a path-segment check against `__tests__`, `fixtures`, `mocks`,
+ * `examples`, plus a `.test.`/`.stories.` basename check — matching paths
+ * short-circuit to `[]` before any pass runs, for every ruleId this file
+ * emits (SEC-01..04, SEC-06 alike).
+ *
+ * ENG-05 (text-only invariant): this module reads `ctx.content` as a plain
+ * string. It never reads `ctx.ast`, never imports a parser, and never
+ * evaluates, requires, or spawns a subprocess from scanned content —
+ * verified by the plan's grep acceptance gate.
+ *
+ * No-throw contract (src/core/types.ts `Detector.detect`): the entire body
+ * of `detect()` runs inside a try/catch returning `[]` on any failure, so a
+ * malformed/empty `ctx.content` can never propagate a rejection. The JWT
+ * base64url decode (Pass A2) runs inside this same outer try/catch and is
+ * additionally guarded per-match so one malformed JWT segment cannot abort
+ * the rest of the scan (T-05-01-02).
+ *
+ * T-04-02 mitigation: `maskSecret()` truncates every matched secret to its
+ * first 4 characters before it is ever assigned to `Finding.matchedText` —
+ * the full secret value never appears in any Finding field.
+ */
+import type { Confidence, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
+
+/** Literal mask suffix appended after the first 4 characters of any matched secret (T-04-02). */
+const MASK_SUFFIX = "****";
+
+/** Minimum Shannon entropy (bits/char) for a quoted literal to be entropy-flagged (SEC-06). */
+const ENTROPY_THRESHOLD = 4.0;
+
+/** Minimum length of a quoted literal considered by the entropy pass (FEATURES.md CAT-1 SEC-06: ">40 chars"). */
+const MIN_ENTROPY_CANDIDATE_LENGTH = 40;
+
+/**
+ * Case-insensitive keyword family that must co-occur on the same line as a
+ * high-entropy literal before it is flagged (FP-management keyword anchor —
+ * .planning/research/FEATURES.md "False Positive Management Strategy").
+ */
+const ANCHOR_KEYWORDS = [
+  "secret",
+  "apikey",
+  "api_key",
+  "token",
+  "password",
+  "passwd",
+  "private_key",
+  "client_secret",
+  "key",
+];
+
+interface ProviderPattern {
+  ruleId: string;
+  /**
+   * MUST carry the global flag. Iterated via `String.prototype.matchAll`
+   * (not a manual `.exec()` loop) — `matchAll` creates its own internal
+   * cursor per call, so the same literal `RegExp` is safely reusable across
+   * every line and file without a `lastIndex` reset.
+   */
+  regex: RegExp;
+  severity: Severity;
+  confidence: Confidence;
+  message: string;
+  remediation: string;
+}
+
+/** Provider-key regex table (Pass A) — rigid, low-FP key formats (see file header). */
+const PROVIDER_PATTERNS: ProviderPattern[] = [
+  {
+    ruleId: "SEC-01",
+    regex: /sk_live_[\w-]+/g,
+    severity: "CRITICAL",
+    confidence: "HIGH",
+    message: "Hardcoded Stripe live secret key (sk_live_) found in source.",
+    remediation:
+      "Remove this key from source control immediately, rotate it in the Stripe dashboard, and load it from an untracked environment variable (e.g. process.env.STRIPE_SECRET_KEY) instead.",
+  },
+  {
+    ruleId: "SEC-02",
+    regex: /AKIA[0-9A-Z]{16}/g,
+    severity: "CRITICAL",
+    confidence: "HIGH",
+    message: "Hardcoded AWS access key ID (AKIA...) found in source.",
+    remediation:
+      "Deactivate this access key in IAM immediately, rotate it, and load credentials from an untracked environment variable or an instance role instead of source.",
+  },
+  {
+    ruleId: "SEC-03",
+    regex: /sk-[A-Za-z0-9]{48}/g,
+    severity: "CRITICAL",
+    confidence: "HIGH",
+    message: "Hardcoded OpenAI API key (sk-...) found in source.",
+    remediation:
+      "Revoke this key in the OpenAI dashboard, rotate it, and load it from an untracked environment variable (e.g. process.env.OPENAI_API_KEY) instead.",
+  },
+];
+
+/** Ruleid assigned to every Supabase service_role signal (JWT decode OR env-name shortcut). */
+const SUPABASE_SERVICE_ROLE_RULE_ID = "SEC-04";
+
+/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
+const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
+
+/**
+ * True when `filePath` falls inside a test/fixture/mock/example directory,
+ * or its basename marks it as a test or story file (`.test.` / `.stories.`).
+ * Mirrors the codebase's existing `.split("/")` segment-check style (see
+ * src/core/ingest/stack-detector.ts `hasKeyWithPrefix`/`hasEnvFile`) rather
+ * than pulling in micromatch.
+ */
+function isAllowlistedPath(filePath: string): boolean {
+  const segments = filePath.split("/");
+  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
+    return true;
+  }
+  const basename = segments.at(-1) ?? "";
+  return basename.includes(".test.") || basename.includes(".stories.");
+}
+
+/**
+ * Matches a base64url JWT shape: three dot-separated segments, each
+ * restricted to the base64url alphabet (`[\w-]+`), with the header segment
+ * anchored to the well-known `eyJ` prefix (every JSON JWT header starts with
+ * `{"` which base64url-encodes to `eyJ`). Global flag — iterated via
+ * `matchAll`, never `.exec()`.
+ */
+const JWT_RE = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
+
+/** Compact substring the decoded JWT payload must contain to be flagged service_role (tolerates standard JSON spacing). */
+const SERVICE_ROLE_MARKER = '"role":"service_role"';
+
+/** Matches `SUPABASE_SERVICE_ROLE_KEY` as a whole identifier (env-var name signal, no JWT required). */
+const SUPABASE_ENV_NAME_RE = /SUPABASE_SERVICE_ROLE_KEY/g;
+
+/**
+ * Returns true when `jwt`'s middle (payload) segment, once base64url
+ * decoded, contains the compact `"role":"service_role"` marker. Decoding
+ * happens inside its own try/catch (T-05-01-02): a malformed/non-JSON
+ * payload segment yields `false` for that match rather than throwing,
+ * keeping one hostile JWT-shaped string from aborting the whole scan.
+ */
+function decodesToServiceRole(jwt: string): boolean {
+  const segments = jwt.split(".");
+  const payloadSegment = segments.at(1);
+  if (payloadSegment === undefined) {
+    return false;
+  }
+  try {
+    const decoded = Buffer.from(payloadSegment, "base64url").toString("utf8");
+    // Collapse all whitespace before the substring check so standard JSON
+    // formatting variants (spaces after ':', after ',') still match the
+    // compact SERVICE_ROLE_MARKER literal.
+    const compact = decoded.replace(/\s+/g, "");
+    return compact.includes(SERVICE_ROLE_MARKER);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pass A2: Supabase service_role JWT (SEC-04). Two independent signals on
+ * `line`, each pushing a Finding and claiming the matched span so Pass B
+ * cannot also flag the same literal as generic high-entropy (SEC-06 dedup,
+ * same mechanism as `runProviderPatterns`'s `matchedSpans` return).
+ *
+ * Signal (a): every JWT-shaped match on the line is base64url-decoded; only
+ * matches whose payload decodes to `role: service_role` are flagged.
+ * Signal (b): a bare `SUPABASE_SERVICE_ROLE_KEY` identifier reference is
+ * flagged outright — this is a name-based signal, so it has no JWT body to
+ * mask and reports the identifier match itself as `matchedText`.
+ */
+function runSupabaseServiceRolePass(
+  line: string,
+  lineNumber: number,
+  filePath: string,
+  detectorName: string,
+  findings: Finding[],
+): Array<[number, number]> {
+  const matchedSpans: Array<[number, number]> = [];
+
+  for (const match of line.matchAll(JWT_RE)) {
+    const matchedValue = match[0];
+    if (!decodesToServiceRole(matchedValue)) {
+      continue;
+    }
+    const start = match.index;
+    matchedSpans.push([start, start + matchedValue.length]);
+
+    findings.push({
+      ruleId: SUPABASE_SERVICE_ROLE_RULE_ID,
+      category: "secrets",
+      detectorName,
+      file: filePath,
+      line: lineNumber,
+      severity: "CRITICAL",
+      confidence: "HIGH",
+      message: "Hardcoded Supabase service_role JWT found in source.",
+      remediation:
+        "Rotate this service_role key in the Supabase dashboard immediately, remove it from source, and never expose a service_role key client-side — it bypasses every Row Level Security policy.",
+      matchedText: maskSecret(matchedValue),
+    });
+  }
+
+  for (const match of line.matchAll(SUPABASE_ENV_NAME_RE)) {
+    const matchedValue = match[0];
+    const start = match.index;
+    matchedSpans.push([start, start + matchedValue.length]);
+
+    findings.push({
+      ruleId: SUPABASE_SERVICE_ROLE_RULE_ID,
+      category: "secrets",
+      detectorName,
+      file: filePath,
+      line: lineNumber,
+      severity: "CRITICAL",
+      confidence: "HIGH",
+      message: "Reference to SUPABASE_SERVICE_ROLE_KEY found in source.",
+      remediation:
+        "Rotate this service_role key in the Supabase dashboard immediately, remove it from source, and never expose a service_role key client-side — it bypasses every Row Level Security policy.",
+      matchedText: maskSecret(matchedValue),
+    });
+  }
+
+  return matchedSpans;
+}
+
+/** Matches a single-, double-, or backtick-quoted string literal, non-greedy, no embedded same-quote char. */
+const QUOTED_STRING_RE = /'([^'\\]*)'|"([^"\\]*)"|`([^`\\]*)`/g;
+
+/**
+ * Returns the first 4 characters of `raw` followed by a fixed mask marker.
+ * Never returns more than the leading 4 characters of the original secret —
+ * the literal masking mitigation for T-04-02 (Information Disclosure via
+ * Finding.matchedText). The marker length is constant, not proportional to
+ * `raw.length`, so the mask itself never leaks the secret's real length.
+ */
+function maskSecret(raw: string): string {
+  return `${raw.slice(0, 4)}${MASK_SUFFIX}`;
+}
+
+/**
+ * Shannon entropy of `value` in bits per character: sum over each distinct
+ * character c of -p(c) * log2(p(c)), where p(c) is c's frequency in value.
+ * Custom implementation per CLAUDE.md's stack guidance ("custom Shannon
+ * entropy is intended, not a library") — no dependency required.
+ */
+function shannonEntropy(value: string): number {
+  if (value.length === 0) {
+    return 0;
+  }
+
+  const frequencies = new Map<string, number>();
+  for (const char of value) {
+    frequencies.set(char, (frequencies.get(char) ?? 0) + 1);
+  }
+
+  let entropy = 0;
+  for (const count of frequencies.values()) {
+    const probability = count / value.length;
+    entropy -= probability * Math.log2(probability);
+  }
+  return entropy;
+}
+
+/** True when `line` contains any ANCHOR_KEYWORDS member, case-insensitively. */
+function hasAnchorKeyword(line: string): boolean {
+  const lower = line.toLowerCase();
+  return ANCHOR_KEYWORDS.some((keyword) => lower.includes(keyword));
+}
+
+/**
+ * Pass A: runs every PROVIDER_PATTERNS entry against `line`, pushing a
+ * Finding per match. Returns the list of [start, end) column spans matched
+ * on this line so Pass B can skip overlapping entropy candidates (dedup —
+ * a single matched span never emits both a provider AND an entropy finding;
+ * the higher-severity provider finding wins).
+ */
+function runProviderPatterns(
+  line: string,
+  lineNumber: number,
+  filePath: string,
+  detectorName: string,
+  findings: Finding[],
+): Array<[number, number]> {
+  const matchedSpans: Array<[number, number]> = [];
+
+  for (const pattern of PROVIDER_PATTERNS) {
+    for (const match of line.matchAll(pattern.regex)) {
+      const matchedValue = match[0];
+      const start = match.index;
+      matchedSpans.push([start, start + matchedValue.length]);
+
+      findings.push({
+        ruleId: pattern.ruleId,
+        category: "secrets",
+        detectorName,
+        file: filePath,
+        line: lineNumber,
+        severity: pattern.severity,
+        confidence: pattern.confidence,
+        message: pattern.message,
+        remediation: pattern.remediation,
+        matchedText: maskSecret(matchedValue),
+      });
+    }
+  }
+
+  return matchedSpans;
+}
+
+/** True when [start, end) overlaps any span in `spans`. */
+function overlapsAny(start: number, end: number, spans: Array<[number, number]>): boolean {
+  return spans.some(([spanStart, spanEnd]) => start < spanEnd && end > spanStart);
+}
+
+/**
+ * Pass B: keyword-anchored Shannon entropy (SEC-06). Finds every quoted
+ * string literal on `line` of length >= MIN_ENTROPY_CANDIDATE_LENGTH whose
+ * entropy is >= ENTROPY_THRESHOLD, skips any span already claimed by Pass A
+ * (dedup), and — per the FP-management keyword-anchor rule — only flags the
+ * candidate when `line` also contains an ANCHOR_KEYWORDS member.
+ */
+function runEntropyPass(
+  line: string,
+  lineNumber: number,
+  filePath: string,
+  detectorName: string,
+  providerSpans: Array<[number, number]>,
+  findings: Finding[],
+): void {
+  const lineHasAnchor = hasAnchorKeyword(line);
+  if (!lineHasAnchor) {
+    // FP-management rule: a candidate with no anchoring keyword on its line
+    // is never flagged, regardless of entropy.
+    return;
+  }
+
+  for (const match of line.matchAll(QUOTED_STRING_RE)) {
+    const value = match[1] ?? match[2] ?? match[3] ?? "";
+    const start = match.index + 1; // +1 skips the opening quote character
+    const end = start + value.length;
+
+    if (value.length < MIN_ENTROPY_CANDIDATE_LENGTH) {
+      continue;
+    }
+    if (overlapsAny(start, end, providerSpans)) {
+      // Already claimed by a higher-severity provider-key finding (dedup).
+      continue;
+    }
+
+    const entropy = shannonEntropy(value);
+    if (entropy < ENTROPY_THRESHOLD) {
+      continue;
+    }
+
+    findings.push({
+      ruleId: "SEC-06",
+      category: "secrets",
+      detectorName,
+      file: filePath,
+      line: lineNumber,
+      severity: "HIGH",
+      confidence: "MEDIUM",
+      message: "High-entropy secret anchored to a sensitive keyword found in source.",
+      remediation:
+        "Move this value to an untracked environment variable (e.g. a .env file excluded from git) and reference it via process.env instead of a literal string.",
+      matchedText: maskSecret(value),
+    });
+  }
+}
+
+export const secretsDetector: Detector = {
+  config: {
+    name: "secrets",
+    category: "secrets",
+    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,json,env,txt,md}", "**/.env*"],
+  },
+
+  // Not declared `async` — there is no network/disk wait in this text-only
+  // detector, so the body is plain synchronous work wrapped in
+  // `Promise.resolve()`. The Detector interface still requires returning
+  // `Promise<Finding[]>` (so callers can always `await` uniformly across
+  // async and sync detectors); `async` itself is reserved for detectors
+  // that actually await something.
+  detect(ctx: DetectorContext): Promise<Finding[]> {
+    try {
+      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding this
+      // detector could emit for test/fixture/mock/example/story paths —
+      // applies uniformly across Pass A, A2, and B, not just the new
+      // Supabase branch, so test-suite source itself never self-flags.
+      if (isAllowlistedPath(ctx.filePath)) {
+        return Promise.resolve([]);
+      }
+
+      const findings: Finding[] = [];
+      const lines = ctx.content.split("\n");
+
+      // `.entries()` (not bracket indexing) avoids a dynamic-index access
+      // pattern entirely — sidesteps security/detect-object-injection.
+      for (const [index, line] of lines.entries()) {
+        const lineNumber = index + 1; // 1-indexed per src/core/types.ts Finding.line
+
+        const providerSpans = runProviderPatterns(line, lineNumber, ctx.filePath, "secrets", findings);
+        const supabaseSpans = runSupabaseServiceRolePass(line, lineNumber, ctx.filePath, "secrets", findings);
+        const claimedSpans = [...providerSpans, ...supabaseSpans];
+        runEntropyPass(line, lineNumber, ctx.filePath, "secrets", claimedSpans, findings);
+      }
+
+      return Promise.resolve(findings);
+    } catch {
+      // No-throw contract (src/core/types.ts Detector.detect): a malformed
+      // or unexpected ctx.content must resolve to [], never reject.
+      return Promise.resolve([]);
+    }
+  },
+};

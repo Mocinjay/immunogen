@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "docs-reader": {
+      "command": "node",
+      "args": ["./mcp-docs-server.js"],
+      "permissions": ["file_read"],
+      "tools": [
+        {
+          "name": "read_docs",
+          "description": "Reads a markdown file from the local docs directory and returns its plain text contents.",
+          "parameters": [
+            {
+              "name": "path",
+              "description": "Relative path within the docs directory to read."
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

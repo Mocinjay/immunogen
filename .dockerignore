@@ -1,0 +1,18 @@
+# Keep the Docker build context lean and prevent a host-built dist/ from
+# leaking into the image (the Dockerfile always rebuilds in-image).
+node_modules
+.git
+.planning
+dist
+tests
+
+# Editor / OS cruft, env files with real secrets (only .env.example is
+# meaningful to a Docker build and it carries no real values).
+.DS_Store
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+*.tgz
+coverage
+.vitest
