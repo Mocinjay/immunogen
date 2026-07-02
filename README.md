@@ -1,7 +1,7 @@
 # immunogen
 
 [![npm version](https://img.shields.io/npm/v/immunogen.svg)](https://www.npmjs.com/package/immunogen)
-[![CI](https://github.com/<org>/immunogen/actions/workflows/ci.yml/badge.svg)](https://github.com/<org>/immunogen/actions/workflows/ci.yml)
+[![CI](https://github.com/Mocinjay/immunogen/actions/workflows/ci.yml/badge.svg)](https://github.com/Mocinjay/immunogen/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node >=22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
