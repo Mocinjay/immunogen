@@ -80,6 +80,7 @@ function extractInlineScriptBodies(html: string): string[] {
 function lineNumberAt(text: string, index: number): number {
   let line = 1;
   for (let i = 0; i < index && i < text.length; i += 1) {
+    // eslint-disable-next-line security/detect-object-injection -- `i` is a bounded numeric loop counter into a string, not attacker-controlled property access
     if (text[i] === "\n") {
       line += 1;
     }

@@ -71,6 +71,7 @@ export const webCorsDetector: WebDetector = {
   detect(ctx: WebContext): Finding[] {
     try {
       const { target } = ctx;
+      // eslint-disable-next-line security/detect-object-injection -- ACAO_HEADER is a fixed, code-defined constant, never scanned-response content
       const acao = target.headers[ACAO_HEADER];
 
       if (acao === undefined) {
@@ -78,6 +79,7 @@ export const webCorsDetector: WebDetector = {
         return [];
       }
 
+      // eslint-disable-next-line security/detect-object-injection -- ACAC_HEADER is a fixed, code-defined constant, never scanned-response content
       const acac = target.headers[ACAC_HEADER];
       const credentialsEnabled = isTrueLiteral(acac);
       const isWildcard = acao.trim() === "*";

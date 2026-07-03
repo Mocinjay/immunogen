@@ -135,6 +135,7 @@ export const securityHeadersDetector: WebDetector = {
         );
       }
 
+      // eslint-disable-next-line security/detect-object-injection -- REFERRER_POLICY_HEADER is a fixed, code-defined constant, never scanned-response content
       if (headers[REFERRER_POLICY_HEADER] === undefined) {
         findings.push(
           buildFinding(
