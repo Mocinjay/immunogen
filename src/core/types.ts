@@ -58,7 +58,8 @@ export type Category =
   | "storage"
   | "legal"
   | "config"
-  | "ai-layer";
+  | "ai-layer"
+  | "web";
 
 /**
  * The central data type that flows from detectors through scoring to

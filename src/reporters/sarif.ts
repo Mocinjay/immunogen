@@ -75,6 +75,7 @@ const CATEGORY_LABELS: Record<Category, string> = {
   legal: "Legal/Licensing",
   config: "Configuration",
   "ai-layer": "AI-Layer Risk",
+  web: "Live Web Screening",
 };
 
 /**
