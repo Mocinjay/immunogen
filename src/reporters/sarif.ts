@@ -211,7 +211,13 @@ function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>): 
   };
 }
 
-/** Builds the single `SarifRun` this reporter always emits. */
+/**
+ * Builds the single `SarifRun` this reporter always emits. `properties`
+ * surfaces the headline A-F health grade (`score.grade`/`score.gradeLabel`)
+ * in the existing SARIF properties bag — an additive touch so the grade
+ * isn't lost when a caller consumes the SARIF document instead of terminal
+ * or JSON output; it does not restructure any other part of the run.
+ */
 function buildRun(result: ScanResult): SarifRun {
   const { rules, ruleIndexByRuleId } = buildRules(result.findings);
 
@@ -224,6 +230,10 @@ function buildRun(result: ScanResult): SarifRun {
       },
     },
     results: result.findings.map((finding) => buildResult(finding, ruleIndexByRuleId)),
+    properties: {
+      grade: result.score.grade,
+      gradeLabel: result.score.gradeLabel,
+    },
   };
 }
 

@@ -145,6 +145,7 @@ interface ParsedSarifLog {
   runs: Array<{
     tool: { driver: { name: string; informationUri?: string; rules: ParsedSarifRule[] } };
     results: ParsedSarifResult[];
+    properties?: { grade: string; gradeLabel: string };
   }>;
 }
 
@@ -389,6 +390,19 @@ describe("sarifReporter.render — Test 6: fingerprint stability + uniqueness", 
     expect(firstResult.partialFingerprints.primaryLocationLineHash).toBe(
       secondResult.partialFingerprints.primaryLocationLineHash,
     );
+  });
+});
+
+describe("sarifReporter.render — Test 8: headline A-F grade surfaced in run.properties", () => {
+  it("carries score.grade/gradeLabel into runs[0].properties without restructuring the SARIF document", () => {
+    const result = makeScanResult();
+    const parsed = JSON.parse(sarifReporter.render(result)) as ParsedSarifLog;
+    const run = parsed.runs[0];
+    expect(run).toBeDefined();
+    if (!run) return;
+
+    expect(run.properties?.grade).toBe(result.score.grade);
+    expect(run.properties?.gradeLabel).toBe(result.score.gradeLabel);
   });
 });
 

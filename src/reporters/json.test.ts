@@ -90,6 +90,16 @@ describe("jsonReporter.render — valid, parseable JSON", () => {
     });
   });
 
+  it("includes the headline A-F grade and its status label in score", () => {
+    const result = makeScanResult();
+    const parsed = JSON.parse(jsonReporter.render(result)) as {
+      score: { grade: string; gradeLabel: string };
+    };
+
+    expect(parsed.score.grade).toBe("F");
+    expect(parsed.score.gradeLabel).toBe("Critical");
+  });
+
   it("parses each finding with file/line/severity/confidence and the rest of the shape", () => {
     const result = makeScanResult();
     const parsed = JSON.parse(jsonReporter.render(result)) as {

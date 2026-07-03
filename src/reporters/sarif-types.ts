@@ -88,10 +88,22 @@ export interface SarifResult {
   partialFingerprints: SarifPartialFingerprints;
 }
 
+/**
+ * `runs[0].properties` — SARIF's generic per-run properties bag. Used to
+ * surface immunogen's headline A-F health grade (`grade`/`gradeLabel`)
+ * without restructuring the SARIF object model itself; a small additive
+ * touch, not a new top-level SARIF construct.
+ */
+export interface SarifRunProperties {
+  grade: string;
+  gradeLabel: string;
+}
+
 /** `runs[]` entry — one tool invocation over one target. */
 export interface SarifRun {
   tool: SarifTool;
   results: SarifResult[];
+  properties?: SarifRunProperties;
 }
 
 /** Top-level SARIF 2.1.0 log document. */

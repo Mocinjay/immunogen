@@ -14,6 +14,11 @@
  * `matchedText` on each finding is passed through untouched — it arrives
  * already masked from the detector layer (Plan 01); this reporter never
  * redacts, transforms, or expands it.
+ *
+ * `score.grade`/`score.gradeLabel` (the headline A-F health grade, added
+ * alongside the existing 0-100 Ship Score fields) flow through automatically
+ * — `toSerializableView` spreads the full `ScanResult`, so no extra wiring
+ * was needed for these two fields to appear in the emitted JSON.
  */
 import type { Reporter } from "./interface.js";
 

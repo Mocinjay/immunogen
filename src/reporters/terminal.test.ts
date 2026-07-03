@@ -116,6 +116,36 @@ describe("terminalReporter.render — score / band / verdict", () => {
   });
 });
 
+describe("terminalReporter.render — A-F grade banner (headline)", () => {
+  it("contains the letter grade and its status label after stripping ANSI", () => {
+    const result = makeScanResult();
+    const output = stripAnsi(terminalReporter.render(result));
+
+    expect(output).toContain("GRADE:");
+    expect(output).toContain(result.score.grade);
+    expect(output).toContain(result.score.gradeLabel);
+  });
+
+  it("renders the grade banner above the Ship Score line", () => {
+    const result = makeScanResult();
+    const output = stripAnsi(terminalReporter.render(result));
+
+    const gradeLineIndex = output.indexOf("GRADE:");
+    const scoreLineIndex = output.indexOf("Ship Score:");
+    expect(gradeLineIndex).toBeGreaterThanOrEqual(0);
+    expect(scoreLineIndex).toBeGreaterThan(gradeLineIndex);
+  });
+
+  it("still renders the existing Ship Score/band/verdict fields unchanged alongside the grade", () => {
+    const result = makeScanResult();
+    const output = stripAnsi(terminalReporter.render(result));
+
+    expect(output).toContain(String(result.score.score));
+    expect(output).toContain(result.score.band);
+    expect(output).toContain(result.score.verdict);
+  });
+});
+
 describe("terminalReporter.render — per-finding rendering", () => {
   it("contains each finding's file:line location after stripping ANSI", () => {
     const result = makeScanResult();
