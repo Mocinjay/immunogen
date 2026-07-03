@@ -183,6 +183,36 @@ export interface ScanOptions {
   maxTotalBytes?: number;
   /** Walker total-repo file-count cap override (default 25,000). */
   maxTotalFiles?: number;
+
+  /**
+   * `--authorize`; the live-URL-screening consent gate (src/web/url-resolver.ts
+   * `resolveUrlTarget`). Screening a deployed website probes a third party's
+   * running infrastructure — unlike the existing dir/git/zip inputs, which
+   * only ever read bytes the caller already possesses — so this must be
+   * explicitly opted into. `undefined`/`false` behaves identically: the URL
+   * branch (wired in Pass 2) refuses to resolve any URL target at all.
+   */
+  authorize?: boolean;
+  /**
+   * `--allow-private`; escape hatch for the URL-resolver SSRF guard, letting
+   * a caller point live-URL screening at a loopback/private/link-local/
+   * metadata host (e.g. `localhost` during local dev). Defaults to `false`
+   * (guard fully enforced) when omitted.
+   */
+  allowPrivate?: boolean;
+  /**
+   * Per-request timeout override (milliseconds) for the URL target fetcher
+   * (src/web/fetch-target.ts `fetchTarget`), applied to both the main
+   * document request and each same-origin script request. Defaults to that
+   * module's own 10-second default when omitted.
+   */
+  urlTimeoutMs?: number;
+  /**
+   * Max same-origin `<script src>` assets the URL target fetcher follows
+   * (src/web/fetch-target.ts `fetchTarget`). Defaults to that module's own
+   * cap (10) when omitted.
+   */
+  maxScripts?: number;
 }
 
 /**
