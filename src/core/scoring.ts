@@ -15,7 +15,7 @@
  * overall determinism (threat T-04-05) are both enforced here and proven by
  * scoring.test.ts.
  */
-import type { Band, Finding, Severity, ShipScore, Verdict } from "./types.js";
+import type { Band, Finding, Grade, Severity, ShipScore, Verdict } from "./types.js";
 
 /** Per-severity point weight contributing to `rawPoints`. INFO contributes nothing. */
 const SEVERITY_WEIGHTS: Record<Severity, number> = {
@@ -41,6 +41,31 @@ const BAND_LOW_RISK_MIN = 70;
 /** Inclusive lower score bound for the "Moderate risk" band; also the verdict pass/blocked floor. */
 const BAND_MODERATE_RISK_MIN = 40;
 
+/** Inclusive lower score bound for grade `A`, when no CRITICAL finding is present. */
+const GRADE_A_MIN = 90;
+
+/** Inclusive lower score bound for grade `B`, when no CRITICAL finding is present. */
+const GRADE_B_MIN = 75;
+
+/** Inclusive lower score bound for grade `C`, when no CRITICAL finding is present. */
+const GRADE_C_MIN = 55;
+
+/** Inclusive lower score bound for grade `D`, when no CRITICAL finding is present. */
+const GRADE_D_MIN = 35;
+
+/**
+ * Human-readable "health status" word paired with each `Grade` in reporter
+ * output — the immune-system framing (Immune/Healthy/Symptomatic/Infected/
+ * Critical) that reads as the headline alongside the numeric Ship Score.
+ */
+const GRADE_STATUS_LABELS: Record<Grade, string> = {
+  A: "Immune",
+  B: "Healthy",
+  C: "Symptomatic",
+  D: "Infected",
+  F: "Critical",
+};
+
 /**
  * Classifies a 0–100 score into one of the four LOCKED action-oriented
  * `Band` labels from types.ts. Thresholds mirror ARCHITECTURE.md's numeric
@@ -61,6 +86,33 @@ function bandFor(score: number): Band {
 }
 
 /**
+ * Classifies a 0-100 score (plus the CRITICAL-present flag) into the
+ * headline A-F `Grade`. Any CRITICAL finding is an automatic `F`,
+ * regardless of score — mirroring the CRITICAL hard cap already applied to
+ * the numeric score, so the grade can never read better than the score's
+ * own risk floor implies. Otherwise the mapping is a pure score threshold:
+ * >=90 A, >=75 B, >=55 C, >=35 D, else F.
+ */
+export function gradeFor(score: number, hasCritical: boolean): Grade {
+  if (hasCritical) {
+    return "F";
+  }
+  if (score >= GRADE_A_MIN) {
+    return "A";
+  }
+  if (score >= GRADE_B_MIN) {
+    return "B";
+  }
+  if (score >= GRADE_C_MIN) {
+    return "C";
+  }
+  if (score >= GRADE_D_MIN) {
+    return "D";
+  }
+  return "F";
+}
+
+/**
  * Computes the deterministic Ship Score for a scan's findings.
  *
  * Formula (ARCHITECTURE.md "Scoring Engine"):
@@ -74,7 +126,9 @@ function bandFor(score: number): Band {
  * at <= 20 regardless of how few other findings are present — well inside
  * the <= 25 acceptance bound. Verdict is "blocked" whenever a CRITICAL is
  * present OR the score falls into the "High risk" band (score < 40);
- * "pass" otherwise.
+ * "pass" otherwise. `grade`/`gradeLabel` are then derived from the same
+ * `score` + `hasCritical` via `gradeFor` — an additive headline rating,
+ * layered on top of `band`/`verdict`, never a replacement for either.
  *
  * Pure and order-independent: reduces and counts iterate `findings` without
  * depending on array order, and the function performs no I/O, timing, or
@@ -103,6 +157,9 @@ export function computeScore(findings: Finding[]): ShipScore {
   const score = Math.round(Math.min(MAX_RISK, Math.max(0, MAX_RISK - cappedRisk)));
   const band = bandFor(score);
   const verdict: Verdict = hasCritical || score < BAND_MODERATE_RISK_MIN ? "blocked" : "pass";
+  const grade = gradeFor(score, hasCritical);
+  // eslint-disable-next-line security/detect-object-injection -- `grade` is typed as the closed `Grade` string-literal union returned by `gradeFor`, never arbitrary scanned-repo content
+  const gradeLabel = GRADE_STATUS_LABELS[grade];
 
-  return { score, band, verdict, criticalCount, highCount };
+  return { score, band, verdict, criticalCount, highCount, grade, gradeLabel };
 }

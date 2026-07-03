@@ -61,6 +61,8 @@ const validShipScore = {
   verdict: "pass",
   criticalCount: 0,
   highCount: 0,
+  grade: "A",
+  gradeLabel: "Immune",
 } satisfies ShipScore;
 void validShipScore;
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { computeScore } from "./scoring.js";
+import { computeScore, gradeFor } from "./scoring.js";
 
 import type { Finding, Severity } from "./types.js";
 
@@ -32,6 +32,8 @@ describe("computeScore — empty findings", () => {
       verdict: "pass",
       criticalCount: 0,
       highCount: 0,
+      grade: "A",
+      gradeLabel: "Immune",
     });
   });
 });
@@ -200,5 +202,80 @@ describe("computeScore — determinism (threat T-04-05)", () => {
     const second = computeScore(findings);
 
     expect(second).toEqual(first);
+  });
+});
+
+describe("gradeFor — auto-F on any CRITICAL", () => {
+  it("returns F when hasCritical is true regardless of how high the score is", () => {
+    expect(gradeFor(100, true)).toBe("F");
+    expect(gradeFor(90, true)).toBe("F");
+    expect(gradeFor(0, true)).toBe("F");
+  });
+});
+
+describe("gradeFor — boundary thresholds (no CRITICAL)", () => {
+  it.each<[number, ReturnType<typeof gradeFor>]>([
+    [90, "A"],
+    [89, "B"],
+    [75, "B"],
+    [74, "C"],
+    [55, "C"],
+    [54, "D"],
+    [35, "D"],
+    [34, "F"],
+    [100, "A"],
+    [0, "F"],
+  ])("gradeFor(%i, false) === %s", (score, expectedGrade) => {
+    expect(gradeFor(score, false)).toBe(expectedGrade);
+  });
+});
+
+describe("computeScore — grade + gradeLabel wiring", () => {
+  it("a lone CRITICAL yields grade F even though it is the only finding (auto-fail overrides score)", () => {
+    const result = computeScore([makeFinding("CRITICAL")]);
+    expect(result.criticalCount).toBe(1);
+    expect(result.grade).toBe("F");
+    expect(result.gradeLabel).toBe("Critical");
+  });
+
+  it("an empty scan (score 100) yields grade A / label Immune", () => {
+    const result = computeScore([]);
+    expect(result.grade).toBe("A");
+    expect(result.gradeLabel).toBe("Immune");
+  });
+
+  it("pairs every grade with its exact status label", () => {
+    const cases: Array<{ findings: Finding[]; grade: string; label: string }> = [
+      { findings: [], grade: "A", label: "Immune" },
+      { findings: [makeFinding("HIGH")], grade: "B", label: "Healthy" }, // rawPoints 25, score 75
+      {
+        findings: [makeFinding("HIGH"), makeFinding("LOW")],
+        grade: "C",
+        label: "Symptomatic",
+      }, // rawPoints 30, score 70
+      {
+        findings: [makeFinding("HIGH"), makeFinding("HIGH"), makeFinding("MEDIUM")],
+        grade: "D",
+        label: "Infected",
+      }, // rawPoints 60, score 40
+      { findings: [makeFinding("CRITICAL")], grade: "F", label: "Critical" }, // auto-fail
+    ];
+
+    for (const { findings, grade, label } of cases) {
+      const result = computeScore(findings);
+      expect(result.grade).toBe(grade);
+      expect(result.gradeLabel).toBe(label);
+    }
+  });
+
+  it("grade stays order-independent alongside score/band/verdict (threat T-04-05)", () => {
+    const findings: Finding[] = [
+      makeFinding("CRITICAL", { file: "a.ts" }),
+      makeFinding("HIGH", { file: "b.ts" }),
+      makeFinding("MEDIUM", { file: "c.ts" }),
+    ];
+    const shuffled = [findings[2], findings[0], findings[1]] as Finding[];
+
+    expect(computeScore(shuffled)).toEqual(computeScore(findings));
   });
 });

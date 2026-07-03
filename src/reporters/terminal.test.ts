@@ -72,6 +72,8 @@ function makeScanResult(overrides: Partial<ScanResult> = {}): ScanResult {
       verdict: "blocked",
       criticalCount: 1,
       highCount: 0,
+      grade: "F",
+      gradeLabel: "Critical",
     },
     llmEnriched: false,
     scanIncomplete: false,

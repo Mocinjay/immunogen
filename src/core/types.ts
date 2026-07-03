@@ -43,6 +43,15 @@ export type Band = "Ready to ship" | "Low risk" | "Moderate risk" | "High risk";
 export type Verdict = "pass" | "blocked";
 
 /**
+ * Closed A-F health-grade union — a SEPARATE, additive classification axis
+ * layered on top of the existing 0-100 Ship Score and the LOCKED `Band`/
+ * `Verdict` labels above. This does not replace or rename either: `grade`
+ * is a new headline rating (an "immune system health" framing) that reads
+ * alongside the numeric score, band, and verdict, never instead of them.
+ */
+export type Grade = "A" | "B" | "C" | "D" | "F";
+
+/**
  * Closed detector-family category union. One member per CAT-1..CAT-11 from
  * REQUIREMENTS.md. Closed (not `string`) so DetectorConfig.category and
  * Finding.category cannot drift to an unregistered category name.
@@ -252,8 +261,10 @@ export interface ScanContext {
 
 /**
  * The computed Ship Score for a scan. Score is inverted from risk — higher
- * is safer. `band` and `verdict` are the only two types that classify a
- * score; this interface does not introduce a parallel classification.
+ * is safer. `band` and `verdict` classify the numeric score as before;
+ * `grade`/`gradeLabel` are an ADDITIVE headline rating on top of that same
+ * score — see `Grade` above and `gradeFor`/`GRADE_STATUS_LABELS` in
+ * scoring.ts for the exact mapping. No existing field changes meaning.
  */
 export interface ShipScore {
   /** 0-100; higher = safer. */
@@ -262,6 +273,10 @@ export interface ShipScore {
   verdict: Verdict;
   criticalCount: number;
   highCount: number;
+  /** A-F headline health grade, derived from `score` + `criticalCount` (see `gradeFor`). */
+  grade: Grade;
+  /** Human-readable status word paired with `grade` (A→Immune .. F→Critical). */
+  gradeLabel: string;
 }
 
 /**
