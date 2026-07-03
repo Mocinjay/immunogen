@@ -22,115 +22,62 @@
  *
  * ENG-05 (text-only invariant): this module operates on plain strings only.
  * It never imports a parser, never touches an AST, never imports or calls
- * child_process/eval/require on scanned content, and is a dependency-free
- * leaf — it is not imported by anything else in this plan (07-01). A later
- * plan (07-03) wires it into the provider-adapter request path.
+ * child_process/eval/require on scanned content. Its only internal
+ * dependency is `secret-patterns.ts` (the shared regex/entropy/keyword
+ * source of truth also used by src/detectors/secrets/entropy-detector.ts) —
+ * a dependency-free leaf itself, so this remains effectively leaf-level. A
+ * later plan (07-03) wires this module into the provider-adapter request
+ * path.
  */
+import {
+  ENTROPY_THRESHOLD,
+  hasAnchorKeyword,
+  JWT_RE,
+  MIN_ENTROPY_CANDIDATE_LENGTH,
+  PROVIDER_KEY_PATTERNS,
+  QUOTED_STRING_RE,
+  shannonEntropy,
+  SUPABASE_ENV_NAME_RE,
+} from "../detectors/secrets/secret-patterns.js";
+
 import type { Finding } from "../core/types.js";
 
 /** The fixed replacement token every detected secret span is replaced with. Never proportional to secret length — it must not leak size information either. */
 export const REDACTED_PLACEHOLDER = "[REDACTED]";
 
 /**
- * Fixed-format secret patterns (Pass 1), mirroring the provider-key regex
- * literals in src/detectors/secrets/entropy-detector.ts (PROVIDER_PATTERNS
- * @92-120, JWT_RE @151, SUPABASE_ENV_NAME_RE @157). Copied here as exact
- * literals rather than imported — the detector's tables are module-private
- * and not exported, and this module intentionally has zero internal
- * dependencies (leaf module invariant).
- *
- * The Anthropic pattern is NOT present in entropy-detector.ts: the
- * existing OpenAI pattern (`sk-[A-Za-z0-9]{48}`) is fixed at exactly 48
- * trailing characters and does not match the `sk-ant-api03-` prefixed key
- * shape Anthropic issues. This is the SAFE-01 criterion-1 fixture pattern,
- * so it is added explicitly.
- *
- * All entries carry the global flag and are applied via
- * `String.prototype.replaceAll` (not `.exec()` — this project's ENG-05
- * ESLint rule forbids any member call literally named `exec`, matching the
- * child_process.exec/execSync/spawn family regardless of receiver type).
+ * Anthropic API key — sk-ant-api03-<base64url-ish body>. Not present in
+ * entropy-detector.ts's shared PROVIDER_KEY_PATTERNS table: that table's
+ * OpenAI pattern (`sk-[A-Za-z0-9]{48}`) is fixed at exactly 48 trailing
+ * characters and does not match this `sk-ant-api03-` prefixed shape
+ * Anthropic issues. This is the SAFE-01 criterion-1 fixture pattern, so
+ * redactor.ts layers it on top of the shared table as its one extra entry.
+ * Checked BEFORE the shared OpenAI pattern below since both share the `sk-`
+ * prefix; ordering does not actually matter for correctness (the two
+ * patterns match disjoint shapes) but is kept for readability.
+ */
+const ANTHROPIC_KEY_PATTERN = /sk-ant-api03-[\w-]+/g;
+
+/**
+ * Fixed-format secret patterns (Pass 1): the shared PROVIDER_KEY_PATTERNS
+ * regex table (Stripe/AWS/OpenAI) plus this module's own Anthropic/JWT/
+ * Supabase-env-name entries layered on top. All entries carry the global
+ * flag and are applied via `String.prototype.replaceAll` (not `.exec()` —
+ * this project's ENG-05 ESLint rule forbids any member call literally named
+ * `exec`, matching the child_process.exec/execSync/spawn family regardless
+ * of receiver type).
  */
 const SECRET_PATTERNS: RegExp[] = [
-  // Stripe live secret key (SEC-01 precedent).
-  /sk_live_[\w-]+/g,
-  // AWS access key ID (SEC-02 precedent).
-  /AKIA[0-9A-Z]{16}/g,
-  // Anthropic API key — sk-ant-api03-<base64url-ish body>. Checked BEFORE
-  // the OpenAI pattern below since both share the `sk-` prefix; ordering
-  // does not actually matter for correctness here (the two patterns match
-  // disjoint shapes — Anthropic requires the literal `ant-api03-` infix,
-  // OpenAI's is exactly 48 trailing chars with no infix) but is kept in
-  // this order for readability parity with entropy-detector.ts's own
-  // provider ordering.
-  /sk-ant-api03-[\w-]+/g,
-  // OpenAI API key (SEC-03 precedent) — fixed 48-char trailing body.
-  /sk-[A-Za-z0-9]{48}/g,
+  ...PROVIDER_KEY_PATTERNS.map((pattern) => pattern.regex),
+  // Anthropic API key — this module's one extra entry (see comment above).
+  ANTHROPIC_KEY_PATTERN,
   // Supabase / generic JWT shape: three dot-separated base64url segments,
-  // header segment anchored to the well-known `eyJ` prefix (SEC-04
-  // precedent, JWT_RE).
-  /eyJ[\w-]+\.[\w-]+\.[\w-]+/g,
+  // header segment anchored to the well-known `eyJ` prefix.
+  JWT_RE,
   // Bare SUPABASE_SERVICE_ROLE_KEY identifier reference — a name-based
-  // signal with no JWT body required (SEC-04 env-name precedent).
-  /SUPABASE_SERVICE_ROLE_KEY/g,
+  // signal with no JWT body required.
+  SUPABASE_ENV_NAME_RE,
 ];
-
-/**
- * Case-insensitive keyword family that must co-occur on the same line as a
- * high-entropy literal before the generic pass redacts it (Pass 2 anchor
- * gate) — exact copy of entropy-detector.ts's ANCHOR_KEYWORDS list (@64),
- * preventing both under-redaction (real secrets slipping through) and
- * over-redaction (ordinary UUIDs/hashes getting scrubbed unpredictably).
- */
-const ANCHOR_KEYWORDS = [
-  "secret",
-  "apikey",
-  "api_key",
-  "token",
-  "password",
-  "passwd",
-  "private_key",
-  "client_secret",
-  "key",
-];
-
-/** Minimum Shannon entropy (bits/char) for a quoted literal to be redacted by the generic pass. Mirrors entropy-detector.ts's ENTROPY_THRESHOLD (@54). */
-const ENTROPY_THRESHOLD = 4.0;
-
-/** Minimum length of a quoted literal considered by the generic entropy pass. Mirrors entropy-detector.ts's MIN_ENTROPY_CANDIDATE_LENGTH (@57). */
-const MIN_ENTROPY_CANDIDATE_LENGTH = 40;
-
-/** Matches a single-, double-, or backtick-quoted string literal, non-greedy, no embedded same-quote char. Exact copy of entropy-detector.ts's QUOTED_STRING_RE (@252). */
-const QUOTED_STRING_RE = /'([^'\\]*)'|"([^"\\]*)"|`([^`\\]*)`/g;
-
-/**
- * Shannon entropy of `value` in bits per character: sum over each distinct
- * character c of -p(c) * log2(p(c)), where p(c) is c's frequency in value.
- * Reimplemented inline (no import from entropy-detector.ts, no library) —
- * exact algorithmic mirror of that file's `shannonEntropy` (@271).
- */
-function shannonEntropy(value: string): number {
-  if (value.length === 0) {
-    return 0;
-  }
-
-  const frequencies = new Map<string, number>();
-  for (const char of value) {
-    frequencies.set(char, (frequencies.get(char) ?? 0) + 1);
-  }
-
-  let entropy = 0;
-  for (const count of frequencies.values()) {
-    const probability = count / value.length;
-    entropy -= probability * Math.log2(probability);
-  }
-  return entropy;
-}
-
-/** True when `line` contains any ANCHOR_KEYWORDS member, case-insensitively. */
-function hasAnchorKeyword(line: string): boolean {
-  const lower = line.toLowerCase();
-  return ANCHOR_KEYWORDS.some((keyword) => lower.includes(keyword));
-}
 
 /**
  * Pass 1: replace every fixed-format SECRET_PATTERNS match in `text` with
