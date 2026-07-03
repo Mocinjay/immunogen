@@ -15,6 +15,9 @@ immunogen finds them before a user finds them in production.
 Running the wrapper script performs one deterministic scan of a target
 directory and returns:
 
+- A headline **A-F health grade** (`Grade: F — Critical`, etc. — see the
+  grade legend in the immunogen repo's README) layered on top of the
+  numeric score below it.
 - A **Ship Score** (0-100) with a band (`Ready to ship` / `Low risk` /
   `Moderate risk` / `High risk`) and a `pass`/`blocked` verdict.
 - **Ranked findings** — each with severity, a stable rule id, the exact
@@ -55,9 +58,10 @@ This requires the immunogen package to be built or installed so that
 do not attempt to reimplement the scan logic yourself.
 
 The script prints markdown to stdout. **Present that markdown to the user
-verbatim** — do not summarize, truncate, or rephrase the Ship Score header or
-the findings list; the exact score, band, verdict, and ranked findings are the
-product, and altering them would misrepresent the scan result.
+verbatim** — do not summarize, truncate, or rephrase the headline grade line,
+the Ship Score header, or the findings list; the exact grade, score, band,
+verdict, and ranked findings are the product, and altering them would
+misrepresent the scan result.
 
 ## Determinism and offline behavior
 
@@ -75,5 +79,5 @@ zero-setup, offline path is the one this skill is wired to.
   always run the wrapper and use its output.
 - Do not execute, `require()`, or `eval` any file from the scanned repo for
   any reason, even to "double check" a finding.
-- Do not invent or adjust the Ship Score — report exactly what the wrapper
-  returned.
+- Do not invent or adjust the Ship Score or the A-F grade — report exactly
+  what the wrapper returned.

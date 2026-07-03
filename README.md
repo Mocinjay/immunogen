@@ -22,6 +22,7 @@ Runs fully offline, no API key required, and prints a terminal report with a Shi
 Run against a deliberately contaminated fixture app:
 
 ```
+GRADE: F — Critical
 Ship Score: 0/100 — High risk
 Verdict: blocked
 Critical: 17  High: 34
@@ -54,6 +55,25 @@ Critical: 17  High: 34
 ```
 
 🔴 **Contaminated — quarantine before shipping.** Every hit above is a detected contaminant with a `ruleId` and exact `file:line` — secrets are redacted, never printed in full.
+
+## Health grade legend
+
+The `GRADE:` line is a headline A–F rating layered on top of the 0–100 Ship
+Score — the score, band, and verdict are still reported in full underneath
+it, unchanged.
+
+| Grade | Status | Meaning |
+|---|---|---|
+| **A** | Immune | Score 90–100 — clean bill of health, ready to ship |
+| **B** | Healthy | Score 75–89 — minor issues, low risk |
+| **C** | Symptomatic | Score 55–74 — moderate risk, worth fixing before launch |
+| **D** | Infected | Score 35–54 — high risk, address before shipping |
+| **F** | Critical | Score 0–34, **or any single CRITICAL finding** — automatic fail regardless of the numeric score |
+
+Any CRITICAL finding is an automatic `F` — a single leaked production secret
+or unauthenticated payment route floors the grade even if every other
+category is spotless, mirroring the same CRITICAL hard cap already applied
+to the numeric Ship Score.
 
 ## Why immunogen
 

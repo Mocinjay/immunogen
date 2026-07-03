@@ -8,7 +8,10 @@
  * `ScanResult` into markdown for a Claude Code conversation to present
  * verbatim (.planning/research/ARCHITECTURE.md "Pattern 3: Library-First,
  * CLI-as-Thin-Wrapper" — the skill and the CLI are siblings, both thin
- * callers of the same `scan()`).
+ * callers of the same `scan()`). The markdown leads with the headline A-F
+ * health grade (`score.grade`/`score.gradeLabel`) before the existing Ship
+ * Score/band/verdict/counts lines — an additive headline, not a
+ * replacement for the numeric score already presented below it.
  *
  * Determinism / offline-by-default (T-08-12, T-08-13): `runScanSkill` calls
  * `scan(target)` with NO options object at all — it never reads or forwards
@@ -43,16 +46,20 @@ function renderFindingLine(finding) {
 }
 
 /**
- * Formats a `ScanResult` into a markdown report: a header line with the
- * Ship Score (`score.score`/100), band, verdict, and critical/high counts;
- * a ranked findings list (findings arrive pre-sorted by severity from
- * `runDetectors()` — see src/index.ts, this function does not re-sort);
- * and a trailing note when `scanIncomplete` is true (the OSV-offline
- * fallback fired, per src/index.ts's DEP-OFFLINE sentinel).
+ * Formats a `ScanResult` into a markdown report: a headline line leading
+ * with the A-F health grade + status word (e.g. `**Grade: F — Critical**
+ * (Ship Score 18/100 — blocked)`), followed by the existing band/verdict/
+ * critical/high-count lines unchanged; a ranked findings list (findings
+ * arrive pre-sorted by severity from `runDetectors()` — see src/index.ts,
+ * this function does not re-sort); and a trailing note when
+ * `scanIncomplete` is true (the OSV-offline fallback fired, per
+ * src/index.ts's DEP-OFFLINE sentinel).
  */
 function formatMarkdown(result) {
   const { score } = result;
   const lines = [
+    `**Grade: ${score.grade} — ${score.gradeLabel}** (Ship Score ${score.score}/100 — ${score.verdict})`,
+    "",
     `## Ship Score: ${score.score}/100 — ${score.band}`,
     "",
     `**Verdict:** ${score.verdict}`,
