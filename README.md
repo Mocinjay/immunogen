@@ -92,13 +92,15 @@ repo → ingest (walk + AST cache) → detectors (17, 11 categories) → Ship Sc
 ## CLI usage
 
 ```sh
-immunogen <path> [--format terminal|json|sarif] [--no-llm]
+immunogen <path> [--format terminal|json|sarif] [--no-llm] [--authorize] [--allow-private]
 ```
 
-- `<path>` — path to the repository to scan.
+- `<path>` — path to the repository to scan, or a live `https://`/`http://` URL to screen.
 - `--format terminal|json|sarif` — output format (default `terminal`). `json` is a stable machine-readable `ScanResult`; `sarif` is for GitHub code scanning / other SARIF-aware tooling.
 - `--no-llm` — disable LLM fix-prompt enrichment. This is already the default; the flag exists for explicitness in scripts/CI.
-- **Exit code:** `1` when the verdict is `blocked` (contaminated), `0` when `pass` (cleared) — drop it straight into a CI gate.
+- `--authorize` — required consent gate to screen a live URL target (see [Screen a live URL](#screen-a-live-url)). Has no effect when `<path>` is a local repo.
+- `--allow-private` — escape hatch letting live-URL screening target a loopback/private/link-local host (local dev/test only).
+- **Exit code:** `1` when the verdict is `blocked` (contaminated), `0` when `pass` (cleared), `2` when the scan could not run at all (bad path, missing `--authorize`, refused private host, ...) — drop it straight into a CI gate.
 
 ### Library usage
 
@@ -124,6 +126,24 @@ By default, immunogen never calls an LLM. To enable Claude- or OpenAI-generated 
 
 If neither an env-configured provider nor the matching key is present, immunogen silently stays offline (no network call, no error). Every finding snippet is redacted before it is sent to any provider — no full source, no matched secret text ever leaves your machine unredacted.
 
+## Screen a live URL
+
+```sh
+immunogen https://myapp.com --authorize
+```
+
+immunogen can also screen a deployed website directly, not just a local repo. This is a real, bounded probe against the target's own infrastructure — so `--authorize` is a required consent gate, not a cosmetic flag: **only screen sites you own or are explicitly authorized to test.**
+
+What it checks on the live target:
+
+- **Security headers** — missing/weak `Content-Security-Policy`, HSTS, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` (`WEB-HDR`).
+- **CORS misconfiguration** — `Access-Control-Allow-Origin: *` combined with `Access-Control-Allow-Credentials: true`, and reflected-origin variants (`WEB-CORS`).
+- **Exposed files** — a publicly served `.env`, `.git/config`/`.git/HEAD`, `config.json`, or a leaked `.js.map` source map (`WEB-EXPOSED`).
+- **Secrets in served bundles** — live-looking Stripe/AWS/OpenAI keys found in same-origin script bundles or inline `<script>` blocks, redacted before they ever appear in output (`WEB-SEC`).
+- **Cookie flags** — session-shaped cookies missing `Secure`, `HttpOnly`, or a strong `SameSite` (`WEB-COOKIE`).
+
+`--allow-private` is a separate escape hatch for the SSRF guard, only needed to point live-URL screening at a loopback/private/link-local host (e.g. `localhost`) during local dev/test — it is refused by default. Live-URL screening is fully deterministic and never invokes an LLM, regardless of your provider env vars.
+
 ## CI gate example
 
 Screen every push and upload results as a GitHub code-scanning alert:
@@ -142,7 +162,7 @@ A `blocked` verdict fails the step; a `pass` verdict clears it — the repo's ex
 
 ## Roadmap
 
-Planned for v2: live-URL screening, Python/Go detector coverage, and deeper detectors (transitive lockfile traversal, slopsquatting/hallucinated-package detection, JWT storage checks, SQL injection detection). See [`.planning/REQUIREMENTS.md`](./.planning/REQUIREMENTS.md) for the full list.
+Planned for v2: Python/Go detector coverage, and deeper detectors (transitive lockfile traversal, slopsquatting/hallucinated-package detection, JWT storage checks, SQL injection detection). Live-URL screening shipped in v2 (see [Screen a live URL](#screen-a-live-url)). See [`.planning/REQUIREMENTS.md`](./.planning/REQUIREMENTS.md) for the full list.
 
 ## Contributing
 

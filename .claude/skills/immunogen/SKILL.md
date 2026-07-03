@@ -33,6 +33,21 @@ the current directory if no path is given):
 node .claude/skills/immunogen/scan.mjs <path-to-repo>
 ```
 
+### Live URL support
+
+The underlying `immunogen` CLI/library can also screen a deployed website
+directly (`immunogen https://myapp.com --authorize`) — see the immunogen
+repo's README "Screen a live URL" section for what it checks (security
+headers, CORS misconfig, exposed `.env`/`.git`, secrets in served bundles,
+cookie flags). This makes REAL bounded network requests against the target
+host, so it requires the caller's explicit authorization (`--authorize`) —
+only screen sites the user owns or is explicitly authorized to test. If the
+wrapper script (`scan.mjs`) does not yet forward a URL argument or the
+`--authorize`/`--allow-private` flags, do not attempt to work around that by
+calling the library directly with a different invocation — tell the user
+live-URL screening via this skill wrapper is not yet wired up, and point them
+at the `immunogen` CLI directly instead.
+
 This requires the immunogen package to be built or installed so that
 `dist/index.js` exists (`pnpm run build` in the immunogen repo, or
 `npm install immunogen` as a dependency). If the command fails because
