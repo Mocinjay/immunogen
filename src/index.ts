@@ -46,6 +46,8 @@ import { runDetectors } from "./detectors/registry.js";
 import { NoopAdapter } from "./llm/adapters/index.js";
 import { enrichFindings } from "./llm/enricher.js";
 import { selectAdapter } from "./llm/provider.js";
+import { isUrl } from "./web/url-resolver.js";
+import { scanUrl } from "./web/scan-url.js";
 
 import type { ScanOptions, ScanResult } from "./core/types.js";
 
@@ -78,11 +80,24 @@ import type { ScanOptions, ScanResult } from "./core/types.js";
  * error, which propagates here unmodified. Never writes to the terminal and
  * never terminates the host process — exit-code/printing concerns belong to
  * the CLI layer only.
+ *
+ * URL routing (Pass 2): when `isUrl(path)` is true — i.e. `path` begins with
+ * `http://` or `https://` — this function delegates entirely to
+ * `scanUrl(path, options)` (src/web/scan-url.ts) instead of running the
+ * static ingest/detect/score/enrich pipeline below. `scanUrl` returns the
+ * same `ScanResult` shape but is a fully separate, deterministic pipeline
+ * (no LLM enrichment — see that module's own header comment) built on the
+ * Pass 1 `resolveUrlTarget`/`fetchTarget` foundation. This is a pure routing
+ * decision: `scan()`'s signature and return type are unchanged either way.
  */
 export async function scan(
   path: string,
   options?: ScanOptions,
 ): Promise<ScanResult> {
+  if (isUrl(path)) {
+    return scanUrl(path, options ?? {});
+  }
+
   const scannedAt = new Date().toISOString();
 
   const ctx = await ingest(path, options);

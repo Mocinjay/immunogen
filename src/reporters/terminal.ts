@@ -16,10 +16,18 @@
  * pure: it writes nothing to the terminal directly and never terminates
  * the host process; the CLI layer owns writing the returned string to
  * stdout.
+ *
+ * Pass 2 addition: the header now leads with a target line reading
+ * "Screened <url>" for a live-URL scan (`result.target` is an http(s)://
+ * URL, per `isUrl` from `src/web/url-resolver.ts`) or "Scanned <path>" for
+ * the static file/dir/git/zip path — a small, non-structural touch so a
+ * URL screen's terminal output doesn't read like a directory scan.
  */
 import pc from "picocolors";
 
 import type { Reporter } from "./interface.js";
+
+import { isUrl } from "../web/url-resolver.js";
 
 import type { Confidence, Finding, ScanResult, Severity, Verdict } from "../core/types.js";
 
@@ -79,10 +87,17 @@ function renderFinding(finding: Finding): string {
   return lines.join("\n");
 }
 
-/** Renders the header block: Ship Score, band, verdict, critical/high counts. */
+/** Renders the target line: "Screened <url>" for a live-URL scan, "Scanned <path>" otherwise. */
+function renderTargetLine(target: string): string {
+  const verb = isUrl(target) ? "Screened" : "Scanned";
+  return `${pc.bold(verb)}: ${target}`;
+}
+
+/** Renders the header block: target line, Ship Score, band, verdict, critical/high counts. */
 function renderHeader(result: ScanResult): string {
   const { score } = result;
   return [
+    renderTargetLine(result.target),
     `${pc.bold("Ship Score:")} ${pc.bold(String(score.score))}/100 — ${colorBand(score.band)}`,
     `${pc.bold("Verdict:")} ${colorVerdict(score.verdict)}`,
     `${pc.bold("Critical:")} ${score.criticalCount}  ${pc.bold("High:")} ${score.highCount}`,

@@ -38,33 +38,47 @@ import { getReporter } from "../src/reporters/index.js";
 import type { ScanOptions } from "../src/index.js";
 
 /**
- * Runs one CLI scan action: calls `scan(path, { format, noLlm })` exactly
- * once, selects the reporter for `format` via `getReporter()`, writes
- * `reporter.render(result)` to stdout, and returns the exit code derived
- * from the verdict — `1` when `result.score.verdict === "blocked"`, `0`
- * otherwise. Returns a number (rather than calling `process.exit()`
- * directly) so callers — including tests — can invoke this without killing
- * the host process; the commander `.action()` below assigns the returned
- * number to `process.exitCode`.
+ * Runs one CLI scan action: calls `scan(path, { format, noLlm, authorize,
+ * allowPrivate })` exactly once, selects the reporter for `format` via
+ * `getReporter()`, writes `reporter.render(result)` to stdout, and returns
+ * the exit code derived from the verdict — `1` when
+ * `result.score.verdict === "blocked"`, `0` otherwise. Returns a number
+ * (rather than calling `process.exit()` directly) so callers — including
+ * tests — can invoke this without killing the host process; the commander
+ * `.action()` below assigns the returned number to `process.exitCode`.
  *
- * Builds `scanOptions` by conditionally including `format`/`noLlm` only
+ * Builds `scanOptions` by conditionally including each optional field only
  * when defined/true — `tsconfig.json`'s `exactOptionalPropertyTypes: true`
  * rejects passing an explicit `undefined` into an optional slot, so an
- * `opts.format === undefined` or `opts.noLlm !== true` call must omit the
- * key entirely rather than set it to `undefined`/`false`.
+ * unset/false option must be omitted entirely rather than set to
+ * `undefined`/`false`.
+ *
+ * `authorize`/`allowPrivate` (Pass 2) flow straight through to `scan()`,
+ * which routes a `https?://`-prefixed `path` to `scanUrl()` — the consent
+ * gate and SSRF guard both live in `src/web/url-resolver.ts`, not here; this
+ * function only forwards the flags.
  *
  * `scan()` is wrapped in try/catch: any rejection (bad path, file-as-path,
- * corrupt/non-ZIP `.zip`, unreachable git host, ...) is caught, printed as a
- * single clean `immunogen: <message>` line to stderr, and mapped to exit
- * code 2 — never an unhandled rejection or a raw stack trace.
+ * corrupt/non-ZIP `.zip`, unreachable git host, missing `--authorize` on a
+ * URL target, a private/loopback URL host without `--allow-private`, ...) is
+ * caught, printed as a single clean `immunogen: <message>` line to stderr,
+ * and mapped to exit code 2 — never an unhandled rejection or a raw stack
+ * trace.
  */
 export async function runCli(
   path: string,
-  opts: { format?: "terminal" | "json" | "sarif"; noLlm?: boolean },
+  opts: {
+    format?: "terminal" | "json" | "sarif";
+    noLlm?: boolean;
+    authorize?: boolean;
+    allowPrivate?: boolean;
+  },
 ): Promise<number> {
   const scanOptions: ScanOptions = {
     ...(opts.format === undefined ? {} : { format: opts.format }),
     ...(opts.noLlm === true ? { noLlm: true } : {}),
+    ...(opts.authorize === true ? { authorize: true } : {}),
+    ...(opts.allowPrivate === true ? { allowPrivate: true } : {}),
   };
 
   let result;
@@ -87,9 +101,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   program
     .name("immunogen")
     .description(
-      "Scan an AI-built repo for launch-blocking issues and print a Ship Score.",
+      "Scan an AI-built repo (or screen a live URL with --authorize) for launch-blocking issues and print a Ship Score.",
     )
-    .argument("<path>", "path to the repository to scan")
+    .argument("<path>", "path to the repository to scan, or a live https:// URL to screen (requires --authorize)")
     .option(
       "--format <format>",
       "output format: terminal, json, or sarif",
@@ -99,12 +113,27 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       "--no-llm",
       "disable LLM fix-prompt enrichment (offline is the default)",
     )
-    .action(async (path: string, options: { format: string; llm: boolean }) => {
-      process.exitCode = await runCli(path, {
-        format: options.format as "terminal" | "json" | "sarif",
-        noLlm: options.llm === false,
-      });
-    });
+    .option(
+      "--authorize",
+      "required consent gate for live-URL screening: only screen sites you own or are authorized to test",
+    )
+    .option(
+      "--allow-private",
+      "escape hatch for the URL SSRF guard, permitting loopback/private/link-local hosts (local dev/test only)",
+    )
+    .action(
+      async (
+        path: string,
+        options: { format: string; llm: boolean; authorize?: boolean; allowPrivate?: boolean },
+      ) => {
+        process.exitCode = await runCli(path, {
+          format: options.format as "terminal" | "json" | "sarif",
+          noLlm: options.llm === false,
+          ...(options.authorize === true ? { authorize: true } : {}),
+          ...(options.allowPrivate === true ? { allowPrivate: true } : {}),
+        });
+      },
+    );
 
   await program.parseAsync();
 }

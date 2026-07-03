@@ -79,6 +79,22 @@ function makeScanResult(overrides: Partial<ScanResult> = {}): ScanResult {
   };
 }
 
+describe("terminalReporter.render — target line", () => {
+  it('renders "Scanned <path>" for a static directory target', () => {
+    const result = makeScanResult({ target: "/repo/under/scan" });
+    const output = stripAnsi(terminalReporter.render(result));
+
+    expect(output).toContain("Scanned: /repo/under/scan");
+  });
+
+  it('renders "Screened <url>" for a live http(s):// URL target', () => {
+    const result = makeScanResult({ target: "https://example.com" });
+    const output = stripAnsi(terminalReporter.render(result));
+
+    expect(output).toContain("Screened: https://example.com");
+  });
+});
+
 describe("terminalReporter.render — score / band / verdict", () => {
   it("contains the Ship Score number, band label, and verdict after stripping ANSI", () => {
     const result = makeScanResult();

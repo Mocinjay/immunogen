@@ -119,6 +119,37 @@ describe("runCli — --no-llm forces llmEnriched:false (07-03 CLI flag path)", (
   });
 });
 
+describe("runCli — live-URL screening consent gate (Pass 2 --authorize wiring)", () => {
+  it("resolves to 2 and writes a clean actionable stderr line for a URL with no --authorize (no stack trace)", async () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const exitCode = await runCli("https://example.com", { format: "terminal" });
+
+    expect(exitCode).toBe(2);
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    const written = String(stderrSpy.mock.calls[0]?.[0]);
+    expect(written).toMatch(/^immunogen: /);
+    expect(written).toMatch(/authorization/i);
+    expect(written).not.toMatch(/at Object|at async|node_modules/);
+    expect(captured).toBe("");
+
+    stderrSpy.mockRestore();
+  });
+
+  it("resolves to 2 and writes a clean actionable stderr line for a private host with --authorize but no --allow-private", async () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const exitCode = await runCli("http://127.0.0.1", { format: "terminal", authorize: true });
+
+    expect(exitCode).toBe(2);
+    const written = String(stderrSpy.mock.calls[0]?.[0]);
+    expect(written).toMatch(/^immunogen: /);
+    expect(written).toMatch(/private|loopback/i);
+
+    stderrSpy.mockRestore();
+  });
+});
+
 describe("bin/immunogen.ts — thin-wrapper guard (criterion 5)", () => {
   it("contains no detection/scoring/AST-parsing logic — only delegates to scan() and getReporter", () => {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is this test's own sibling source file, derived from import.meta.url, never from scanned-repo content
