@@ -113,20 +113,26 @@ describe("golden suite — clean fixtures assert ZERO findings", () => {
 });
 
 describe("golden suite — path-traversal ZIP is rejected before any bytes land outside the extraction root", () => {
-  it("rejects a ZIP whose entry name is ../../etc/passwd and writes nothing outside the extraction root", async () => {
+  it("rejects a ZIP whose entry name uses ../../ traversal and writes nothing outside the extraction root", async () => {
     queryOsvBatchMock.mockResolvedValue([]);
 
     const zipParentDir = await mkdtemp(join(tmpdir(), "immunogen-golden-malicious-"));
     tempDirsToClean.push(zipParentDir);
     const zipPath = join(zipParentDir, "malicious.zip");
-    await writeZipFile(zipPath, { "../../etc/passwd": "malicious content\n" });
+    // Uniquely-named sentinel rather than `etc/passwd`, so the existence check
+    // below can't collide with a real system file — on Linux `tmpdir()` is
+    // `/tmp` and `resolve(tmpdir(), "..", "..", "etc", "passwd")` is the actual
+    // `/etc/passwd` (exists independent of this test). Mirrors the fix in
+    // src/core/ingest/input-resolver.test.ts.
+    const sentinel = "immunogen-zipslip-sentinel.txt";
+    await writeZipFile(zipPath, { [`../../${sentinel}`]: "malicious content\n" });
 
     await expect(scan(zipPath)).rejects.toThrow();
 
     // Structural property: the traversal target must never have been
     // created anywhere outside the (now-discarded) extraction temp root —
     // mirrors src/core/ingest/input-resolver.test.ts's own assertion.
-    const escapeTarget = resolve(tmpdir(), "..", "..", "etc", "passwd");
+    const escapeTarget = resolve(tmpdir(), "..", "..", sentinel);
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- test asserts a fixed, locally-derived path was never created
     expect(existsSync(escapeTarget)).toBe(false);
   });

@@ -109,11 +109,19 @@ describe("resolveInput — benign ZIP extraction", () => {
 });
 
 describe("resolveInput — malicious ZIP rejection (Zip-Slip)", () => {
-  it("rejects a ZIP whose entry name is ../../etc/passwd and writes nothing outside the extraction root", async () => {
+  it("rejects a ZIP whose entry name uses ../../ traversal and writes nothing outside the extraction root", async () => {
     const zipParentDir = await makeScratchDir("immunogen-test-malicious-");
     const zipPath = join(zipParentDir, "malicious.zip");
+    // A real Zip-Slip payload targets a sensitive file like `../../etc/passwd`.
+    // We use a uniquely-named sentinel instead of `etc/passwd` so the
+    // "was anything written outside the root?" existence check below cannot
+    // collide with a real system file — on Linux `tmpdir()` is `/tmp`, so
+    // `resolve(tmpdir(), "..", "..", "etc", "passwd")` is the *actual*
+    // `/etc/passwd`, which exists independent of this test and would make the
+    // assertion falsely fail.
+    const sentinel = "immunogen-zipslip-sentinel.txt";
     await writeZipFile(zipPath, {
-      "../../etc/passwd": "malicious content\n",
+      [`../../${sentinel}`]: "malicious content\n",
     });
 
     // ANY error is acceptable here — whichever layer fires first (yauzl's
@@ -121,13 +129,11 @@ describe("resolveInput — malicious ZIP rejection (Zip-Slip)", () => {
     // — per this plan's instruction not to pin a message substring.
     await expect(resolveInput(zipPath)).rejects.toThrow();
 
-    // Structural property: the traversal target must never have been
-    // created anywhere outside the (now-discarded) extraction temp root.
-    // The traversal entry name is `../../etc/passwd` relative to whatever
-    // temp dir extraction targeted; assert the most literal interpretation
-    // of the escape target (two levels up from the system temp root,
-    // landing at etc/passwd) was never created.
-    const escapeTarget = resolve(tmpdir(), "..", "..", "etc", "passwd");
+    // Structural property: the traversal target must never have been created
+    // anywhere outside the (now-discarded) extraction temp root. Assert the
+    // most literal interpretation of the escape target (two levels up from the
+    // system temp root) was never created.
+    const escapeTarget = resolve(tmpdir(), "..", "..", sentinel);
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- test asserts a fixed, locally-derived path was never created
     expect(existsSync(escapeTarget)).toBe(false);
   });
