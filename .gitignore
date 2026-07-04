@@ -17,6 +17,9 @@ coverage/
 .env
 .env.local
 .env.*.local
+# ...but DO track fixture .env files — they are intentional test inputs the
+# golden suite asserts on (a fresh clone/CI must see them or SEC-05 misfires).
+!tests/fixtures/**/.env
 
 # internal (kept private)
 .planning/
