@@ -1,11 +1,21 @@
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/Mocinjay/immunogen/main/assets/logo.png" alt="immunogen logo" width="120" />
+
 # immunogen
+
+**Your AI agent shipped the code. immunogen makes sure it didn't ship an infection.**
 
 [![npm version](https://img.shields.io/npm/v/immunogen.svg)](https://www.npmjs.com/package/immunogen)
 [![CI](https://github.com/Mocinjay/immunogen/actions/workflows/ci.yml/badge.svg)](https://github.com/Mocinjay/immunogen/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node >=22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
-**Your AI agent shipped the code. immunogen makes sure it didn't ship an infection.**
+<img src="https://raw.githubusercontent.com/Mocinjay/immunogen/main/assets/hero.jpg" alt="immunogen — a clean bill of health for AI-built apps" width="100%" />
+
+<samp>A · Immune&nbsp;&nbsp;·&nbsp;&nbsp;B · Healthy&nbsp;&nbsp;·&nbsp;&nbsp;C · Symptomatic&nbsp;&nbsp;·&nbsp;&nbsp;D · Infected&nbsp;&nbsp;·&nbsp;&nbsp;F · Critical</samp>
+
+</div>
 
 A clean bill of health for AI-built apps, before you ship. immunogen is a static, offline-first screen for repos built with Cursor, Claude Code, Lovable, Bolt, v0, or Replit — it never executes your code, reads it once, and returns a 0–100 **Ship Score** across 11 categories, including the AI layer itself (skills, MCP servers, agent/system prompts) — the exposure surface nothing else screens for.
 
@@ -131,7 +141,7 @@ const result = await scan("./my-app");
 console.log(result.score, result.findings);
 ```
 
-`scan(path, options?)` returns a `ScanResult`: `{ target, scannedAt, stackHints, findings, score, llmEnriched, scanIncomplete }`. `score` is a `ShipScore` (`{ score, band, verdict, criticalCount, highCount }`); `findings` is a severity-sorted `Finding[]` with `file`/`line`/`ruleId`/`category`/`confidence`.
+`scan(path, options?)` returns a `ScanResult`: `{ target, scannedAt, stackHints, findings, score, llmEnriched, scanIncomplete }`. `score` is a `ShipScore` (`{ score, grade, gradeLabel, band, verdict, criticalCount, highCount }`); `findings` is a severity-sorted `Finding[]` with `file`/`line`/`ruleId`/`category`/`confidence`.
 
 ### Optional LLM fix prompts
 
@@ -182,7 +192,7 @@ A `blocked` verdict fails the step; a `pass` verdict clears it — the repo's ex
 
 ## Roadmap
 
-Planned for v2: Python/Go detector coverage, and deeper detectors (transitive lockfile traversal, slopsquatting/hallucinated-package detection, JWT storage checks, SQL injection detection). Live-URL screening shipped in v2 (see [Screen a live URL](#screen-a-live-url)). See [`.planning/REQUIREMENTS.md`](./.planning/REQUIREMENTS.md) for the full list.
+Planned for v2: Python/Go detector coverage, and deeper detectors (transitive lockfile traversal, slopsquatting/hallucinated-package detection, JWT storage checks, SQL injection detection). Live-URL screening shipped in v2 (see [Screen a live URL](#screen-a-live-url)).
 
 ## Contributing
 
