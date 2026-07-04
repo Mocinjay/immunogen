@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/Mocinjay/immunogen/main/assets/logo.png" alt="immunogen logo" width="120" />
-
-# immunogen
+<img src="https://raw.githubusercontent.com/Mocinjay/immunogen/main/assets/logo.svg" alt="immunogen" width="460" />
 
 **Your AI agent shipped the code. immunogen makes sure it didn't ship an infection.**
 

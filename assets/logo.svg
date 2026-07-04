@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 200" width="720" height="200" role="img" aria-label="immunogen — a clean bill of health for AI-built code">
+  <defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="panel"><rect x="1" y="1" width="718" height="198" rx="18"/></clipPath>
+    <clipPath id="wipe">
+      <rect x="150" y="34" width="560" height="132">
+        <animate attributeName="width" from="0" to="560" dur="0.9s" begin="0s" fill="freeze" calcMode="spline" keySplines="0.16 1 0.3 1" keyTimes="0;1" values="0;560"/>
+      </rect>
+    </clipPath>
+  </defs>
+
+  <!-- panel -->
+  <rect x="1" y="1" width="718" height="198" rx="18" fill="#0a0f0d" stroke="#1d2a25" stroke-width="1.5"/>
+
+  <!-- sweeping scan line -->
+  <g clip-path="url(#panel)">
+    <rect x="0" width="720" height="2" fill="#3fdd86" opacity="0.22">
+      <animate attributeName="y" values="6;194;6" dur="3.6s" repeatCount="indefinite" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1" keyTimes="0;0.5;1"/>
+    </rect>
+  </g>
+
+  <!-- mark -->
+  <g transform="translate(100 100)">
+    <!-- pulse rings -->
+    <circle r="30" fill="none" stroke="#3fdd86" stroke-width="1.6">
+      <animate attributeName="r" values="30;62" dur="2.6s" begin="0s" repeatCount="indefinite" calcMode="spline" keySplines="0.2 0.6 0.3 1" keyTimes="0;1"/>
+      <animate attributeName="opacity" values="0.7;0" dur="2.6s" begin="0s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="30" fill="none" stroke="#3fdd86" stroke-width="1.6">
+      <animate attributeName="r" values="30;62" dur="2.6s" begin="1.3s" repeatCount="indefinite" calcMode="spline" keySplines="0.2 0.6 0.3 1" keyTimes="0;1"/>
+      <animate attributeName="opacity" values="0.7;0" dur="2.6s" begin="1.3s" repeatCount="indefinite"/>
+    </circle>
+
+    <!-- cell membrane -->
+    <circle r="38" fill="#0c1512" stroke="#2c7a52" stroke-width="1.5"/>
+    <circle r="38" fill="none" stroke="#3fdd86" stroke-width="2" opacity="0.55" filter="url(#glow)">
+      <animate attributeName="opacity" values="0.35;0.75;0.35" dur="2.4s" repeatCount="indefinite"/>
+    </circle>
+
+    <!-- code-DNA: two strands + rungs -->
+    <g filter="url(#glow)" stroke="#4de88f" stroke-width="2.4" stroke-linecap="round" fill="none">
+      <path d="M -12 -22 C 14 -10, 14 10, -12 22"/>
+      <path d="M 12 -22 C -14 -10, -14 10, 12 22"/>
+      <g stroke-width="2" opacity="0.9">
+        <line x1="-9" y1="-15" x2="9" y2="-15"/>
+        <line x1="-12" y1="-5" x2="12" y2="-5"/>
+        <line x1="-12" y1="6" x2="12" y2="6"/>
+        <line x1="-9" y1="16" x2="9" y2="16"/>
+      </g>
+      <animate attributeName="opacity" values="0.85;1;0.85" dur="2.4s" repeatCount="indefinite"/>
+    </g>
+  </g>
+
+  <!-- wordmark + tagline (wipe in) -->
+  <g clip-path="url(#wipe)">
+    <text x="170" y="104" font-family="'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif" font-size="58" font-weight="800" letter-spacing="-1.5" fill="#eaf4ee">immunogen</text>
+    <!-- underline draw -->
+    <path d="M172 122 H556" stroke="#3fdd86" stroke-width="3" stroke-linecap="round" fill="none" stroke-dasharray="384" stroke-dashoffset="0">
+      <animate attributeName="stroke-dashoffset" from="384" to="0" dur="0.9s" begin="0.3s" fill="freeze" calcMode="spline" keySplines="0.16 1 0.3 1" keyTimes="0;1"/>
+    </path>
+    <text x="173" y="152" font-family="'SF Mono',ui-monospace,Menlo,Consolas,monospace" font-size="16" fill="#6f9b83">// a clean bill of health for AI-built code</text>
+  </g>
+
+  <!-- blinking scan cursor after the wordmark -->
+  <rect x="560" y="74" width="12" height="30" fill="#3fdd86" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;0;1;0;1;0" dur="4s" begin="1.2s" repeatCount="indefinite" keyTimes="0;0.3;0.4;0.5;0.6;0.7;0.8;1"/>
+  </rect>
+</svg>
