@@ -15,15 +15,15 @@
 
 </div>
 
-A clean bill of health for AI-built apps, before you ship. immunogen is a static, offline-first screen for repos built with Cursor, Claude Code, Lovable, Bolt, v0, or Replit — it never executes your code, reads it once, and returns a 0–100 **Ship Score** across 11 categories, including the AI layer itself (skills, MCP servers, agent/system prompts) — the exposure surface nothing else screens for.
+A clean bill of health for AI-built apps, before you ship. immunogen is a static, offline-first screen for repos built with Cursor, Claude Code, Lovable, Bolt, v0, or Replit — it never executes your code, reads it once, and returns a 0–100 **Ship Score** across 11 categories, including the AI layer itself (skills, MCP servers, agent/system prompts) — a surface most scanners skip entirely.
 
 ## Quickstart
 
 ```sh
-npx immunogen ./my-app
+npx immunogen
 ```
 
-Runs fully offline, no API key required, and prints a terminal report with a Ship Score.
+Run it in your project directory — it scans the current folder, fully offline, no API key required, and prints a terminal report with a Ship Score. Point it elsewhere with `npx immunogen ./path/to/app`.
 
 ## Sample output
 
@@ -85,17 +85,26 @@ to the numeric Ship Score.
 
 ## Why immunogen
 
-| | immunogen | vibe-check.cloud | benavlabs | vibeappscanner |
-|---|---|---|---|---|
-| Offline / zero API key | Yes | — | — | — |
-| **Scans the AI layer (skills/MCP/prompts) — unique** | **Yes** | — | — | — |
-| **SARIF output for CI gate** | **Yes** | — | — | — |
-| Open source (MIT) | Yes | — | — | — |
-| Static-only, never executes code | Yes | — | — | — |
+immunogen isn't the only scanner for AI-built apps — but it's the only one that's **deterministic, free, and offline, covers a repo *and* a live URL *and* the AI layer**, and emits SARIF for a CI gate. The checklist-style tools lean on your AI assistant to do the inspecting (so results aren't reproducible), and the hosted scanner is a paid service that only probes a deployed URL.
+
+| | **immunogen** | [vibe-check.cloud][vc] | [benavlabs/vibe-check][bv] | [Vibe App Scanner][vas] |
+|---|:---:|:---:|:---:|:---:|
+| Free / open source | ✅ MIT | ✅ | ✅ MIT | ❌ paid |
+| Deterministic engine — no LLM, reproducible | ✅ | ❌ AI-driven | ❌ AI-driven | ~ hosted |
+| Static repo scan (never executes your code) | ✅ | ✅ | ✅ | ❌ dynamic |
+| Live URL / deployed-app scan | ✅ | ❌ | ❌ | ✅ |
+| Scans the **AI layer** (skills / MCP / agent prompts) | ✅ deep | ~ partial | ❌ | ❌ |
+| SARIF output for a CI gate | ✅ | ❌ | ❌ | ❌ |
+
+<sub>✅ yes · ~ partial · ❌ no / not documented. Compared against each tool's public docs & README as of July 2026 — something wrong? Open a PR.</sub>
+
+[vc]: https://vibe-check.cloud/
+[bv]: https://github.com/benavlabs/vibe-check
+[vas]: https://vibeappscanner.com/
 
 ## What it screens for
 
-11 categories, 17 detectors — the launch-blocking problems coding agents quietly ship.
+11 categories and 17 detectors on a repo scan — plus a 12th category of 5 web-probe detectors when you screen a live URL — the launch-blocking problems coding agents quietly ship.
 
 | Category | What it catches |
 |---|---|
@@ -109,7 +118,7 @@ to the numeric Ship Score.
 | Storage | Public Firebase/Firestore/Storage rules, unpoliced Supabase buckets |
 | Legal | Missing privacy-policy / terms surface when the app collects user data |
 | Config / debug | Full `process.env` dumps to logs or debug endpoints |
-| ⭐ AI layer | Prompt-injection strings, data-exfiltration patterns, and MCP tool-poisoning/least-privilege gaps in skills, rules, and agent prompts — screening no other scanner performs |
+| ⭐ AI layer | Prompt-injection strings, data-exfiltration patterns, and MCP tool-poisoning/least-privilege gaps in skills, rules, and agent prompts — a layer most scanners skip |
 
 ## Architecture
 
