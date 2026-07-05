@@ -172,6 +172,39 @@ What it checks on the live target:
 
 `--allow-private` is a separate escape hatch for the SSRF guard, only needed to point live-URL screening at a loopback/private/link-local host (e.g. `localhost`) during local dev/test — it is refused by default. Live-URL screening is fully deterministic and never invokes an LLM, regardless of your provider env vars.
 
+## Use as a Claude Code skill
+
+immunogen ships a first-class **Claude Code skill** in this repo at
+[`.claude/skills/immunogen/`](./.claude/skills/immunogen). Once installed, ask
+Claude Code to run it — or invoke it directly — and it screens a repo **or a
+live URL** and hands back the graded report verbatim:
+
+```
+/immunogen ./my-app
+/immunogen https://myapp.com --authorize
+```
+
+It's the exact same deterministic `scan()` the CLI uses (byte-for-byte parity
+is enforced by a test), so the grade, Ship Score, and findings match the CLI.
+
+**Install it:**
+
+```sh
+# 1. get immunogen and build it (until it's on npm)
+git clone https://github.com/Mocinjay/immunogen.git
+cd immunogen && pnpm install && pnpm build
+
+# 2. make the skill visible to Claude Code everywhere — symlink (stays in
+#    sync when you rebuild) or copy the skill folder into ~/.claude/skills/
+ln -s "$PWD/.claude/skills/immunogen" ~/.claude/skills/immunogen
+```
+
+The wrapper resolves the built library automatically — from the repo when the
+skill lives inside it (a symlink follows the real path), or from an installed
+`immunogen` package once you `npm i immunogen`. Live-URL screening stays
+consent-gated: a URL without `--authorize` is refused before any request is
+made.
+
 ## CI gate example
 
 Screen every push and upload results as a GitHub code-scanning alert:

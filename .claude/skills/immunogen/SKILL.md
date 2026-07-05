@@ -30,32 +30,43 @@ correctness/safety guarantee of the underlying library, not just this skill).
 ## How to invoke it
 
 Run the wrapper script against the path the user wants scanned (defaults to
-the current directory if no path is given):
+the current directory if no path is given), or against a live `http(s)://`
+URL to screen a deployed site (see "Live URL support" below):
 
 ```bash
 node .claude/skills/immunogen/scan.mjs <path-to-repo>
+node .claude/skills/immunogen/scan.mjs https://myapp.com --authorize
 ```
+
+The first non-flag argument is the target (a local path or an `http(s)://`
+URL). `--authorize` and `--allow-private` are forwarded to the scan when
+present.
 
 ### Live URL support
 
-The underlying `immunogen` CLI/library can also screen a deployed website
-directly (`immunogen https://myapp.com --authorize`) — see the immunogen
-repo's README "Screen a live URL" section for what it checks (security
-headers, CORS misconfig, exposed `.env`/`.git`, secrets in served bundles,
-cookie flags). This makes REAL bounded network requests against the target
-host, so it requires the caller's explicit authorization (`--authorize`) —
-only screen sites the user owns or is explicitly authorized to test. If the
-wrapper script (`scan.mjs`) does not yet forward a URL argument or the
-`--authorize`/`--allow-private` flags, do not attempt to work around that by
-calling the library directly with a different invocation — tell the user
-live-URL screening via this skill wrapper is not yet wired up, and point them
-at the `immunogen` CLI directly instead.
+This wrapper **now forwards** a live-URL target and the `--authorize` /
+`--allow-private` flags, so it can screen a deployed website directly:
 
-This requires the immunogen package to be built or installed so that
-`dist/index.js` exists (`pnpm run build` in the immunogen repo, or
-`npm install immunogen` as a dependency). If the command fails because
-`dist/index.js` is missing, tell the user to build/install immunogen first —
-do not attempt to reimplement the scan logic yourself.
+```bash
+node .claude/skills/immunogen/scan.mjs https://myapp.com --authorize
+```
+
+See the immunogen repo's README "Screen a live URL" section for what it
+checks (security headers, CORS misconfig, exposed `.env`/`.git`, secrets in
+served bundles, cookie flags). This makes REAL bounded network requests
+against the target host, so it requires the caller's explicit authorization
+(`--authorize`) — **only screen sites the user owns or is explicitly
+authorized to test.** A URL passed without `--authorize` is refused by the
+consent gate before any request is made (clean error, exit code 2); do not
+work around that — surface the message and confirm the user is authorized.
+`--allow-private` additionally permits a loopback/private host (local
+dev/test only). Live-URL screening is deterministic and never invokes an LLM.
+
+The wrapper resolves the immunogen library automatically — from the built
+repo (`pnpm build`) when it lives inside it, or from an installed `immunogen`
+package. If it can find neither it prints one clear error asking you to build
+the repo or install the package; if you see that, do that first — do not
+reimplement the scan logic yourself.
 
 The script prints markdown to stdout. **Present that markdown to the user
 verbatim** — do not summarize, truncate, or rephrase the headline grade line,
