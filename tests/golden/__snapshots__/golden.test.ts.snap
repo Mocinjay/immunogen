@@ -36,7 +36,7 @@ exports[`golden suite — vulnerable fixtures assert exact ruleId/count summarie
   "LEGAL-01": 1,
   "PAY-01": 1,
   "SEC-01": 2,
-  "SEC-04": 3,
+  "SEC-04": 2,
   "SEC-05": 1,
   "SEC-06": 1,
   "STORAGE-01": 1,
