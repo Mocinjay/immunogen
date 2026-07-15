@@ -13,15 +13,25 @@
  *   (a) decode the middle (payload) segment of any `eyJ...`-shaped JWT and
  *   flag when the decoded text contains `"role":"service_role"`; (b) flag a
  *   line referencing the `SUPABASE_SERVICE_ROLE_KEY` identifier outright,
- *   no JWT required. This branch runs ahead of Pass B and claims its own
- *   matched spans so a service_role JWT cannot ALSO double-fire SEC-06's
- *   keyword-anchored entropy pass on the same literal.
+ *   no JWT required, UNLESS the reference is a safe environment-variable
+ *   *read* (`Deno.env.get(...)`, `process.env.X`, `process.env[...]`,
+ *   `import.meta.env.X`) — that is the doc-recommended secure pattern for
+ *   server-side code (e.g. a Supabase Edge Function), not a leak. This
+ *   branch runs ahead of Pass B and claims its own matched spans so a
+ *   service_role JWT cannot ALSO double-fire SEC-06's keyword-anchored
+ *   entropy pass on the same literal.
  *
  *   Pass B (keyword-anchored Shannon entropy, SEC-06): a quoted string
  *   literal >=40 chars with entropy >=4.0 is flagged ONLY when its own line
  *   also contains a secret/key/token/password-family keyword — this is the
  *   FEATURES.md "False Positive Management Strategy" CAT-1 row's documented
- *   keyword-anchor mitigation, preventing UUID/hash false positives.
+ *   keyword-anchor mitigation, preventing UUID/hash false positives. Capped
+ *   at MAX_ENTROPY_FINDINGS_PER_FILE per file: past that many matches in ONE
+ *   file, the shape is far more likely a generated data/schema artifact
+ *   (e.g. a code-graph JSON dump with a "key" field on every node) than
+ *   distinct secrets, and further matches add no signal while destroying
+ *   report usability. Pass A and Pass A2 are NOT subject to this cap — those
+ *   are precision-anchored, and every match is independently meaningful.
  *
  * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` opens
  * with a path-segment check against `__tests__`, `fixtures`, `mocks`,
@@ -61,6 +71,17 @@ import type { Confidence, Detector, DetectorContext, Finding, Severity } from ".
 
 /** Literal mask suffix appended after the first 4 characters of any matched secret (T-04-02). */
 const MASK_SUFFIX = "****";
+
+/**
+ * Per-file cap on SEC-06 (generic entropy) findings — past this many matches
+ * in ONE file, the shape is far more likely a generated data/schema artifact
+ * (e.g. a code-graph JSON dump with a "key" field on every node) than
+ * distinct secrets; further matches add no signal and destroy report
+ * usability. Provider-key (Pass A) and Supabase (Pass A2) findings are NOT
+ * subject to this cap — those are precision-anchored, and every match is
+ * independently meaningful.
+ */
+const MAX_ENTROPY_FINDINGS_PER_FILE = 10;
 
 interface ProviderPattern {
   ruleId: string;
@@ -145,6 +166,25 @@ function isAllowlistedPath(filePath: string): boolean {
 }
 
 /**
+ * Accessor prefixes that indicate a safe *read* of the env var by name, not a
+ * hardcoded leak (e.g. `Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")` in a
+ * Supabase Edge Function, or `process.env.SUPABASE_SERVICE_ROLE_KEY`). An
+ * optional opening quote character (`'`/`"`/backtick) is tolerated between
+ * the accessor and the var name for the bracket/get-call forms.
+ */
+const SAFE_ENV_READ_PREFIX_RE = /(?:Deno\.env\.get\(|process\.env\.|process\.env\[|import\.meta\.env\.)['"`]?$/;
+
+/**
+ * True when the `SUPABASE_SERVICE_ROLE_KEY` occurrence starting at
+ * `matchStart` on `line` is immediately preceded by a known safe
+ * environment-variable accessor — a secure *read* of the var by name, not a
+ * hardcoded leak, so it must not be flagged as SEC-04.
+ */
+function isSafeEnvRead(line: string, matchStart: number): boolean {
+  return SAFE_ENV_READ_PREFIX_RE.test(line.slice(0, matchStart));
+}
+
+/**
  * Pass A2: Supabase service_role JWT (SEC-04). Two independent signals on
  * `line`, each pushing a Finding and claiming the matched span so Pass B
  * cannot also flag the same literal as generic high-entropy (SEC-06 dedup,
@@ -154,7 +194,9 @@ function isAllowlistedPath(filePath: string): boolean {
  * matches whose payload decodes to `role: service_role` are flagged.
  * Signal (b): a bare `SUPABASE_SERVICE_ROLE_KEY` identifier reference is
  * flagged outright — this is a name-based signal, so it has no JWT body to
- * mask and reports the identifier match itself as `matchedText`.
+ * mask and reports the identifier match itself as `matchedText` — UNLESS the
+ * reference is a safe env-read (`isSafeEnvRead`), in which case it is
+ * skipped entirely (no finding, no claimed span).
  */
 function runSupabaseServiceRolePass(
   line: string,
@@ -191,6 +233,13 @@ function runSupabaseServiceRolePass(
   for (const match of line.matchAll(SUPABASE_ENV_NAME_RE)) {
     const matchedValue = match[0];
     const start = match.index;
+
+    if (isSafeEnvRead(line, start)) {
+      // Secure server-side read (e.g. Deno.env.get(...), process.env.X) —
+      // referencing the var name by itself is not a leak.
+      continue;
+    }
+
     matchedSpans.push([start, start + matchedValue.length]);
 
     findings.push({
@@ -272,7 +321,10 @@ function overlapsAny(start: number, end: number, spans: Array<[number, number]>)
  * string literal on `line` of length >= MIN_ENTROPY_CANDIDATE_LENGTH whose
  * entropy is >= ENTROPY_THRESHOLD, skips any span already claimed by Pass A
  * (dedup), and — per the FP-management keyword-anchor rule — only flags the
- * candidate when `line` also contains an ANCHOR_KEYWORDS member.
+ * candidate when `line` also contains an ANCHOR_KEYWORDS member. Stops
+ * emitting new findings once `entropyCount.value` reaches
+ * MAX_ENTROPY_FINDINGS_PER_FILE (mutated in place so the cap is tracked
+ * across every line of the same file).
  */
 function runEntropyPass(
   line: string,
@@ -281,7 +333,12 @@ function runEntropyPass(
   detectorName: string,
   providerSpans: Array<[number, number]>,
   findings: Finding[],
+  entropyCount: { value: number },
 ): void {
+  if (entropyCount.value >= MAX_ENTROPY_FINDINGS_PER_FILE) {
+    return;
+  }
+
   const lineHasAnchor = hasAnchorKeyword(line);
   if (!lineHasAnchor) {
     // FP-management rule: a candidate with no anchoring keyword on its line
@@ -290,6 +347,10 @@ function runEntropyPass(
   }
 
   for (const match of line.matchAll(QUOTED_STRING_RE)) {
+    if (entropyCount.value >= MAX_ENTROPY_FINDINGS_PER_FILE) {
+      return;
+    }
+
     const value = match[1] ?? match[2] ?? match[3] ?? "";
     const start = match.index + 1; // +1 skips the opening quote character
     const end = start + value.length;
@@ -320,6 +381,7 @@ function runEntropyPass(
         "Move this value to an untracked environment variable (e.g. a .env file excluded from git) and reference it via process.env instead of a literal string.",
       matchedText: maskSecret(value),
     });
+    entropyCount.value += 1;
   }
 }
 
@@ -348,6 +410,7 @@ export const secretsDetector: Detector = {
 
       const findings: Finding[] = [];
       const lines = ctx.content.split("\n");
+      const entropyCount = { value: 0 };
 
       // `.entries()` (not bracket indexing) avoids a dynamic-index access
       // pattern entirely — sidesteps security/detect-object-injection.
@@ -357,7 +420,7 @@ export const secretsDetector: Detector = {
         const providerSpans = runProviderPatterns(line, lineNumber, ctx.filePath, "secrets", findings);
         const supabaseSpans = runSupabaseServiceRolePass(line, lineNumber, ctx.filePath, "secrets", findings);
         const claimedSpans = [...providerSpans, ...supabaseSpans];
-        runEntropyPass(line, lineNumber, ctx.filePath, "secrets", claimedSpans, findings);
+        runEntropyPass(line, lineNumber, ctx.filePath, "secrets", claimedSpans, findings, entropyCount);
       }
 
       return Promise.resolve(findings);

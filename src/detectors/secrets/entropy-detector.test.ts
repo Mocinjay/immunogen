@@ -195,6 +195,40 @@ describe("secretsDetector — config", () => {
   });
 });
 
+describe("secretsDetector — per-file entropy cap", () => {
+  // Reuse the existing 40-char high-entropy fixture value, varying the
+  // variable name per line so each line is a distinct anchor+entropy match.
+  const HIGH_ENTROPY_VALUE = "aB3xQ9zK2mN7pL5wR8tY4vU6sD1fG0hJ2kM8nQ4r";
+
+  function buildEntropyFloodLines(count: number): string {
+    return Array.from(
+      { length: count },
+      (_, i) => `const key${i} = "${HIGH_ENTROPY_VALUE}";`,
+    ).join("\n");
+  }
+
+  it("caps SEC-06 findings at MAX_ENTROPY_FINDINGS_PER_FILE (10) when 25 candidates are present in one file", async () => {
+    const ctx = makeContext(buildEntropyFloodLines(25));
+
+    const findings = await secretsDetector.detect(ctx);
+    const entropyFindings = findings.filter((finding) => finding.ruleId === "SEC-06");
+
+    expect(entropyFindings).toHaveLength(10);
+  });
+
+  it("still fires a provider-key finding (Pass A, uncapped) appearing after the SEC-06 cap is reached", async () => {
+    const content = `${buildEntropyFloodLines(25)}\nconst stripeKey = "${STRIPE_KEY}";`;
+    const ctx = makeContext(content);
+
+    const findings = await secretsDetector.detect(ctx);
+    const entropyFindings = findings.filter((finding) => finding.ruleId === "SEC-06");
+    const providerFindings = findings.filter((finding) => finding.ruleId === "SEC-01");
+
+    expect(entropyFindings).toHaveLength(10);
+    expect(providerFindings).toHaveLength(1);
+  });
+});
+
 describe("secretsDetector — Supabase service_role JWT (SEC-04)", () => {
   // Deterministic base64url JWT fixtures: header.payload.signature, three
   // segments joined by ".". Payload is a real JSON object base64url-encoded
@@ -266,5 +300,30 @@ describe("secretsDetector — Supabase service_role JWT (SEC-04)", () => {
     expect(finding).toBeDefined();
     expect(finding?.matchedText).not.toBe(SERVICE_ROLE_JWT);
     expect(JSON.stringify(finding)).not.toContain(SERVICE_ROLE_JWT);
+  });
+
+  it("does NOT flag a Deno.env.get(\"SUPABASE_SERVICE_ROLE_KEY\") safe read (Supabase Edge Function pattern)", async () => {
+    const ctx = makeContext('const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");');
+
+    const findings = await secretsDetector.detect(ctx);
+
+    expect(findings.filter((finding) => finding.ruleId === "SEC-04")).toHaveLength(0);
+  });
+
+  it("does NOT flag a process.env.SUPABASE_SERVICE_ROLE_KEY safe read", async () => {
+    const ctx = makeContext("const key = process.env.SUPABASE_SERVICE_ROLE_KEY;");
+
+    const findings = await secretsDetector.detect(ctx);
+
+    expect(findings.filter((finding) => finding.ruleId === "SEC-04")).toHaveLength(0);
+  });
+
+  it("still flags a SUPABASE_SERVICE_ROLE_KEY=value assignment in a .env file (real leak, unchanged)", async () => {
+    const ctx = makeContext("SUPABASE_SERVICE_ROLE_KEY=somevalueherethatisnotajwt", ".env");
+
+    const findings = await secretsDetector.detect(ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "SEC-04", severity: "CRITICAL", confidence: "HIGH" });
   });
 });

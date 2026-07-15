@@ -32,6 +32,7 @@ async function buildFixtureTree(): Promise<MadeRepoTree> {
     "src/app/page.tsx": "export default function Page() { return null; }",
     "big.generated.js": "x".repeat(600 * 1024),
     "blob.bin": `binary\0content`,
+    "Pods/SomeVendoredLib/README.md": "example api key: not-a-real-secret",
   });
   trees.push(tree);
   return tree;
@@ -47,6 +48,16 @@ describe("walkFiles — hard exclusions", () => {
       expect(key).not.toContain("node_modules/");
       expect(key).not.toContain(".next/");
       expect(key).not.toContain("dist/");
+    }
+  });
+
+  it("excludes Pods/ (CocoaPods vendored dependencies) entirely", async () => {
+    const tree = await buildFixtureTree();
+
+    const { fileSet: result } = await walkFiles(tree.root);
+
+    for (const key of result.keys()) {
+      expect(key).not.toContain("Pods/");
     }
   });
 });

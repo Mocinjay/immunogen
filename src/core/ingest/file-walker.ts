@@ -68,6 +68,7 @@ const HARD_EXCLUDE_DIRS = [
   ".svelte-kit",
   ".venv",
   "venv",
+  "Pods", // CocoaPods' vendored-dependency directory (iOS/macOS) — never developer-authored, analogous to node_modules.
 ];
 
 /** fast-glob `ignore` patterns matching each hard-excluded directory anywhere in the tree. */
