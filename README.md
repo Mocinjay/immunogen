@@ -23,7 +23,7 @@ A clean bill of health for AI-built apps, before you ship. immunogen is a static
 npx immunogen
 ```
 
-Run it in your project directory — it scans the current folder, fully offline, no API key required, and prints a terminal report with a Ship Score. Point it elsewhere with `npx immunogen ./path/to/app`.
+Run it in your project directory — it scans the current folder, no API key required, and prints a terminal report with a Ship Score. Point it elsewhere with `npx immunogen ./path/to/app`. The only network call it ever makes is a dependency-vulnerability lookup against OSV.dev (package names + versions only); add `--offline` to skip that too.
 
 ## Sample output
 
@@ -43,7 +43,7 @@ Critical: 17  High: 34
     matched: sk_l****
 
   CRITICAL SEC-04 .env:3
-    Reference to SUPABASE_SERVICE_ROLE_KEY found in source. [confidence: HIGH]
+    SUPABASE_SERVICE_ROLE_KEY is assigned a hardcoded value in source. [confidence: HIGH]
     matched: SUPA****
 
   CRITICAL PAY-01 app/api/stripe/webhook/route.ts:3
@@ -108,11 +108,11 @@ immunogen isn't the only scanner for AI-built apps — but it's the only one tha
 
 | Category | What it catches |
 |---|---|
-| Secrets | Hardcoded provider keys (Stripe, AWS, OpenAI), committed `.env` files, high-entropy tokens |
+| Secrets | Hardcoded provider keys (Stripe, AWS, OpenAI incl. `sk-proj-`, Anthropic, Supabase `service_role`/`sb_secret_`), committed `.env` files, high-entropy tokens (prose, URLs, hashes, and lockfiles are ignored) |
 | Client-bundle exposure | Secret-named env vars leaking into the browser via `NEXT_PUBLIC_`/`VITE_` prefixes |
 | Auth & RLS | Unauthenticated route handlers, open Firebase rules, missing Supabase row-level security |
 | Payment safety | Stripe webhook handlers that skip signature verification |
-| Dependencies (OSV) | Known CVEs in direct dependencies via the OSV.dev batch API, with offline fallback |
+| Dependencies (OSV) | Known CVEs in the direct dependencies of every `package.json` (root and nested apps like `app/` or `apps/web/`) via the OSV.dev batch API, with offline fallback |
 | Injection / XSS | Unsanitized `dangerouslySetInnerHTML` |
 | CORS & headers | Wildcard CORS with credentials, missing Content-Security-Policy |
 | Storage | Public Firebase/Firestore/Storage rules, unpoliced Supabase buckets |
@@ -129,11 +129,12 @@ repo → ingest (walk + AST cache) → detectors (17, 11 categories) → Ship Sc
 ## CLI usage
 
 ```sh
-immunogen <path> [--format terminal|json|sarif] [--no-llm] [--authorize] [--allow-private]
+immunogen [path] [--format terminal|json|sarif] [--offline] [--no-llm] [--authorize] [--allow-private]
 ```
 
-- `<path>` — path to the repository to scan, or a live `https://`/`http://` URL to screen.
+- `[path]` — path to the repository to scan (default: the current directory), or a live `https://`/`http://` URL to screen.
 - `--format terminal|json|sarif` — output format (default `terminal`). `json` is a stable machine-readable `ScanResult`; `sarif` is for GitHub code scanning / other SARIF-aware tooling.
+- `--offline` — never touch the network: skip the OSV.dev lookup and check dependencies against the bundled offline advisory list only (the report notes the dependency check is incomplete).
 - `--no-llm` — disable LLM fix-prompt enrichment. This is already the default; the flag exists for explicitness in scripts/CI.
 - `--authorize` — required consent gate to screen a live URL target (see [Screen a live URL](#screen-a-live-url)). Has no effect when `<path>` is a local repo.
 - `--allow-private` — escape hatch letting live-URL screening target a loopback/private/link-local host (local dev/test only).

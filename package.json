@@ -38,6 +38,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run --passWithNoTests",
+    "test:dist": "node tests/dist/dual-import.test.mjs && node tests/dist/dual-import.test.cjs && node tests/dist/skill-parity.test.mjs && node tests/dist/cli-symlink.test.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {
