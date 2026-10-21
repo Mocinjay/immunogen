@@ -75,10 +75,16 @@ export interface ProviderKeyPattern {
 
 /**
  * Provider-key regex table — rigid, low-FP key formats (Stripe `sk_live_`,
- * AWS `AKIA...`, OpenAI `sk-...`) per FEATURES.md CAT-1's "V1 PICK". This is
- * the shared source `entropy-detector.ts`'s Pass A and `redactor.ts`'s
- * fixed-format pass both read from — the ruleId is only meaningful to the
- * detector side; the redactor ignores it and matches on `regex` alone.
+ * AWS `AKIA...`, OpenAI `sk-...`, Supabase `sb_secret_...`, Anthropic
+ * `sk-ant-...`) per FEATURES.md CAT-1's "V1 PICK". This is the shared source
+ * `entropy-detector.ts`'s Pass A and `redactor.ts`'s fixed-format pass both
+ * read from — the ruleId is only meaningful to the detector side; the
+ * redactor ignores it and matches on `regex` alone.
+ *
+ * SEC-03 covers both the legacy 48-char OpenAI shape and the project /
+ * service-account / admin keys (`sk-proj-`, `sk-svcacct-`, `sk-admin-`)
+ * OpenAI has issued by default since 2024 — the legacy shape alone misses
+ * every key a new OpenAI account creates today.
  */
 export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
   {
@@ -91,7 +97,15 @@ export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
   },
   {
     ruleId: "SEC-03",
-    regex: /sk-[A-Za-z0-9]{48}/g,
+    regex: /sk-(?:proj|svcacct|admin)-[\w-]{40,}|sk-[A-Za-z0-9]{48}/g,
+  },
+  {
+    ruleId: "SEC-04",
+    regex: /sb_secret_[\w-]{16,}/g,
+  },
+  {
+    ruleId: "SEC-07",
+    regex: /sk-ant-(?:api|admin)\d{2}-[\w-]{20,}/g,
   },
 ];
 
