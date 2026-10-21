@@ -24,13 +24,30 @@
  *      routing (selection-level proof; SDK-level baseURL threading is
  *      proven in 07-02's openai.test.ts).
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { enrichFindings } from "./enricher.js";
 import { selectAdapter } from "./provider.js";
 import { scan } from "../index.js";
 
 import type { ProviderAdapter } from "./provider.js";
+
+// OSV.dev is stubbed at the module boundary (same seam as
+// tests/golden/golden.test.ts) so this suite is hermetic: a sandbox, an
+// offline laptop, or a corporate proxy can never flip `scanIncomplete` or
+// the finding count. The stub reports a fixed 25 advisories for `next` (the
+// fixture's only dependency) — enough HIGH findings to exceed the enricher's
+// MAX_ENRICHED budget, exactly like the real OSV response for next@14.0.0.
+vi.mock("../detectors/deps/osv-client.js", () => ({
+  queryOsvBatch: (queries: Array<{ name: string; version: string }>) =>
+    Promise.resolve(
+      queries.map((query) =>
+        query.name === "next"
+          ? { vulns: Array.from({ length: 25 }, (_, index) => ({ id: `GHSA-test-next-${String(index)}` })) }
+          : {},
+      ),
+    ),
+}));
 
 const WITH_SECRET_FIXTURE = "tests/fixtures/scan/with-secret";
 

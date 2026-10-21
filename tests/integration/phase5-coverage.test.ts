@@ -9,14 +9,13 @@
  * ROADMAP criterion-1 ruleIds each carry file/line/severity, and that
  * ScanResult.scanIncomplete is true on this offline-degraded run.
  *
- * NETWORK SAFETY: `osvDetector` (src/detectors/deps/osv-detector.ts) calls
- * `queryOsvBatch` (./osv-client.js) unconditionally — `ScanOptions.offline`
- * is NOT read anywhere in the detector or in DetectorContext, so passing
- * `{ offline: true }` to `scan()` alone does NOT prevent a real network call.
- * This test mocks `queryOsvBatch` at the module boundary (the SAME pattern
- * `src/detectors/deps/osv-detector.test.ts` already uses) to force the
- * offline-fallback branch deterministically — this is the only mechanism
- * that guarantees this test never makes a real network call.
+ * NETWORK SAFETY: every scan here passes `{ offline: true }`, which
+ * `osvDetector` (src/detectors/deps/osv-detector.ts) honors via
+ * `DetectorContext.offline` by skipping `queryOsvBatch` entirely and taking
+ * the offline-fallback branch. `queryOsvBatch` is ALSO mocked at the module
+ * boundary (the SAME pattern `src/detectors/deps/osv-detector.test.ts`
+ * uses) as a belt-and-braces guard, and the last test below proves the
+ * offline option never even reaches that seam.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dirname, join } from "node:path";
@@ -117,11 +116,11 @@ describe("Phase 5 coverage — vulnerable kitchen-sink fixture, full scan()", ()
     expect(result.findings.some((finding) => !finding.file.includes("fixtures/"))).toBe(true);
   });
 
-  it("never calls the real OSV.dev network endpoint (queryOsvBatch is always the mock)", async () => {
+  it("never reaches the OSV.dev network seam when scanning with { offline: true }", async () => {
     queryOsvBatchMock.mockRejectedValue(new Error("network unavailable (test stub — never a real call)"));
 
     await scan(KITCHEN_SINK_ROOT, { offline: true });
 
-    expect(queryOsvBatchMock).toHaveBeenCalled();
+    expect(queryOsvBatchMock).not.toHaveBeenCalled();
   });
 });

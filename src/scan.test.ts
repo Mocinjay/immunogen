@@ -7,9 +7,26 @@
  * fixture directories directly rather than a temp-dir helper, since these
  * fixtures are committed, not generated per-test.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { scan } from "./index.js";
+
+// OSV.dev is stubbed at the module boundary (same seam as
+// tests/golden/golden.test.ts) so this suite is hermetic: a sandbox, an
+// offline laptop, or a corporate proxy can never flip `scanIncomplete` or
+// the finding count. The stub reports a fixed 25 advisories for `next` (the
+// fixture's only dependency) — enough HIGH findings to exceed the enricher's
+// MAX_ENRICHED budget, exactly like the real OSV response for next@14.0.0.
+vi.mock("./detectors/deps/osv-client.js", () => ({
+  queryOsvBatch: (queries: Array<{ name: string; version: string }>) =>
+    Promise.resolve(
+      queries.map((query) =>
+        query.name === "next"
+          ? { vulns: Array.from({ length: 25 }, (_, index) => ({ id: `GHSA-test-next-${String(index)}` })) }
+          : {},
+      ),
+    ),
+}));
 
 const WITH_SECRET_FIXTURE = "tests/fixtures/scan/with-secret";
 const CLEAN_FIXTURE = "tests/fixtures/scan/clean";
@@ -68,5 +85,15 @@ describe("scan — end-to-end: ingest -> runDetectors -> computeScore -> assembl
   it("never throws and never calls process.exit for a valid directory (library-first)", async () => {
     await expect(scan(CLEAN_FIXTURE)).resolves.toBeDefined();
     await expect(scan(WITH_SECRET_FIXTURE)).resolves.toBeDefined();
+  });
+});
+
+describe("scan — offline option", () => {
+  it("never queries OSV with { offline: true } and reports the dependency check as incomplete", async () => {
+    const result = await scan("tests/fixtures/scan/with-secret", { offline: true });
+
+    expect(result.findings.some((finding) => finding.ruleId === "DEP-OFFLINE")).toBe(true);
+    expect(result.findings.some((finding) => finding.message.includes("GHSA-test-next-"))).toBe(false);
+    expect(result.scanIncomplete).toBe(true);
   });
 });

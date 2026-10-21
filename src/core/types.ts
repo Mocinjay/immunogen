@@ -155,6 +155,8 @@ export interface DetectorContext {
   stackHints: StackHints;
   /** Full file map for cross-file detectors; read-only. */
   fileSet: ReadonlyMap<string, string>;
+  /** `ScanOptions.offline` — network-dependent detectors (OSV) must not make requests. */
+  offline?: boolean;
 }
 
 /**

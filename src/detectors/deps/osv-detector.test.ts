@@ -187,3 +187,40 @@ describe("osvDetector — config", () => {
     expect(osvDetector.config.globs).toContain("package.json");
   });
 });
+
+describe("osvDetector — nested manifests and offline mode", () => {
+  it("reports findings against the nested package.json path it actually read", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "GHSA-nested-0001" }] }]);
+
+    const findings = await osvDetector.detect(
+      makeContext(JSON.stringify({ dependencies: { next: "14.0.0" } }, null, 2), "apps/web/package.json"),
+    );
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "DEP-01", file: "apps/web/package.json" });
+  });
+
+  it("skips package.json files under node_modules or fixture/test directories", async () => {
+    const content = JSON.stringify({ dependencies: { next: "14.0.0" } });
+
+    for (const filePath of [
+      "node_modules/next/package.json",
+      "tests/fixtures/app/package.json",
+      "src/__tests__/package.json",
+      "examples/demo/package.json",
+      "not-a-package.json",
+    ]) {
+      expect(await osvDetector.detect(makeContext(content, filePath))).toEqual([]);
+    }
+    expect(queryOsvBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("never calls OSV in offline mode and still emits the DEP-OFFLINE sentinel", async () => {
+    const ctx = { ...makeContext(JSON.stringify({ dependencies: { lodash: "4.17.15" } })), offline: true };
+
+    const findings = await osvDetector.detect(ctx);
+
+    expect(queryOsvBatchMock).not.toHaveBeenCalled();
+    expect(findings.map((finding) => finding.ruleId)).toEqual(["DEP-01", "DEP-OFFLINE"]);
+  });
+});

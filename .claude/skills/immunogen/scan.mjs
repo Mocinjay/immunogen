@@ -162,8 +162,9 @@ export async function runScanSkill(target, options = {}) {
 /**
  * Parses `process.argv.slice(2)` for the CLI entry guard below: the first
  * non-flag argument is the scan target (a local path OR an `http(s)://`
- * URL), defaulting to `.` when omitted. `--authorize` and `--allow-private`
- * map to `options.authorize`/`options.allowPrivate` (only set when present,
+ * URL), defaulting to `.` when omitted. `--authorize`, `--allow-private`, and
+ * `--offline` map to `options.authorize`/`options.allowPrivate`/
+ * `options.offline` (only set when present,
  * mirroring bin/immunogen.ts's own conditional-inclusion pattern). Any other
  * flag-shaped argument (starting with `-`) is ignored rather than
  * mis-parsed as the target.
@@ -177,6 +178,8 @@ function parseArgs(argv) {
       options.authorize = true;
     } else if (arg === "--allow-private") {
       options.allowPrivate = true;
+    } else if (arg === "--offline") {
+      options.offline = true;
     } else if (!arg.startsWith("-") && target === undefined) {
       target = arg;
     }

@@ -39,7 +39,8 @@ node .claude/skills/immunogen/scan.mjs https://myapp.com --authorize
 ```
 
 The first non-flag argument is the target (a local path or an `http(s)://`
-URL). `--authorize` and `--allow-private` are forwarded to the scan when
+URL). `--authorize`, `--allow-private`, and `--offline` (skip the OSV.dev
+dependency lookup — no network at all) are forwarded to the scan when
 present.
 
 ### Live URL support
@@ -76,8 +77,10 @@ misrepresent the scan result.
 
 ## Determinism and offline behavior
 
-This scan is **deterministic and fully offline by default** — no API key is
-required, and none is read or forwarded by this wrapper. The same directory
+This scan is **deterministic and needs no API key** — none is read or
+forwarded by this wrapper. Its only network call is the OSV.dev dependency
+lookup (package names + versions only); add `--offline` to skip it and use
+the bundled advisory list instead. The same directory
 always produces the same Ship Score and finding count (parity with the
 `immunogen` CLI and the `scan()` library function is proven by an automated
 test — `tests/dist/skill-parity.test.mjs` in the immunogen repo). Do not pass

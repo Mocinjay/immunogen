@@ -1,7 +1,11 @@
 /**
  * osvDetector — CAT-5 DEP-01: OSV.dev dependency vulnerability detector.
  *
- * Reads a scanned repo's `package.json` (never `node_modules/`, never a
+ * Reads every `package.json` in a scanned repo — the root manifest AND any
+ * nested app/package manifest (`app/`, `apps/web/`, `packages/*`), since
+ * AI-built projects routinely keep the real app in a subdirectory — but
+ * never one under `node_modules/` or a test/fixture/mock/example directory
+ * (never a
  * lockfile — PITFALLS.md Integration Gotchas: "parse only the lockfile's
  * top-level resolved versions, not the installed tree"; this detector
  * intentionally scopes to direct manifest-declared `dependencies` +
@@ -41,6 +45,11 @@
  * `queryOsvBatch` throws synchronously instead of returning a rejected
  * promise, and even if `ctx.content` is not valid JSON.
  *
+ * Strict offline mode (`ScanOptions.offline` / `--offline`, surfaced as
+ * `DetectorContext.offline`): the OSV.dev query is skipped entirely and the
+ * fallback branch runs directly — same DEP-OFFLINE sentinel, so an offline
+ * scan is still never reported as a complete dependency check.
+ *
  * ENG-05: this module only `JSON.parse`s `ctx.content` — it never
  * `require()`s, `eval`s, or executes the scanned package.json as code.
  */
@@ -59,6 +68,15 @@ const DEP_OFFLINE_RULE_ID = "DEP-OFFLINE";
 /** Fixed message for the DEP-OFFLINE sentinel — verbatim per the scaninclomplete_handoff contract. */
 const DEP_OFFLINE_MESSAGE =
   "OSV.dev unreachable; dependency scan ran in offline fallback mode (results may be incomplete).";
+
+/** Directory segments whose package.json is test scaffolding, not a shipped manifest (mirrors the secrets detector's FP allowlist). */
+const SKIPPED_MANIFEST_SEGMENTS = new Set(["node_modules", "__tests__", "fixtures", "mocks", "examples"]);
+
+/** True when `filePath` is a real `package.json` manifest this detector should check. */
+function isScannableManifest(filePath: string): boolean {
+  const segments = filePath.split("/");
+  return segments.at(-1) === "package.json" && !segments.some((segment) => SKIPPED_MANIFEST_SEGMENTS.has(segment));
+}
 
 /** A single direct dependency parsed out of package.json, ready for either the OSV or fallback path. */
 interface ParsedDependency {
@@ -166,12 +184,12 @@ const OSV_HIT_CONFIDENCE: Confidence = "HIGH";
 const FALLBACK_HIT_CONFIDENCE: Confidence = "HIGH";
 
 /** Builds the DEP-01 Finding for an OSV-sourced hit (vuln id known, severity not pre-classified by the lightweight batch response). */
-function buildOsvFinding(dependency: ParsedDependency, content: string, vulnId: string): Finding {
+function buildOsvFinding(filePath: string, dependency: ParsedDependency, content: string, vulnId: string): Finding {
   return {
     ruleId: DEP_RULE_ID,
     category: "deps",
     detectorName: "osv",
-    file: "package.json",
+    file: filePath,
     line: findDependencyLine(content, dependency.name),
     severity: OSV_HIT_SEVERITY,
     confidence: OSV_HIT_CONFIDENCE,
@@ -182,6 +200,7 @@ function buildOsvFinding(dependency: ParsedDependency, content: string, vulnId: 
 
 /** Builds the DEP-01 Finding for a fallback-list hit (pre-classified severity + title from the curated entry). */
 function buildFallbackFinding(
+  filePath: string,
   dependency: ParsedDependency,
   content: string,
   hit: Pick<FallbackEntry, "advisoryId" | "severity" | "title">,
@@ -190,7 +209,7 @@ function buildFallbackFinding(
     ruleId: DEP_RULE_ID,
     category: "deps",
     detectorName: "osv",
-    file: "package.json",
+    file: filePath,
     line: findDependencyLine(content, dependency.name),
     severity: hit.severity,
     confidence: FALLBACK_HIT_CONFIDENCE,
@@ -200,12 +219,12 @@ function buildFallbackFinding(
 }
 
 /** Builds the DEP-OFFLINE sentinel Finding (see module header — the scaninclomplete_handoff contract for 05-08). */
-function buildOfflineSentinel(): Finding {
+function buildOfflineSentinel(filePath: string): Finding {
   return {
     ruleId: DEP_OFFLINE_RULE_ID,
     category: "deps",
     detectorName: "osv",
-    file: "package.json",
+    file: filePath,
     line: 1,
     severity: "INFO",
     confidence: "LOW",
@@ -222,13 +241,13 @@ function buildOfflineSentinel(): Finding {
  * appends the DEP-OFFLINE sentinel afterward regardless of this list's
  * length (offline must never be a silent clean pass).
  */
-function runFallbackCheck(dependencies: ParsedDependency[], content: string): Finding[] {
+function runFallbackCheck(filePath: string, dependencies: ParsedDependency[], content: string): Finding[] {
   const findings: Finding[] = [];
   for (const dependency of dependencies) {
     const cleanedVersion = cleanVersionSpecifier(dependency.rawVersion);
     const hit = checkFallback(dependency.name, cleanedVersion);
     if (hit !== undefined) {
-      findings.push(buildFallbackFinding(dependency, content, hit));
+      findings.push(buildFallbackFinding(filePath, dependency, content, hit));
     }
   }
   return findings;
@@ -238,12 +257,16 @@ export const osvDetector: Detector = {
   config: {
     name: "osv",
     category: "deps",
-    globs: ["package.json"],
+    globs: ["package.json", "**/package.json"],
     requiresNetwork: true,
   },
 
   async detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
+      if (!isScannableManifest(ctx.filePath)) {
+        return [];
+      }
+
       const dependencies = parseDirectDependencies(ctx.content);
       if (dependencies.length === 0) {
         return [];
@@ -259,6 +282,11 @@ export const osvDetector: Detector = {
       }));
 
       try {
+        if (ctx.offline === true) {
+          // Strict offline mode: never touch the network; take the same
+          // visible fallback path an OSV outage takes.
+          throw new Error("offline mode: OSV.dev query skipped");
+        }
         const results = await queryOsvBatch(queries);
         const findings: Finding[] = [];
 
@@ -273,7 +301,7 @@ export const osvDetector: Detector = {
             return;
           }
           for (const vuln of result.vulns ?? []) {
-            findings.push(buildOsvFinding(dependency, ctx.content, vuln.id));
+            findings.push(buildOsvFinding(ctx.filePath, dependency, ctx.content, vuln.id));
           }
         });
 
@@ -285,11 +313,11 @@ export const osvDetector: Detector = {
         // vulnerabilities found" (PITFALLS.md Pitfall 10). This catch
         // deliberately does not branch on the error's type or message: no
         // failure mode is special-cased back into a clean pass.
-        const fallbackFindings = runFallbackCheck(dependencies, ctx.content);
+        const fallbackFindings = runFallbackCheck(ctx.filePath, dependencies, ctx.content);
         // The DEP-OFFLINE sentinel is appended UNCONDITIONALLY here, even
         // when fallbackFindings.length === 0 — this is the non-negotiable
         // "offline is never a silent clean pass" requirement.
-        return [...fallbackFindings, buildOfflineSentinel()];
+        return [...fallbackFindings, buildOfflineSentinel(ctx.filePath)];
       }
     } catch {
       // No-throw contract (src/core/types.ts Detector.detect): an

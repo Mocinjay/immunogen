@@ -189,6 +189,7 @@ function buildDetectorContext(ctx: ScanContext, filePath: string, content: strin
     ast: ctx.astCache.get(filePath),
     stackHints: ctx.stackHints,
     fileSet: ctx.fileSet,
+    ...(ctx.options.offline === true ? { offline: true } : {}),
   };
 }
 
