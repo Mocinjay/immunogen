@@ -1,7 +1,7 @@
 /**
  * Unit test for the CLI action (bin/immunogen.ts, Plan 04-04). Imports only
  * `runCli` — the module-scope commander wiring + `parseAsync()` is guarded
- * by an entry-script check (`import.meta.url === pathToFileURL(process.argv[1]).href`)
+ * by an entry-script check (realpath of `process.argv[1]` === realpath of this module)
  * so importing this module under vitest never triggers real argv parsing.
  */
 import { readFileSync } from "node:fs";
