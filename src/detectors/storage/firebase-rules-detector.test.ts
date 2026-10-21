@@ -74,9 +74,9 @@ describe("firebaseRulesDetector — STORAGE-01 (storage.rules)", () => {
 });
 
 describe("firebaseRulesDetector — clean cases", () => {
-  it("does NOT flag an auth-gated allow condition", async () => {
+  it("does NOT flag an ownership-checked allow condition", async () => {
     const ctx = makeContext(
-      "service cloud.firestore {\n  match /databases/{database}/documents {\n    match /{document=**} {\n      allow read, write: if request.auth != null;\n    }\n  }\n}\n",
+      "service cloud.firestore {\n  match /databases/{database}/documents {\n    match /users/{userId} {\n      allow read, write: if request.auth != null && request.auth.uid == userId;\n    }\n  }\n}\n",
       "firestore.rules",
     );
 
@@ -85,16 +85,24 @@ describe("firebaseRulesDetector — clean cases", () => {
     expect(findings).toHaveLength(0);
   });
 
-  it("does NOT flag a vulnerable rules file when stackHints.hasFirebase is false (stack gate)", async () => {
+  it("does NOT flag a generic *.rules file when stackHints.hasFirebase is false (stack gate)", async () => {
     const ctx = makeContext(
       "allow read, write: if true;",
-      "firestore.rules",
+      "config/lint.rules",
       NO_FIREBASE_STACK_HINTS,
     );
 
     const findings = await firebaseRulesDetector.detect(ctx);
 
     expect(findings).toHaveLength(0);
+  });
+
+  it("still checks firestore.rules by name when the Firebase SDK is not a root dependency", async () => {
+    const ctx = makeContext("allow read, write: if true;", "firestore.rules", NO_FIREBASE_STACK_HINTS);
+
+    const findings = await firebaseRulesDetector.detect(ctx);
+
+    expect(findings).toHaveLength(1);
   });
 
   it("does NOT flag 'if true' inside a __tests__/fixtures/examples path (FP allowlist guard)", async () => {
@@ -134,5 +142,55 @@ describe("firebaseRulesDetector — no-throw contract", () => {
     const findings = await firebaseRulesDetector.detect(ctx);
 
     expect(findings).toEqual([]);
+  });
+});
+
+describe("firebaseRulesDetector — test mode, Realtime Database, and signed-in-only rules", () => {
+  it("flags the console's test-mode rule (request.time < timestamp.date) as CRITICAL", async () => {
+    const rules = [
+      "service cloud.firestore {",
+      "  match /databases/{database}/documents {",
+      "    match /{document=**} {",
+      "      allow read, write: if request.time < timestamp.date(2025, 12, 31);",
+      "    }",
+      "  }",
+      "}",
+    ].join("\n");
+
+    const findings = await firebaseRulesDetector.detect(makeContext(rules, "firestore.rules"));
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "AUTH-02", severity: "CRITICAL", line: 4 });
+    expect(findings[0]?.message).toContain("test-mode");
+  });
+
+  it('flags Realtime Database ".read": true / ".write": true as CRITICAL', async () => {
+    const rules = ['{', '  "rules": {', '    ".read": true,', '    ".write": "true"', "  }", "}"].join("\n");
+
+    const findings = await firebaseRulesDetector.detect(makeContext(rules, "database.rules.json"));
+
+    expect(findings.map((finding) => [finding.severity, finding.line])).toEqual([
+      ["CRITICAL", 3],
+      ["CRITICAL", 4],
+    ]);
+  });
+
+  it("flags signed-in-only access on a recursive wildcard as HIGH, but not on a scoped collection", async () => {
+    const rules = [
+      "service cloud.firestore {",
+      "  match /databases/{database}/documents {",
+      "    match /posts/{postId} {",
+      "      allow read: if request.auth != null;",
+      "    }",
+      "    match /{document=**} {",
+      "      allow read, write: if request.auth != null;",
+      "    }",
+      "  }",
+      "}",
+    ].join("\n");
+
+    const findings = await firebaseRulesDetector.detect(makeContext(rules, "firestore.rules"));
+
+    expect(findings.map((finding) => [finding.severity, finding.line])).toEqual([["HIGH", 7]]);
   });
 });

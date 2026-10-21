@@ -46,7 +46,7 @@ function makeContext(content: string, filePath: string, stackHints: StackHints =
 const ROUTE_PATH = "app/api/users/route.ts";
 
 describe("routeAuthDetector — AUTH-01 vulnerable (no auth call)", () => {
-  it("flags an exported GET handler with no auth call as AUTH-01 CRITICAL/MEDIUM at the handler line", async () => {
+  it("flags an exported GET handler with no auth call as AUTH-01 HIGH/MEDIUM at the handler line (read-only)", async () => {
     const content = ["export async function GET(req) {", "  return Response.json({ ok: true });", "}", ""].join("\n");
     const ctx = makeContext(content, ROUTE_PATH);
 
@@ -56,7 +56,7 @@ describe("routeAuthDetector — AUTH-01 vulnerable (no auth call)", () => {
     expect(findings[0]).toMatchObject({
       ruleId: "AUTH-01",
       category: "auth",
-      severity: "CRITICAL",
+      severity: "HIGH",
       confidence: "MEDIUM",
       file: ROUTE_PATH,
       line: 1,
@@ -221,5 +221,145 @@ describe("routeAuthDetector — config", () => {
     expect(routeAuthDetector.config.name).toBe("route-auth");
     expect(routeAuthDetector.config.category).toBe("auth");
     expect(routeAuthDetector.config.requiresStack).toContain("nextjs");
+  });
+});
+
+describe("routeAuthDetector — broader auth evidence", () => {
+  const POST_HANDLER = ["export async function POST(req) {", "  return Response.json({ ok: true });", "}"];
+
+  it.each([
+    ["Clerk currentUser()", "const user = await currentUser();"],
+    ["Clerk auth.protect()", "await auth.protect();"],
+    ["a project requireUser() helper", "const user = await requireUser();"],
+    ["a project ensureAuthenticated() helper", "await ensureAuthenticated(req);"],
+    ["jwt.verify()", "jwt.verify(token, process.env.JWT_SECRET);"],
+    ["jose jwtVerify()", "await jwtVerify(token, key);"],
+    ["Stripe constructEvent", "stripe.webhooks.constructEvent(body, sig, secret);"],
+    ["a svix Webhook verify", "new Webhook(secret).verify(body, headers);"],
+    ["a CRON_SECRET check", "if (req.headers.get('x-cron') !== process.env.CRON_SECRET) return;"],
+    ["an Authorization header check", "const header = req.headers.get('authorization');"],
+  ])("produces zero findings when the file uses %s", async (_label, authLine) => {
+    const ctx = makeContext([authLine, ...POST_HANDLER].join("\n"), ROUTE_PATH);
+
+    expect(await routeAuthDetector.detect(ctx)).toEqual([]);
+  });
+
+  it.each([
+    "app/api/health/route.ts",
+    "app/api/auth/signup/route.ts",
+    "app/api/auth/callback/route.ts",
+    "app/opengraph-image/route.tsx",
+    "app/sitemap.xml/route.ts",
+  ])("treats %s as public by nature", async (path) => {
+    const ctx = makeContext(POST_HANDLER.join("\n"), path);
+
+    expect(await routeAuthDetector.detect(ctx)).toEqual([]);
+  });
+
+  it("downgrades to MEDIUM/LOW when middleware.ts enforces auth", async () => {
+    const content = POST_HANDLER.join("\n");
+    const ctx = {
+      ...makeContext(content, ROUTE_PATH),
+      fileSet: new Map([
+        [ROUTE_PATH, content],
+        ["middleware.ts", "export default clerkMiddleware(async (auth) => { await auth.protect(); });"],
+      ]),
+    };
+
+    const findings = await routeAuthDetector.detect(ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ severity: "MEDIUM", confidence: "LOW" });
+    expect(findings[0]?.message).toContain("verify its matcher");
+  });
+
+  it("does NOT downgrade for a middleware that only reads auth without enforcing it", async () => {
+    const content = POST_HANDLER.join("\n");
+    const ctx = {
+      ...makeContext(content, ROUTE_PATH),
+      fileSet: new Map([
+        [ROUTE_PATH, content],
+        ["middleware.ts", "export default clerkMiddleware();"],
+      ]),
+    };
+
+    expect((await routeAuthDetector.detect(ctx))[0]?.severity).toBe("CRITICAL");
+  });
+});
+
+describe("routeAuthDetector — Pages Router API routes", () => {
+  const PAGES_PATH = "pages/api/admin/users.ts";
+
+  it("flags an unauthenticated default-exported handler as CRITICAL", async () => {
+    const content = [
+      "export default async function handler(req, res) {",
+      "  res.status(200).json(await db.users.findMany());",
+      "}",
+    ].join("\n");
+
+    const findings = await routeAuthDetector.detect(makeContext(content, PAGES_PATH));
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "AUTH-01", severity: "CRITICAL", line: 1 });
+    expect(findings[0]?.message).toContain("Pages Router API handler");
+  });
+
+  it("does NOT flag a handler that checks the session", async () => {
+    const content = [
+      "export default async function handler(req, res) {",
+      "  const session = await getServerSession(req, res, authOptions);",
+      "  if (!session) return res.status(401).end();",
+      "}",
+    ].join("\n");
+
+    expect(await routeAuthDetector.detect(makeContext(content, PAGES_PATH))).toEqual([]);
+  });
+
+  it("does NOT flag a default export wrapped in an auth HOC", async () => {
+    const content = ["async function handler(req, res) { res.json({}); }", "export default withApiAuthRequired(handler);"].join(
+      "\n",
+    );
+
+    expect(await routeAuthDetector.detect(makeContext(content, PAGES_PATH))).toEqual([]);
+  });
+});
+
+describe("routeAuthDetector — Server Actions", () => {
+  const ACTIONS_PATH = "app/actions.ts";
+
+  it('flags every exported function of a "use server" module with no auth check', async () => {
+    const content = [
+      '"use server";',
+      "export async function deleteProject(id) {",
+      "  await db.project.delete({ where: { id } });",
+      "}",
+      "export const renameProject = async (id, name) => db.project.update({ where: { id }, data: { name } });",
+    ].join("\n");
+
+    const findings = await routeAuthDetector.detect(makeContext(content, ACTIONS_PATH));
+
+    expect(findings.map((finding) => [finding.matchedText, finding.severity, finding.line])).toEqual([
+      ["deleteProject", "CRITICAL", 2],
+      ["renameProject", "CRITICAL", 5],
+    ]);
+    expect(findings[0]?.message).toContain("Server Action deleteProject");
+  });
+
+  it("does NOT flag Server Actions that check auth", async () => {
+    const content = [
+      '"use server";',
+      "export async function deleteProject(id) {",
+      "  const { userId } = await auth();",
+      "  await db.project.delete({ where: { id, ownerId: userId } });",
+      "}",
+    ].join("\n");
+
+    expect(await routeAuthDetector.detect(makeContext(content, ACTIONS_PATH))).toEqual([]);
+  });
+
+  it('ignores modules without a top-level "use server" directive', async () => {
+    const content = ["export async function deleteProject(id) {", "  'use server';", "}"].join("\n");
+
+    expect(await routeAuthDetector.detect(makeContext(content, ACTIONS_PATH))).toEqual([]);
   });
 });

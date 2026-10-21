@@ -143,3 +143,35 @@ describe("corsDetector — config", () => {
     expect(corsDetector.config.globs.some((glob) => glob.includes("ts"))).toBe(true);
   });
 });
+
+describe("corsDetector — CORS-02 credentials for any (reflected) origin", () => {
+  async function summarize(content: string): Promise<string[]> {
+    const findings = await corsDetector.detect(makeContext(content));
+    return findings.map((finding) => `${finding.ruleId} ${finding.severity} L${String(finding.line)}`);
+  }
+
+  it("flags cors({ origin: true, credentials: true }) across lines", async () => {
+    const content = ["const app = express();", "app.use(cors({", "  origin: true,", "  credentials: true,", "}));"].join("\n");
+
+    expect(await summarize(content)).toEqual(["CORS-02 CRITICAL L2"]);
+  });
+
+  it("flags cors({ origin: '*', credentials: true })", async () => {
+    expect(await summarize("app.use(cors({ origin: '*', credentials: true }));")).toEqual(["CORS-02 CRITICAL L1"]);
+  });
+
+  it("flags an Allow-Origin header copied from the request with credentials", async () => {
+    const content = [
+      "res.setHeader('Access-Control-Allow-Origin', req.headers.origin);",
+      "res.setHeader('Access-Control-Allow-Credentials', 'true');",
+    ].join("\n");
+
+    expect(await summarize(content)).toEqual(["CORS-02 CRITICAL L1"]);
+  });
+
+  it("does NOT flag an allowlisted origin, or any-origin without credentials", async () => {
+    expect(await summarize("app.use(cors({ origin: ['https://app.example.com'], credentials: true }));")).toEqual([]);
+    expect(await summarize("app.use(cors({ origin: true }));")).toEqual([]);
+    expect(await summarize("res.setHeader('Access-Control-Allow-Origin', req.headers.origin);")).toEqual([]);
+  });
+});

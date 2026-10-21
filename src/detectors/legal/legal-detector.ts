@@ -20,6 +20,10 @@
  * the registry-wiring plan (05-08) will reuse for any other whole-repo
  * detector.
  *
+ * APP GATE: only a repo whose stack shows a user-facing app (a web or mobile
+ * framework, Supabase/Firebase, or Stripe) can "collect user data" — a
+ * library, CLI, or config repo never gets LEGAL-01.
+ *
  * ENG-05 (text-only invariant): this module reads `ctx.fileSet` keys as
  * plain strings. It never reads `ctx.ast`, never imports a parser, and
  * never evaluates, requires, or spawns a subprocess from scanned content.
@@ -82,6 +86,9 @@ function pathHasPrivacyOrTermsEvidence(path: string): boolean {
   return PRIVACY_TERMS_VOCABULARY.has(basenameNoExt);
 }
 
+/** Stack hints that mark a user-facing app (see APP GATE above). */
+const APP_FRAMEWORKS = ["nextjs", "vite", "express", "react-native", "supabase", "firebase"];
+
 export const legalDetector: Detector = {
   config: {
     name: "legal",
@@ -96,6 +103,12 @@ export const legalDetector: Detector = {
   // the body is plain synchronous work wrapped in `Promise.resolve()`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
+      const { frameworks, hasStripe } = ctx.stackHints;
+      const isUserFacingApp = hasStripe || APP_FRAMEWORKS.some((framework) => frameworks.has(framework));
+      if (!isUserFacingApp) {
+        return Promise.resolve([]);
+      }
+
       // Whole-repo decision: scan every key in ctx.fileSet (not just this
       // anchor file's own content/path) for privacy/terms evidence.
       for (const path of ctx.fileSet.keys()) {

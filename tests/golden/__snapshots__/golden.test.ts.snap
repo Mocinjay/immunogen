@@ -25,7 +25,7 @@ exports[`golden suite — vulnerable fixtures assert exact ruleId/count summarie
   "AUTH-01": 3,
   "AUTH-02": 1,
   "AUTH-03": 1,
-  "BUNDLE-01": 2,
+  "BUNDLE-01": 1,
   "CONFIG-01": 1,
   "CONFIG-02": 1,
   "CORS-01": 1,

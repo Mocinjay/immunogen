@@ -4,9 +4,9 @@ import { legalDetector } from "./legal-detector.js";
 
 import type { DetectorContext, StackHints } from "../../core/types.js";
 
-/** Minimal StackHints fixture — legalDetector reads ctx.fileSet only, never ctx.stackHints. */
+/** StackHints for a Next.js app — legalDetector only runs for user-facing app stacks. */
 const STACK_HINTS: StackHints = {
-  frameworks: new Set(),
+  frameworks: new Set(["nextjs"]),
   hasSupabase: false,
   hasFirebase: false,
   hasStripe: false,
@@ -126,5 +126,13 @@ describe("legalDetector — no-throw contract", () => {
     };
 
     await expect(legalDetector.detect(ctx)).resolves.toBeDefined();
+  });
+});
+
+describe("legalDetector — app gate", () => {
+  it("does NOT fire for a library/CLI repo with no app stack", async () => {
+    const ctx = { ...makeContext(["package.json", "src/index.ts"]), stackHints: { ...STACK_HINTS, frameworks: new Set<string>() } };
+
+    expect(await legalDetector.detect(ctx)).toEqual([]);
   });
 });

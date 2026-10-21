@@ -107,12 +107,28 @@ interface ProviderPattern {
 }
 
 /** Looks up a PROVIDER_KEY_PATTERNS entry's regex by its shared ruleId; throws if the shared table ever drops an entry this detector depends on (fails loudly at module load, not silently at scan time). */
-function sharedRegex(ruleId: string): RegExp {
-  const found = PROVIDER_KEY_PATTERNS.find((pattern) => pattern.ruleId === ruleId);
+function sharedRegex(ruleId: string, provider?: string): RegExp {
+  const found = PROVIDER_KEY_PATTERNS.find((pattern) => pattern.ruleId === ruleId && pattern.provider === provider);
   if (found === undefined) {
     throw new Error(`secret-patterns.ts is missing the expected "${ruleId}" provider-key pattern`);
   }
   return found.regex;
+}
+
+/** One SEC-09 entry per provider in the shared table, each with its own message. */
+function thirdPartyTokenPatterns(): ProviderPattern[] {
+  return PROVIDER_KEY_PATTERNS.filter((pattern) => pattern.ruleId === "SEC-09").map((pattern) => {
+    const provider = pattern.provider ?? "third-party";
+    const lowImpact = provider === "Slack webhook" || provider === "Stripe webhook signing";
+    return {
+      ruleId: "SEC-09",
+      regex: pattern.regex,
+      severity: lowImpact ? "HIGH" : "CRITICAL",
+      confidence: "HIGH",
+      message: `Hardcoded ${provider} ${provider.endsWith("webhook") ? "URL" : provider.endsWith("signing") ? "secret" : "token"} found in source.`,
+      remediation: `Revoke this ${provider} credential, rotate it, and load the replacement from an untracked environment variable instead of source.`,
+    };
+  });
 }
 
 /**
@@ -127,7 +143,7 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     regex: sharedRegex("SEC-01"),
     severity: "CRITICAL",
     confidence: "HIGH",
-    message: "Hardcoded Stripe live secret key (sk_live_) found in source.",
+    message: "Hardcoded Stripe live secret key (sk_live_/rk_live_) found in source.",
     remediation:
       "Remove this key from source control immediately, rotate it in the Stripe dashboard, and load it from an untracked environment variable (e.g. process.env.STRIPE_SECRET_KEY) instead.",
   },
@@ -167,6 +183,16 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     remediation:
       "Revoke this key in the Anthropic Console, rotate it, and load it from an untracked environment variable (e.g. process.env.ANTHROPIC_API_KEY) instead.",
   },
+  {
+    ruleId: "SEC-08",
+    regex: sharedRegex("SEC-08"),
+    severity: "CRITICAL",
+    confidence: "HIGH",
+    message: "Private key (PEM block) committed in source — e.g. a service-account JSON, TLS, or SSH key.",
+    remediation:
+      "Delete the key from the repo and its git history, revoke it at the issuer (for a Firebase/GCP service account: IAM > Service accounts > Keys), and load the replacement from a secret manager or untracked env var.",
+  },
+  ...thirdPartyTokenPatterns(),
 ];
 
 /** Ruleid assigned to every Supabase service_role signal (JWT decode OR env-name shortcut). */

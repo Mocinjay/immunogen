@@ -79,12 +79,14 @@ export async function runCli(
     authorize?: boolean;
     allowPrivate?: boolean;
     offline?: boolean;
+    noIgnore?: boolean;
   },
 ): Promise<number> {
   const scanOptions: ScanOptions = {
     ...(opts.format === undefined ? {} : { format: opts.format }),
     ...(opts.noLlm === true ? { noLlm: true } : {}),
     ...(opts.offline === true ? { offline: true } : {}),
+    ...(opts.noIgnore === true ? { noIgnore: true } : {}),
     ...(opts.authorize === true ? { authorize: true } : {}),
     ...(opts.allowPrivate === true ? { allowPrivate: true } : {}),
   };
@@ -144,6 +146,10 @@ if (isEntryScript()) {
       "never touch the network: skip the OSV.dev dependency lookup and use the bundled offline advisory list",
     )
     .option(
+      "--no-ignore",
+      "disregard .immunogenignore and inline immunogen-ignore comments (audit a repo you do not control)",
+    )
+    .option(
       "--authorize",
       "required consent gate for live-URL screening: only screen sites you own or are authorized to test",
     )
@@ -154,12 +160,20 @@ if (isEntryScript()) {
     .action(
       async (
         path: string,
-        options: { format: string; llm: boolean; offline?: boolean; authorize?: boolean; allowPrivate?: boolean },
+        options: {
+          format: string;
+          llm: boolean;
+          ignore: boolean;
+          offline?: boolean;
+          authorize?: boolean;
+          allowPrivate?: boolean;
+        },
       ) => {
         process.exitCode = await runCli(path, {
           format: options.format as "terminal" | "json" | "sarif",
           noLlm: options.llm === false,
           ...(options.offline === true ? { offline: true } : {}),
+          ...(options.ignore === false ? { noIgnore: true } : {}),
           ...(options.authorize === true ? { authorize: true } : {}),
           ...(options.allowPrivate === true ? { allowPrivate: true } : {}),
         });

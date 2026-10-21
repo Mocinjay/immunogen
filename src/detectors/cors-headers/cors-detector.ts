@@ -1,5 +1,13 @@
 /**
- * corsDetector — CAT-7 (CORS / Security Headers) detector, CORS-01.
+ * corsDetector — CAT-7 (CORS / Security Headers) detector, CORS-01 and
+ * CORS-02.
+ *
+ * CORS-02 (CRITICAL): credentials allowed for ANY origin by reflection — the
+ * `cors` middleware configured with `{ origin: true, credentials: true }`
+ * (or `origin: "*"`), or an `Access-Control-Allow-Origin` header copied from
+ * the request's own `Origin` alongside allow-credentials. Unlike the literal
+ * `*` + credentials combo (which browsers refuse), a reflected origin is
+ * honored: any website can make logged-in requests and read the responses.
  *
  * This is a FILE-level co-occurrence check, not a per-line independent scan:
  * a wildcard `Access-Control-Allow-Origin: *` header is the legitimate public
@@ -73,6 +81,55 @@ const WILDCARD_ORIGIN_RE = /access-control-allow-origin['"]?\]?\s*[,:=]\s*['"`]\
  */
 const ALLOW_CREDENTIALS_TRUE_RE = /access-control-allow-credentials['"]?\]?\s*[,:=]\s*['"`]true['"`]/i;
 
+/** Options object passed to the `cors` middleware: `cors({ ... })`. */
+const CORS_OPTIONS_RE = /\bcors\s*\(\s*\{([^{}]*)\}/g;
+
+/** `credentials: true` inside a cors options object. */
+const OPTIONS_CREDENTIALS_RE = /\bcredentials\s*:\s*true\b/;
+
+/** `origin: true` (reflect any origin) or `origin: "*"` inside a cors options object. */
+const OPTIONS_ANY_ORIGIN_RE = /\borigin\s*:\s*(?:true\b|['"`]\*['"`])/;
+
+/** Access-Control-Allow-Origin set from the incoming request's Origin header. */
+const REFLECTED_ORIGIN_RE =
+  /access-control-allow-origin['"`]?\s*[,:]\s*(?:req|request)\.(?:headers\.origin|headers\[\s*['"`]origin['"`]\s*\]|headers\.get\(\s*['"`]origin['"`]\s*\)|header\(\s*['"`]origin['"`]\s*\))/i;
+
+/** Builds a CORS-02 finding at `line`. */
+function reflectedOriginFinding(filePath: string, line: number, how: string): Finding {
+  return {
+    ruleId: "CORS-02",
+    category: "cors-headers",
+    detectorName: "cors",
+    file: filePath,
+    line,
+    severity: "CRITICAL",
+    confidence: "HIGH",
+    message: `CORS allows credentials for ANY origin (${how}) — any website a logged-in user visits can call this API as them and read the responses.`,
+    remediation:
+      "Set origin to an explicit allowlist (e.g. origin: ['https://app.example.com']) or a function that checks the request origin against one, whenever credentials are enabled.",
+  };
+}
+
+/** CORS-02 findings: `cors({ origin: true|'*', credentials: true })` options, or a reflected Origin header with credentials. */
+function reflectedOriginFindings(ctx: DetectorContext, lines: string[], hasCredentialsTrue: boolean): Finding[] {
+  const findings: Finding[] = [];
+  for (const match of ctx.content.matchAll(CORS_OPTIONS_RE)) {
+    const options = match[1] ?? "";
+    if (OPTIONS_CREDENTIALS_RE.test(options) && OPTIONS_ANY_ORIGIN_RE.test(options)) {
+      const line = ctx.content.slice(0, match.index).split("\n").length;
+      findings.push(reflectedOriginFinding(ctx.filePath, line, "cors middleware with origin: true/'*' and credentials: true"));
+    }
+  }
+  if (hasCredentialsTrue) {
+    for (const [index, line] of lines.entries()) {
+      if (REFLECTED_ORIGIN_RE.test(line)) {
+        findings.push(reflectedOriginFinding(ctx.filePath, index + 1, "Allow-Origin copied from the request's Origin header"));
+      }
+    }
+  }
+  return findings;
+}
+
 export const corsDetector: Detector = {
   config: {
     name: "cors",
@@ -103,21 +160,22 @@ export const corsDetector: Detector = {
         }
       }
 
-      if (wildcardOriginLine === undefined) {
-        // Signal (a) absent — neither signal alone fires CORS-01.
-        return Promise.resolve([]);
-      }
-
       // Second pass: does ANY line in the file carry the allow-credentials
       // true header? This is a whole-file co-occurrence check, not scoped to
       // a single line — the two headers commonly appear on adjacent but
       // separate statements/lines.
       const hasCredentialsTrue = lines.some((line) => ALLOW_CREDENTIALS_TRUE_RE.test(line));
+      const reflected = reflectedOriginFindings(ctx, lines, hasCredentialsTrue);
+
+      if (wildcardOriginLine === undefined) {
+        // Signal (a) absent — neither signal alone fires CORS-01.
+        return Promise.resolve(reflected);
+      }
 
       if (!hasCredentialsTrue) {
         // Signal (b) absent — wildcard-without-credentials is the legitimate
         // public-API case (FEATURES.md CAT-7 FP mitigation). Do not fire.
-        return Promise.resolve([]);
+        return Promise.resolve(reflected);
       }
 
       const finding: Finding = {
@@ -134,7 +192,7 @@ export const corsDetector: Detector = {
           "Replace the wildcard '*' origin with an explicit allowlisted origin (or a dynamic origin-allowlist check) whenever Access-Control-Allow-Credentials is enabled.",
       };
 
-      return Promise.resolve([finding]);
+      return Promise.resolve([finding, ...reflected]);
     } catch {
       // No-throw contract (src/core/types.ts Detector.detect): a malformed
       // or unexpected ctx.content must resolve to [], never reject.

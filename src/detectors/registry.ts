@@ -36,9 +36,9 @@ import { configDebugDetector } from "./config/index.js";
 import { corsDetector, cspDetector } from "./cors-headers/index.js";
 import { stripeDetector } from "./payment/index.js";
 import { legalDetector } from "./legal/index.js";
-import { firebaseRulesDetector, supabaseDetector } from "./storage/index.js";
+import { firebaseRulesDetector, supabaseDetector, supabaseRlsDetector } from "./storage/index.js";
 import { routeAuthDetector } from "./auth/index.js";
-import { xssDetector } from "./injection/index.js";
+import { dangerousCodeDetector, xssDetector } from "./injection/index.js";
 import { osvDetector } from "./deps/index.js";
 import {
   promptInjectionDetector,
@@ -73,8 +73,10 @@ export const DEFAULT_DETECTORS: Detector[] = [
   legalDetector,
   firebaseRulesDetector,
   supabaseDetector,
+  supabaseRlsDetector,
   routeAuthDetector,
   xssDetector,
+  dangerousCodeDetector,
   osvDetector,
   promptInjectionDetector,
   exfiltrationDetector,
@@ -231,5 +233,38 @@ export async function runDetectors(
     // ARCHITECTURE.md Pattern 2; a well-behaved detector never lands here.
   }
 
-  return sortFindings(findings);
+  const kept = ctx.options.noIgnore === true ? findings : findings.filter((finding) => !isSuppressed(finding, ctx.fileSet));
+  return sortFindings(kept);
+}
+
+/** Inline suppression marker, with any rule ids listed after it captured in group 1. */
+const IGNORE_MARKER_RE = /immunogen-ignore\b([^\n]*)/;
+
+/** A rule id token (`SEC-06`, `AUTH-01`, `DEP-OFFLINE`, `WEB-HDR`). */
+const RULE_ID_TOKEN_RE = /\b[A-Z]+-[A-Z0-9-]*[A-Z0-9]\b/g;
+
+/**
+ * True when the finding's own line, or the line directly above it, carries
+ * an `immunogen-ignore` comment that either lists no rule ids (suppress
+ * everything there) or lists this finding's ruleId — e.g.
+ * `// immunogen-ignore SEC-06` or `# immunogen-ignore AUTH-04, AUTH-05`.
+ */
+function isSuppressed(finding: Finding, fileSet: ReadonlyMap<string, string>): boolean {
+  const content = fileSet.get(finding.file);
+  if (content === undefined || !content.includes("immunogen-ignore")) {
+    return false;
+  }
+  const lines = content.split("\n");
+  const candidates = [lines.at(finding.line - 1)];
+  if (finding.line >= 2) {
+    candidates.push(lines.at(finding.line - 2));
+  }
+  return candidates.some((line) => {
+    const marker = line?.match(IGNORE_MARKER_RE);
+    if (marker === null || marker === undefined) {
+      return false;
+    }
+    const ruleIds: string[] = (marker[1] ?? "").match(RULE_ID_TOKEN_RE) ?? [];
+    return ruleIds.length === 0 || ruleIds.includes(finding.ruleId);
+  });
 }

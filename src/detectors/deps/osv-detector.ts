@@ -183,8 +183,21 @@ const OSV_HIT_CONFIDENCE: Confidence = "HIGH";
 /** Confidence for a fallback-list hit — same curated-list provenance as the bundled severity, so HIGH confidence applies uniformly. */
 const FALLBACK_HIT_CONFIDENCE: Confidence = "HIGH";
 
-/** Builds the DEP-01 Finding for an OSV-sourced hit (vuln id known, severity not pre-classified by the lightweight batch response). */
-function buildOsvFinding(filePath: string, dependency: ParsedDependency, content: string, vulnId: string): Finding {
+/** How many advisory ids a grouped DEP-01 message lists before summarizing the rest as "+N more". */
+const MAX_LISTED_ADVISORIES = 3;
+
+/**
+ * Builds the ONE DEP-01 Finding for a dependency with OSV-sourced hits
+ * (severity not pre-classified by the lightweight batch response). All of a
+ * package's advisories are grouped into a single finding: one upgrade fixes
+ * them all, and a finding per advisory let a single outdated framework
+ * (20+ advisories for an old `next`) flood the report and zero out the
+ * Ship Score on its own.
+ */
+function buildOsvFinding(filePath: string, dependency: ParsedDependency, content: string, vulnIds: string[]): Finding {
+  const listed = vulnIds.slice(0, MAX_LISTED_ADVISORIES).join(", ");
+  const more = vulnIds.length > MAX_LISTED_ADVISORIES ? `, +${String(vulnIds.length - MAX_LISTED_ADVISORIES)} more` : "";
+  const advisories = vulnIds.length === 1 ? `OSV advisory ${listed}` : `${String(vulnIds.length)} OSV advisories: ${listed}${more}`;
   return {
     ruleId: DEP_RULE_ID,
     category: "deps",
@@ -193,8 +206,8 @@ function buildOsvFinding(filePath: string, dependency: ParsedDependency, content
     line: findDependencyLine(content, dependency.name),
     severity: OSV_HIT_SEVERITY,
     confidence: OSV_HIT_CONFIDENCE,
-    message: `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (OSV advisory ${vulnId}).`,
-    remediation: `Upgrade ${dependency.name} to a version that resolves advisory ${vulnId} — check https://osv.dev/vulnerability/${vulnId} for the fixed version range.`,
+    message: `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}).`,
+    remediation: `Upgrade ${dependency.name} to a version that resolves ${vulnIds.length === 1 ? "this advisory" : "these advisories"} — check https://osv.dev/list?ecosystem=npm&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`,
   };
 }
 
@@ -300,8 +313,9 @@ export const osvDetector: Detector = {
           if (dependency === undefined) {
             return;
           }
-          for (const vuln of result.vulns ?? []) {
-            findings.push(buildOsvFinding(ctx.filePath, dependency, ctx.content, vuln.id));
+          const vulnIds = [...new Set((result.vulns ?? []).map((vuln) => vuln.id))];
+          if (vulnIds.length > 0) {
+            findings.push(buildOsvFinding(ctx.filePath, dependency, ctx.content, vulnIds));
           }
         });
 

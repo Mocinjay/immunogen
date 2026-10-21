@@ -224,3 +224,18 @@ describe("osvDetector — nested manifests and offline mode", () => {
     expect(findings.map((finding) => finding.ruleId)).toEqual(["DEP-01", "DEP-OFFLINE"]);
   });
 });
+
+describe("osvDetector — one finding per vulnerable package", () => {
+  it("groups every advisory for a package into a single DEP-01 finding", async () => {
+    queryOsvBatchMock.mockResolvedValue([
+      { vulns: [{ id: "GHSA-a" }, { id: "GHSA-b" }, { id: "GHSA-c" }, { id: "GHSA-d" }, { id: "GHSA-a" }] },
+    ]);
+
+    const findings = await osvDetector.detect(makeContext(JSON.stringify({ dependencies: { next: "14.0.0" } })));
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.message).toBe(
+      "Vulnerable dependency: next@14.0.0 (4 OSV advisories: GHSA-a, GHSA-b, GHSA-c, +1 more).",
+    );
+  });
+});

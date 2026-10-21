@@ -64,6 +64,8 @@ export const SUPABASE_ENV_NAME_RE = /SUPABASE_SERVICE_ROLE_KEY/g;
 /** A single fixed-format provider-key pattern (Stripe/AWS/OpenAI shapes). */
 export interface ProviderKeyPattern {
   ruleId: string;
+  /** Disambiguates entries that share a ruleId (SEC-09 covers several providers). */
+  provider?: string;
   /**
    * MUST carry the global flag. Iterated via `String.prototype.matchAll`
    * (not a manual `.exec()` loop) — `matchAll` creates its own internal
@@ -85,11 +87,17 @@ export interface ProviderKeyPattern {
  * service-account / admin keys (`sk-proj-`, `sk-svcacct-`, `sk-admin-`)
  * OpenAI has issued by default since 2024 — the legacy shape alone misses
  * every key a new OpenAI account creates today.
+ *
+ * SEC-08 is any PEM private key block (a committed Firebase/GCP service
+ * account JSON, a TLS or SSH key). SEC-09 covers other prefixed tokens AI
+ * apps commonly hardcode, one entry per provider: GitHub, Slack, Stripe
+ * webhook signing secrets, SendGrid, Groq, xAI, Hugging Face, Replicate, npm.
+ * Every SEC-09 prefix is distinctive enough to need no keyword anchor.
  */
 export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
   {
     ruleId: "SEC-01",
-    regex: /sk_live_[\w-]+/g,
+    regex: /[sr]k_live_[\w-]+/g,
   },
   {
     ruleId: "SEC-02",
@@ -107,6 +115,24 @@ export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
     ruleId: "SEC-07",
     regex: /sk-ant-(?:api|admin)\d{2}-[\w-]{20,}/g,
   },
+  {
+    ruleId: "SEC-08",
+    regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----/g,
+  },
+  { ruleId: "SEC-09", provider: "GitHub", regex: /\b(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_\w{60,})/g },
+  { ruleId: "SEC-09", provider: "Slack", regex: /\bxox[abposr]-[A-Za-z0-9-]{10,}/g },
+  {
+    ruleId: "SEC-09",
+    provider: "Slack webhook",
+    regex: /https:\/\/hooks\.slack\.com\/services\/T\w+\/B\w+\/\w+/g,
+  },
+  { ruleId: "SEC-09", provider: "Stripe webhook signing", regex: /\bwhsec_[A-Za-z0-9]{24,}/g },
+  { ruleId: "SEC-09", provider: "SendGrid", regex: /\bSG\.[\w-]{22}\.[\w-]{43}/g },
+  { ruleId: "SEC-09", provider: "Groq", regex: /\bgsk_[A-Za-z0-9]{48,}/g },
+  { ruleId: "SEC-09", provider: "xAI", regex: /\bxai-[A-Za-z0-9]{70,}/g },
+  { ruleId: "SEC-09", provider: "Hugging Face", regex: /\bhf_[A-Za-z0-9]{34,}/g },
+  { ruleId: "SEC-09", provider: "Replicate", regex: /\br8_[A-Za-z0-9]{37,}/g },
+  { ruleId: "SEC-09", provider: "npm", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
 ];
 
 /**

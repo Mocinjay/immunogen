@@ -189,6 +189,12 @@ export interface ScanOptions {
   noLlm?: boolean;
   /** Skip network-dependent detectors (OSV). */
   offline?: boolean;
+  /**
+   * `--no-ignore`: disregard `.immunogenignore` and inline
+   * `immunogen-ignore` comments — for auditing a repo you do not control,
+   * where those suppressions are the author's, not yours.
+   */
+  noIgnore?: boolean;
   /** Walker per-file size cap override, in bytes. */
   maxFileSizeBytes?: number;
   /** Walker total-repo byte cap override, across all read files (default 50MB). */

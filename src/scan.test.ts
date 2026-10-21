@@ -15,8 +15,7 @@ import { scan } from "./index.js";
 // tests/golden/golden.test.ts) so this suite is hermetic: a sandbox, an
 // offline laptop, or a corporate proxy can never flip `scanIncomplete` or
 // the finding count. The stub reports a fixed 25 advisories for `next` (the
-// fixture's only dependency) — enough HIGH findings to exceed the enricher's
-// MAX_ENRICHED budget, exactly like the real OSV response for next@14.0.0.
+// fixture's only dependency), like the real OSV response for next@14.0.0.
 vi.mock("./detectors/deps/osv-client.js", () => ({
   queryOsvBatch: (queries: Array<{ name: string; version: string }>) =>
     Promise.resolve(

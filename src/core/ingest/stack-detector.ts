@@ -32,32 +32,74 @@ interface ParsedPackageJson {
   devDependencies?: DepRecord;
 }
 
+/** Directory segments whose package.json is never the app's own manifest. */
+const SKIPPED_MANIFEST_SEGMENTS = new Set(["node_modules", "__tests__", "fixtures", "mocks", "examples"]);
+
 /**
- * Parses `fileSet`'s `package.json` (if present) and returns a merged
- * `dependencies` + `devDependencies` record. Never throws: a missing
- * `package.json` yields `"{}"`; a malformed one is caught and treated as
- * `{}` (T-03-08 — a hostile or malformed package.json from a foreign repo
- * must degrade to empty deps, not crash the scan).
+ * Merges `dependencies` + `devDependencies` across EVERY `package.json` in
+ * the fileSet — the root manifest and any nested app/package manifest
+ * (`app/`, `apps/web/`, `packages/*`), since AI-built projects routinely
+ * keep the real app in a subdirectory — skipping node_modules and
+ * test/fixture manifests. A malformed manifest contributes nothing rather
+ * than throwing.
  */
 function readMergedDeps(fileSet: Map<string, string>): DepRecord {
-  const rawPackageJson = fileSet.get("package.json") ?? "{}";
-
-  let parsed: ParsedPackageJson;
-  try {
-    parsed = JSON.parse(rawPackageJson) as ParsedPackageJson;
-  } catch {
-    return {};
+  let merged: DepRecord = {};
+  for (const [path, content] of fileSet) {
+    const segments = path.split("/");
+    if (segments.at(-1) !== "package.json" || segments.some((segment) => SKIPPED_MANIFEST_SEGMENTS.has(segment))) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(content) as ParsedPackageJson;
+      merged = { ...merged, ...parsed.dependencies, ...parsed.devDependencies };
+    } catch {
+      // Malformed manifest — contributes no dependencies.
+    }
   }
-
-  return {
-    ...parsed.dependencies,
-    ...parsed.devDependencies,
-  };
+  return merged;
 }
 
-/** True when any fileSet key matches one of `configBasenames` at the repo root. */
+/** True when any fileSet key (root or a nested app directory, never node_modules) has one of `configBasenames`. */
 function hasRootConfigFile(fileSet: Map<string, string>, configBasenames: readonly string[]): boolean {
-  return configBasenames.some((basename) => fileSet.has(basename));
+  for (const key of fileSet.keys()) {
+    const basename = key.slice(key.lastIndexOf("/") + 1);
+    if (configBasenames.includes(basename) && !key.split("/").includes("node_modules")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Next.js App Router / Pages Router file conventions — an `app/` folder
+ * alone is not enough (React Native and Expo projects routinely have one).
+ */
+function isNextRouteFile(key: string): boolean {
+  const segments = key.split("/");
+  const basename = segments.at(-1) ?? "";
+  const isScript = /\.(?:t|j)sx?$/.test(basename);
+  if (!isScript) {
+    return false;
+  }
+  if (segments.includes("app") && /^(?:page|layout|route)\./.test(basename)) {
+    return true;
+  }
+  const pagesIndex = segments.indexOf("pages");
+  if (pagesIndex === -1) {
+    return false;
+  }
+  return segments.at(pagesIndex + 1) === "api" || /^_(?:app|document)\./.test(segments.at(pagesIndex + 1) ?? "");
+}
+
+/** True when any file follows a Next.js routing convention. */
+function hasNextRouteFiles(fileSet: Map<string, string>): boolean {
+  for (const key of fileSet.keys()) {
+    if (isNextRouteFile(key)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** True when any fileSet key starts with `prefix`. */
@@ -108,7 +150,7 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
 
   const hasNextDep = "next" in deps;
   const hasNextConfig = hasRootConfigFile(fileSet, NEXT_CONFIG_BASENAMES);
-  const hasNextDir = hasKeyWithPrefix(fileSet, "app/") || hasKeyWithPrefix(fileSet, "pages/");
+  const hasNextDir = hasNextRouteFiles(fileSet);
   const isNextjs = hasNextDep || hasNextConfig || hasNextDir;
 
   const hasViteDep = "vite" in deps;
@@ -117,11 +159,17 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
 
   const isExpress = "express" in deps;
 
-  const hasSupabaseDep = "@supabase/supabase-js" in deps;
-  const hasSupabaseConfig = fileSet.has("supabase/config.toml");
+  const isReactNative = "react-native" in deps || "expo" in deps;
+
+  const hasSupabaseDep = ["@supabase/supabase-js", "@supabase/ssr", "@supabase/auth-helpers-nextjs"].some(
+    (name) => name in deps,
+  );
+  const hasSupabaseConfig = [...fileSet.keys()].some(
+    (key) => key === "supabase/config.toml" || key.endsWith("/supabase/config.toml"),
+  );
   const hasSupabase = hasSupabaseDep || hasSupabaseConfig;
 
-  const hasFirebase = "firebase" in deps || "firebase-admin" in deps;
+  const hasFirebase = ["firebase", "firebase-admin", "@react-native-firebase/app"].some((name) => name in deps);
 
   const hasPrismaDep = "prisma" in deps;
   const hasPrismaSchema = fileSet.has("prisma/schema.prisma");
@@ -138,6 +186,9 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
   }
   if (isExpress) {
     frameworks.add("express");
+  }
+  if (isReactNative) {
+    frameworks.add("react-native");
   }
   if (hasSupabase) {
     frameworks.add("supabase");

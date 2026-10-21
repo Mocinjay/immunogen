@@ -8,16 +8,17 @@
  * calls `detect()` once per file matching `config.globs`, so this detector
  * keys entirely off `ctx.filePath` — `ctx.content` is never read.
  *
- * Three guards run in sequence before a Finding is ever pushed:
+ * Two guards run in sequence before a Finding is ever pushed:
  *   1. FP allowlist — test/fixture/mock/example directories never fire
  *      (.planning/research/PITFALLS.md Pitfall 1).
  *   2. Template exclusion — `.env.example`/`.env.sample`/etc. carry no real
  *      secrets by convention and are excluded outright.
- *   3. .gitignore check — reads `ctx.fileSet.get(".gitignore")`; if any
- *      non-comment, non-blank line excludes this file (exact basename,
- *      `.env*` glob, or the full relative path), the file is treated as
- *      "not committed" per FEATURES.md SEC-05's own qualifier and produces
- *      no finding.
+ *
+ * Whether the file is committed is decided upstream by the file walker
+ * (src/core/ingest/file-walker.ts): an env file only reaches this detector
+ * when git tracks it, or when no `.gitignore` (root or nested) excludes it.
+ * Re-checking `.gitignore` here would wrongly hide a `.env` that was
+ * committed first and gitignored later — it is still in the repo.
  *
  * No-throw contract (src/core/types.ts `Detector.detect`): the entire body
  * runs inside try/catch returning `[]` on any failure.
@@ -70,56 +71,6 @@ function isEnvBasename(basename: string): boolean {
   return basename === ".env" || basename.startsWith(".env.");
 }
 
-/**
- * Parses `.gitignore` text into its non-blank, non-comment, trimmed entry
- * lines. Comment lines start with `#` (after trimming leading whitespace);
- * blank lines are skipped entirely — both per standard gitignore semantics.
- */
-function parseGitignoreEntries(gitignoreContent: string): string[] {
-  const entries: string[] = [];
-  for (const rawLine of gitignoreContent.split("\n")) {
-    const trimmed = rawLine.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) {
-      continue;
-    }
-    entries.push(trimmed);
-  }
-  return entries;
-}
-
-/**
- * True when `entry` (one parsed .gitignore line) excludes `filePath`/its
- * `basename`. Supports the three forms FEATURES.md SEC-05 and the plan's
- * action describe: an exact basename match (`.env`), a `.env*`-style glob
- * on the basename, or the full relative path. This is a small, dedicated
- * check — not a general gitignore engine — sufficient for the documented
- * "is this specific env file excluded" question this detector asks.
- */
-function gitignoreEntryExcludes(entry: string, filePath: string, basename: string): boolean {
-  if (entry === basename || entry === filePath) {
-    return true;
-  }
-  if (entry.endsWith("*")) {
-    const prefix = entry.slice(0, -1);
-    return basename.startsWith(prefix) || filePath.startsWith(prefix);
-  }
-  return false;
-}
-
-/**
- * True when `fileSet`'s `.gitignore` (if present) contains an entry that
- * excludes `filePath`. A missing `.gitignore` never excludes anything —
- * absence of the file means absence of any exclusion rule.
- */
-function isGitignoreExcluded(fileSet: ReadonlyMap<string, string>, filePath: string, basename: string): boolean {
-  const gitignoreContent = fileSet.get(".gitignore");
-  if (gitignoreContent === undefined) {
-    return false;
-  }
-  const entries = parseGitignoreEntries(gitignoreContent);
-  return entries.some((entry) => gitignoreEntryExcludes(entry, filePath, basename));
-}
-
 export const committedEnvDetector: Detector = {
   config: {
     name: "committed-env",
@@ -143,9 +94,6 @@ export const committedEnvDetector: Detector = {
         return Promise.resolve([]);
       }
       if (TEMPLATE_BASENAMES.has(basename)) {
-        return Promise.resolve([]);
-      }
-      if (isGitignoreExcluded(ctx.fileSet, ctx.filePath, basename)) {
         return Promise.resolve([]);
       }
 

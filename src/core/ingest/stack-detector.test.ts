@@ -161,3 +161,34 @@ describe("detectStack — absent package.json", () => {
     expect(hints.frameworks.size).toBe(0);
   });
 });
+
+describe("detectStack — nested apps and non-Next app/ folders", () => {
+  it("reads dependencies from a nested app manifest (monorepo / app-in-subfolder)", () => {
+    const fileSet = new Map([
+      ["package.json", JSON.stringify({ name: "root", private: true })],
+      ["apps/web/package.json", JSON.stringify({ dependencies: { next: "15.0.0", "@supabase/ssr": "0.5.0", stripe: "17.0.0" } })],
+      ["node_modules/firebase/package.json", JSON.stringify({ dependencies: { firebase: "1.0.0" } })],
+    ]);
+
+    const hints = detectStack(fileSet);
+
+    expect(hints.frameworks.has("nextjs")).toBe(true);
+    expect(hints.hasSupabase).toBe(true);
+    expect(hints.hasStripe).toBe(true);
+    expect(hints.hasFirebase).toBe(false);
+  });
+
+  it("does NOT treat a React Native app/ folder as Next.js", () => {
+    const fileSet = new Map([
+      ["app/package.json", JSON.stringify({ dependencies: { "react-native": "0.76.0" } })],
+      ["app/App.tsx", "export default function App() { return null; }"],
+      ["app/src/screens/Home.tsx", "export {};"],
+    ]);
+
+    expect(detectStack(fileSet).frameworks.has("nextjs")).toBe(false);
+  });
+
+  it("detects Next.js from a Pages Router API file", () => {
+    expect(detectStack(new Map([["src/pages/api/hello.ts", "export default () => {};"]])).frameworks.has("nextjs")).toBe(true);
+  });
+});

@@ -438,3 +438,46 @@ describe("secretsDetector — current provider key formats", () => {
     expect(findings[0]).toMatchObject({ ruleId: "SEC-04", severity: "CRITICAL", confidence: "HIGH" });
   });
 });
+
+describe("secretsDetector — private keys and third-party tokens (SEC-08 / SEC-09)", () => {
+  async function summarize(content: string, filePath?: string): Promise<string[]> {
+    const findings = await secretsDetector.detect(makeContext(content, filePath));
+    return findings.map((finding) => `${finding.ruleId} ${finding.severity} ${finding.message}`);
+  }
+
+  it("flags a PEM private key inside a committed service-account JSON as SEC-08 CRITICAL", async () => {
+    const json =
+      '{ "type": "service_account", "private_key": "-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\\n-----END PRIVATE KEY-----\\n" }';
+
+    expect(await summarize(json, "service-account.json")).toEqual([
+      expect.stringMatching(/^SEC-08 CRITICAL Private key/),
+    ]);
+  });
+
+  it("flags RSA / OPENSSH private key headers but never a public key", async () => {
+    expect(await summarize("-----BEGIN RSA PRIVATE KEY-----", "id_rsa.txt")).toHaveLength(1);
+    expect(await summarize("-----BEGIN OPENSSH PRIVATE KEY-----", "deploy.md")).toHaveLength(1);
+    expect(await summarize("-----BEGIN PUBLIC KEY-----", "key.md")).toEqual([]);
+  });
+
+  it.each([
+    ["GitHub", "ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789", "CRITICAL"],
+    ["Slack", "xoxb-1234567890-0987654321-AbCdEfGhIjKl", "CRITICAL"],
+    ["Slack webhook", "https://hooks.slack.com/services/T0ABC1234/B0DEF5678/AbCdEfGhIjKlMnOpQrStUvWx", "HIGH"],
+    ["Stripe webhook signing", "whsec_AbCdEfGhIjKlMnOpQrStUvWx1234", "HIGH"],
+    ["Groq", `gsk_${"Ab1".repeat(17)}`, "CRITICAL"],
+    ["Hugging Face", `hf_${"Ab1".repeat(12)}`, "CRITICAL"],
+    ["Replicate", `r8_${"Ab1".repeat(13)}`, "CRITICAL"],
+  ])("flags a hardcoded %s credential as SEC-09", async (provider, token, severity) => {
+    const findings = await secretsDetector.detect(makeContext(`const value = "${token}";`));
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "SEC-09", severity });
+    expect(findings[0]?.message).toContain(provider);
+    expect(JSON.stringify(findings)).not.toContain(token);
+  });
+
+  it("flags a Stripe restricted live key (rk_live_) as SEC-01", async () => {
+    expect(await summarize('const k = "rk_live_51AbCdEfGhIjKlMnOp";')).toEqual([expect.stringMatching(/^SEC-01 CRITICAL/)]);
+  });
+});

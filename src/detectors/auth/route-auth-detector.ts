@@ -1,38 +1,53 @@
 /**
- * routeAuthDetector — CAT-3 AUTH-01 (unprotected Next.js App Router route
- * handler) detector, AST-based and stack-gated.
+ * routeAuthDetector — CAT-3 AUTH-01 (unprotected Next.js server entry point)
+ * detector, AST-based and stack-gated.
  *
- * AUTH-01 (FEATURES.md CAT-3): an app/api route handler file (Next.js App
- * Router) that exports a GET/POST/PUT/PATCH/DELETE handler containing no
+ * AUTH-01 (FEATURES.md CAT-3): a server entry point with no
  * authentication/authorization check is the single most-reproduced AI-app
- * vulnerability class (CVE-2025-48757 / CVE-2025-29927). A text regex cannot
- * reliably tell an EXPORTED route handler from an internal helper of the same
- * name, so this detector walks the pre-built `ctx.ast` (ARCHITECTURE.md
- * Pattern 1: parse once, share many) via @babel/traverse instead.
+ * vulnerability class (CVE-2025-48757 / CVE-2025-29927). Three Next.js entry
+ * point shapes are covered, all reachable by anyone on the internet:
+ *   - App Router route handlers: `app/<path>/route.{ts,tsx,js,jsx}` exporting
+ *     GET/POST/PUT/PATCH/DELETE.
+ *   - Pages Router API routes: `pages/api/**` default-exported handlers.
+ *   - Server Actions: every exported function of a `"use server"` module —
+ *     each one is a public POST endpoint, whatever the UI that calls it.
+ * A text regex cannot reliably tell an EXPORTED handler from an internal
+ * helper of the same name, so this detector walks the pre-built `ctx.ast`
+ * (ARCHITECTURE.md Pattern 1: parse once, share many) via @babel/traverse.
  *
  * Decision flow inside `detect()` (cheap gates first):
- *   1. STACK GATE — if `frameworks.has("nextjs")` is false, return [] (ENG-04:
- *      a missing stack hint disables the whole framework-specific rule).
+ *   1. STACK GATE — if `frameworks.has("nextjs")` is false, return [] (ENG-04).
  *   2. FP ALLOWLIST — test/fixture/mock/example paths return [] (PITFALLS.md
- *      Pitfall 1), and a non-`route.*` filename returns [] defensively (the
- *      registry already pre-filters on globs, but the detector double-checks).
- *   3. PUBLIC-PATH SUPPRESSION — a route whose path has a `public` segment is
- *      a legitimately open endpoint (FEATURES.md CAT-3 FP note), return [].
- *   4. AST GUARD — `if (!isBabelFile(ctx.ast)) return []` (PITFALLS.md Pitfall
- *      3: a parse-failed file has no AST; emit nothing, never throw).
- *   5. WALK — collect file-scoped auth-call presence and every exported
- *      HTTP-method handler, then emit one CRITICAL/MEDIUM finding per handler
- *      that has no auth call and no `// public` comment near it.
+ *      Pitfall 1); a file that is none of the three entry-point shapes
+ *      returns [].
+ *   3. PUBLIC-PATH SUPPRESSION — a route whose path has a `public` segment,
+ *      or is public by its nature (health checks, OG images, sitemaps, and
+ *      sign-in/sign-up/OAuth-callback endpoints), returns [].
+ *   4. AST GUARD — `if (!isBabelFile(ctx.ast)) return []` (PITFALLS.md
+ *      Pitfall 3: a parse-failed file has no AST; emit nothing, never throw).
+ *   5. WALK — collect file-scoped auth evidence and every exported handler,
+ *      then emit one finding per handler with no auth evidence and no
+ *      `// public` comment near it.
+ *
+ * Auth evidence (file-scoped) is any of: a recognized auth/session helper
+ * call (`auth()`, `getServerSession()`, `currentUser()`, `requireUser()`,
+ * `supabase.auth.getUser()`, `jwt.verify()`, ...), a webhook signature
+ * check (`constructEvent`, svix `wh.verify`, `timingSafeEqual`), a shared
+ * secret check (`CRON_SECRET`), or reading the `Authorization`/API-key
+ * header. File-scoped is deliberately the LOWER false-positive choice: a
+ * route file that calls an auth helper at all is overwhelmingly protecting
+ * its handlers.
+ *
+ * Severity: a state-changing handler (POST/PUT/PATCH/DELETE, a Pages API
+ * handler that serves every method, a Server Action) is CRITICAL; a
+ * read-only GET is HIGH, since plenty of GETs are public by intent. When a
+ * `middleware.ts` enforces auth (`auth.protect()`, `withAuth`,
+ * `next-auth/middleware`, ...), every finding drops to MEDIUM/LOW with a
+ * "verify the matcher covers this route" message — a middleware matcher
+ * that skips `/api` is exactly the bug that still needs a human look.
  *
  * Confidence is MEDIUM, not HIGH, exactly per FEATURES.md CAT-3 AUTH-01 (FP
  * risk = MEDIUM: a genuinely public route is a real false-positive source).
- *
- * Auth-call presence is computed file-scoped (any matching call anywhere in
- * the File), not proven to be lexically inside the specific handler — this is
- * deliberately the LOWER false-positive choice: a route file that imports and
- * calls an auth helper at all is overwhelmingly protecting its handlers, and
- * insisting the call sit inside each handler body would re-flag the common
- * middleware/wrapper patterns AUTH-01 is not meant to catch.
  *
  * AST-only (ENG-05): reads `ctx.ast` and walks nodes. Never imports a
  * process/exec primitive, never evaluates/requires/spawns scanned source.
@@ -42,17 +57,68 @@
  */
 import { isBabelFile, traverseAst } from "../ast/ast-utils.js";
 
-import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-import type { CallExpression, ExportNamedDeclaration } from "@babel/types";
+import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
+import type { CallExpression, ExportDefaultDeclaration, ExportNamedDeclaration, File } from "@babel/types";
 
 /** HTTP-method export names that mark a Next.js App Router route handler. */
 const HTTP_METHOD_NAMES = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 
-/** Bare-identifier auth helpers whose presence (called) suppresses AUTH-01. */
-const AUTH_CALL_IDENTIFIERS = new Set(["getServerSession", "auth", "verifyToken", "getUserFromRequest"]);
+/** Bare-identifier auth/session helpers whose presence (called) is auth evidence. */
+const AUTH_CALL_IDENTIFIERS = new Set([
+  "auth",
+  "authenticate",
+  "authorize",
+  "currentUser",
+  "getAuth",
+  "getAuthSession",
+  "getAuthUser",
+  "getAuthenticatedUser",
+  "getCurrentUser",
+  "getKindeServerSession",
+  "getLoggedInUser",
+  "getServerAuthSession",
+  "getServerSession",
+  "getSession",
+  "getToken",
+  "getUserFromRequest",
+  "getUserFromToken",
+  "isAuthenticated",
+  "jwtVerify",
+  "validateRequest",
+  "verifyIdToken",
+  "verifyJwt",
+  "verifyToken",
+]);
 
-/** Member-call auth helpers (`object.property(...)`) that suppress AUTH-01. */
-const AUTH_MEMBER_METHODS = new Set(["getUser", "getSession"]);
+/**
+ * Project-specific auth helper names: `requireUser`, `requireAuth`,
+ * `ensureAuthenticated`, `checkAdmin`, `verifySession`, `assertRole`,
+ * `withAuth`, ... — a guard verb followed by an auth noun.
+ */
+const AUTH_HELPER_NAME_RE = /^(?:require|ensure|check|verify|validate|assert|with|protect)\w*?(?:Auth|Authenticated|Session|User|Admin|Role|Permission|LoggedIn|SignedIn)s?$/;
+
+/** Member-call auth helpers (`object.property(...)`) that are auth evidence. */
+const AUTH_MEMBER_METHODS = new Set([
+  "getUser",
+  "getSession",
+  "getClaims",
+  "protect",
+  "verifyIdToken",
+  "verifySessionCookie",
+  "getServerSession",
+]);
+
+/** Receivers whose `.verify(...)` is a token check (`jwt.verify`, `jsonwebtoken.verify`). */
+const JWT_RECEIVERS = new Set(["jwt", "jsonwebtoken", "jose"]);
+
+/**
+ * Non-session auth evidence, matched as text: webhook signature verification
+ * (Stripe `constructEvent`, svix/Clerk/Resend `Webhook(...).verify`, GitHub
+ * `x-hub-signature`, constant-time HMAC comparison), a shared-secret cron
+ * check (`CRON_SECRET`), or reading the Authorization / API-key header.
+ */
+const NON_SESSION_AUTH_RE =
+  /constructEvent|new\s+Webhook\s*\(|verifySignature|verifyWebhook|validateWebhook|timingSafeEqual|x-hub-signature|svix-signature|CRON_SECRET|headers\.get\(\s*['"`](?:authorization|x-api-key)['"`]\s*\)|headers\[\s*['"`](?:authorization|x-api-key)['"`]\s*\]|headers\.(?:authorization|\[?['"`]x-api-key)/i;
 
 /** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
 const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
@@ -60,13 +126,59 @@ const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "exampl
 /** Route-path segment marking a deliberately public endpoint (FEATURES.md CAT-3 FP note). */
 const PUBLIC_SEGMENT = "public";
 
+/**
+ * Route-path segments that are public by their nature: health/uptime
+ * probes, Open Graph / icon / sitemap / robots / manifest generators, and
+ * the sign-in, sign-up, and OAuth-callback endpoints that by definition run
+ * before a session exists.
+ */
+const PUBLIC_BY_NATURE_SEGMENTS = new Set([
+  "health",
+  "healthz",
+  "healthcheck",
+  "ping",
+  "og",
+  "opengraph-image",
+  "twitter-image",
+  "icon",
+  "apple-icon",
+  "sitemap.xml",
+  "robots.txt",
+  "manifest.json",
+  "manifest.webmanifest",
+  "[...nextauth]",
+  "[...all]",
+  "login",
+  "logout",
+  "signin",
+  "sign-in",
+  "signup",
+  "sign-up",
+  "register",
+  "callback",
+  "oauth",
+]);
+
 /** Comment fragment a developer adds to opt a handler out of AUTH-01. */
 const PUBLIC_COMMENT_MARKER = "// public";
 
 /**
- * True when `filePath` falls inside a test/fixture/mock/example directory, or
- * its basename marks it as a test/story file. Mirrors entropy-detector.ts's
- * `isAllowlistedPath` style (segment split, no micromatch).
+ * Text markers of a `middleware.ts` that enforces auth (not just reads it):
+ * Clerk `auth.protect()`, NextAuth `withAuth` / `next-auth/middleware` /
+ * `auth as middleware`, or a redirect/401 driven by a session lookup.
+ */
+const ENFORCING_MIDDLEWARE_RE =
+  /auth\.protect\s*\(|\bwithAuth\b|next-auth\/middleware|auth\s+as\s+middleware|export\s+default\s+auth\b|(?:getUser|getSession|getToken)\s*\([\s\S]*?(?:redirect|status:\s*401)/;
+
+/** Basenames of a Next.js middleware file (`proxy.ts` is its Next.js 16 name). */
+const MIDDLEWARE_BASENAMES = new Set(["middleware.ts", "middleware.js", "proxy.ts", "proxy.js"]);
+
+type EntryKind = "route" | "pages-api" | "server-action";
+
+/**
+ * True when `filePath` falls inside a test/fixture/mock/example directory,
+ * or its basename marks it as a test or story file (`.test.` / `.stories.`).
+ * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
  */
 function isAllowlistedPath(filePath: string): boolean {
   const segments = filePath.split("/");
@@ -77,28 +189,50 @@ function isAllowlistedPath(filePath: string): boolean {
   return basename.includes(".test.") || basename.includes(".stories.");
 }
 
-/** True when `filePath`'s basename is a Next.js App Router route handler (`route.<ext>`). */
+/** True when `filePath`'s basename is a Next.js App Router route handler (`route.<ext>`) under an `app/` directory. */
 function isRouteFile(filePath: string): boolean {
-  const basename = filePath.split("/").at(-1) ?? "";
-  return (
-    basename === "route.ts" || basename === "route.tsx" || basename === "route.js" || basename === "route.jsx"
-  );
+  const segments = filePath.split("/");
+  const basename = segments.at(-1) ?? "";
+  return /^route\.(?:ts|tsx|js|jsx)$/.test(basename) && segments.includes("app");
 }
 
-/** True when any path segment of `filePath` is exactly `public`. */
+/** True when `filePath` is a Next.js Pages Router API route (`pages/api/...`). */
+function isPagesApiFile(filePath: string): boolean {
+  return /(?:^|\/)pages\/api\/.+\.(?:ts|tsx|js|jsx|mjs)$/.test(filePath);
+}
+
+/** True when the parsed module opens with a `"use server"` directive. */
+function isServerActionModule(ast: File): boolean {
+  return ast.program.directives.some((directive) => directive.value.value === "use server");
+}
+
+/** True when any path segment of `filePath` is `public` or a public-by-nature route name. */
 function hasPublicPathSegment(filePath: string): boolean {
-  return filePath.split("/").some((segment) => segment === PUBLIC_SEGMENT);
+  return filePath
+    .split("/")
+    .some((segment) => segment === PUBLIC_SEGMENT || PUBLIC_BY_NATURE_SEGMENTS.has(segment.toLowerCase()));
+}
+
+/** True when the repo's Next.js middleware enforces authentication. */
+function hasEnforcingMiddleware(fileSet: ReadonlyMap<string, string>): boolean {
+  for (const [path, content] of fileSet) {
+    const segments = path.split("/");
+    const basename = segments.at(-1) ?? "";
+    if (MIDDLEWARE_BASENAMES.has(basename) && ENFORCING_MIDDLEWARE_RE.test(content)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
- * Returns the exported HTTP-method handler name declared by `node`, or
- * undefined. Handles both `export async function GET(...)` (a function
- * declaration) and `export const GET = (...) => {...}` / `export const GET =
- * async function (...) {...}` (a variable declaration with a function-valued
- * initializer). Returns the method NAME (e.g. "GET") so the caller can also
- * recover the `.loc` line for the Finding.
+ * Returns the exported name when `node` exports a handler this entry-point
+ * kind serves: an HTTP-method-named function for a route file, or any
+ * function for a Server Action module. Both `export async function X` and
+ * `export const X = async () => ...` forms are recognized.
  */
-function exportedHandlerName(node: ExportNamedDeclaration): string | undefined {
+function exportedHandlerName(node: ExportNamedDeclaration, kind: EntryKind): string | undefined {
+  const accepts = (name: string): boolean => (kind === "server-action" ? true : HTTP_METHOD_NAMES.has(name));
   const declaration = node.declaration;
   if (declaration === null || declaration === undefined) {
     return undefined;
@@ -106,7 +240,7 @@ function exportedHandlerName(node: ExportNamedDeclaration): string | undefined {
 
   if (declaration.type === "FunctionDeclaration" && declaration.id !== null && declaration.id !== undefined) {
     const name = declaration.id.name;
-    return HTTP_METHOD_NAMES.has(name) ? name : undefined;
+    return accepts(name) ? name : undefined;
   }
 
   if (declaration.type === "VariableDeclaration") {
@@ -115,7 +249,7 @@ function exportedHandlerName(node: ExportNamedDeclaration): string | undefined {
         continue;
       }
       const name = declarator.id.name;
-      if (!HTTP_METHOD_NAMES.has(name)) {
+      if (!accepts(name)) {
         continue;
       }
       const init = declarator.init;
@@ -132,27 +266,53 @@ function exportedHandlerName(node: ExportNamedDeclaration): string | undefined {
   return undefined;
 }
 
+/**
+ * True when a Pages API `export default` is a handler that needs its own
+ * auth check: a function, or a reference to one. A default export wrapped
+ * in a call is left alone when the wrapper itself is auth
+ * (`withApiAuthRequired(handler)`, `withAuth(handler)`).
+ */
+function isDefaultHandlerExport(node: ExportDefaultDeclaration): boolean {
+  const declaration = node.declaration;
+  if (
+    declaration.type === "FunctionDeclaration" ||
+    declaration.type === "ArrowFunctionExpression" ||
+    declaration.type === "FunctionExpression" ||
+    declaration.type === "Identifier"
+  ) {
+    return true;
+  }
+  if (declaration.type === "CallExpression") {
+    const wrapperIsAuth =
+      isAuthCall(declaration) || (declaration.callee.type === "Identifier" && /auth/i.test(declaration.callee.name));
+    return !wrapperIsAuth;
+  }
+  return false;
+}
+
 /** True when `call` is a recognized auth helper call (bare identifier OR member method). */
 function isAuthCall(call: CallExpression): boolean {
   const callee = call.callee;
   if (callee.type === "Identifier") {
-    return AUTH_CALL_IDENTIFIERS.has(callee.name);
+    return AUTH_CALL_IDENTIFIERS.has(callee.name) || AUTH_HELPER_NAME_RE.test(callee.name);
   }
   if (callee.type === "MemberExpression" && callee.property.type === "Identifier") {
+    const method = callee.property.name;
     // Matches the `.auth.getUser()` / `.auth.getSession()` shape (e.g.
     // supabase.auth.getUser) by the terminal method name — file-scoped
     // presence is sufficient and lower-FP than pinning the receiver chain.
-    return AUTH_MEMBER_METHODS.has(callee.property.name);
+    if (AUTH_MEMBER_METHODS.has(method) || AUTH_HELPER_NAME_RE.test(method)) {
+      return true;
+    }
+    return method === "verify" && callee.object.type === "Identifier" && JWT_RECEIVERS.has(callee.object.name);
   }
   return false;
 }
 
 /**
- * True when a `// public` opt-out comment sits on or just above the handler
- * declared at 1-indexed `handlerLine`. Scans `contentLines` for the handler's
- * own line and the line immediately above it (a leading annotation), using
- * `.at()` rather than bracket indexing to avoid a dynamic-index access
- * pattern (entropy-detector.ts precedent).
+ * True when a `// public` endpoint comment sits on the handler's own line or
+ * the line directly above it (the per-handler opt-out — FEATURES.md CAT-3
+ * FP note).
  */
 function hasPublicCommentNear(contentLines: string[], handlerLine: number): boolean {
   const sameLine = contentLines.at(handlerLine - 1) ?? "";
@@ -165,12 +325,49 @@ interface HandlerSite {
   line: number;
 }
 
+/** Human description of one unprotected handler, for the finding message. */
+function describeHandler(kind: EntryKind, name: string): string {
+  if (kind === "server-action") {
+    return `Server Action ${name} (a "use server" export — a public POST endpoint)`;
+  }
+  if (kind === "pages-api") {
+    return "Pages Router API handler (serves every HTTP method)";
+  }
+  return `Exported Next.js route handler ${name}`;
+}
+
+/** Builds the AUTH-01 finding for one unprotected handler. */
+function buildFinding(
+  filePath: string,
+  kind: EntryKind,
+  site: HandlerSite,
+  middlewareEnforcesAuth: boolean,
+): Finding {
+  const subject = describeHandler(kind, site.name);
+  const severity: Severity = middlewareEnforcesAuth ? "MEDIUM" : site.name === "GET" ? "HIGH" : "CRITICAL";
+  return {
+    ruleId: "AUTH-01",
+    category: "auth",
+    detectorName: "route-auth",
+    file: filePath,
+    line: site.line,
+    severity,
+    confidence: middlewareEnforcesAuth ? "LOW" : "MEDIUM",
+    message: middlewareEnforcesAuth
+      ? `${subject} has no authentication check of its own; middleware enforces auth — verify its matcher covers this route.`
+      : `${subject} has no authentication or authorization check.`,
+    remediation:
+      "Add a session/token check at the top of this handler (e.g. await auth(), await getServerSession(), or supabase.auth.getUser()) and return a 401 response when the request is unauthenticated, or annotate the handler with a // public endpoint comment if it is intentionally open.",
+    matchedText: site.name,
+  };
+}
+
 export const routeAuthDetector: Detector = {
   config: {
     name: "route-auth",
     category: "auth",
     requiresStack: ["nextjs"],
-    globs: ["**/app/**/route.ts", "**/app/**/route.tsx", "**/app/**/route.js", "**/app/**/route.jsx"],
+    globs: ["**/*.{ts,tsx,js,jsx,mjs}"],
   },
 
   // Not declared `async`: the body is synchronous AST work wrapped in
@@ -185,12 +382,20 @@ export const routeAuthDetector: Detector = {
         return Promise.resolve([]);
       }
 
-      // 2. FP ALLOWLIST + route-filename guard.
-      if (isAllowlistedPath(ctx.filePath) || !isRouteFile(ctx.filePath)) {
+      // 2. FP ALLOWLIST + entry-point guard (cheap text check before the AST).
+      if (isAllowlistedPath(ctx.filePath)) {
+        return Promise.resolve([]);
+      }
+      const routeKind: EntryKind | undefined = isRouteFile(ctx.filePath)
+        ? "route"
+        : isPagesApiFile(ctx.filePath)
+          ? "pages-api"
+          : undefined;
+      if (routeKind === undefined && !ctx.content.includes("use server")) {
         return Promise.resolve([]);
       }
 
-      // 3. PUBLIC-PATH SUPPRESSION — a `public` route segment is open by design.
+      // 3. PUBLIC-PATH SUPPRESSION — a `public` (or public-by-nature) route segment is open by design.
       if (hasPublicPathSegment(ctx.filePath)) {
         return Promise.resolve([]);
       }
@@ -199,9 +404,19 @@ export const routeAuthDetector: Detector = {
       if (!isBabelFile(ctx.ast)) {
         return Promise.resolve([]);
       }
+      const kind: EntryKind | undefined =
+        routeKind ?? (isServerActionModule(ctx.ast) ? "server-action" : undefined);
+      if (kind === undefined) {
+        return Promise.resolve([]);
+      }
+
+      // Webhook signatures, cron secrets, and API-key headers are auth too.
+      if (NON_SESSION_AUTH_RE.test(ctx.content)) {
+        return Promise.resolve([]);
+      }
 
       // 5. WALK the File once: gather file-scoped auth-call presence and every
-      //    exported HTTP-method handler site (name + line).
+      //    exported handler site (name + line).
       let fileHasAuthCall = false;
       const handlerSites: HandlerSite[] = [];
 
@@ -212,42 +427,35 @@ export const routeAuthDetector: Detector = {
           }
         },
         ExportNamedDeclaration(path) {
-          const name = exportedHandlerName(path.node);
+          if (kind === "pages-api") {
+            return;
+          }
+          const name = exportedHandlerName(path.node, kind);
           if (name === undefined) {
             return;
           }
           const line = path.node.loc?.start.line ?? 1;
           handlerSites.push({ name, line });
         },
+        ExportDefaultDeclaration(path) {
+          if (kind !== "pages-api" || !isDefaultHandlerExport(path.node)) {
+            return;
+          }
+          handlerSites.push({ name: "default", line: path.node.loc?.start.line ?? 1 });
+        },
       });
 
-      // A file-scoped auth call protects the route's handlers — suppress all.
+      // A file-scoped auth call protects the file's handlers — suppress all.
       if (fileHasAuthCall) {
         return Promise.resolve([]);
       }
 
       const contentLines = ctx.content.split("\n");
-      const findings: Finding[] = [];
-
-      for (const site of handlerSites) {
+      const middlewareEnforcesAuth = hasEnforcingMiddleware(ctx.fileSet);
+      const findings = handlerSites
         // Per-handler `// public` opt-out (comment on or above the handler).
-        if (hasPublicCommentNear(contentLines, site.line)) {
-          continue;
-        }
-        findings.push({
-          ruleId: "AUTH-01",
-          category: "auth",
-          detectorName: "route-auth",
-          file: ctx.filePath,
-          line: site.line,
-          severity: "CRITICAL",
-          confidence: "MEDIUM",
-          message: `Exported Next.js route handler ${site.name} has no authentication or authorization check.`,
-          remediation:
-            "Add a session/token check at the top of this handler (e.g. await getServerSession() or supabase.auth.getUser()) and return a 401 response when the request is unauthenticated, or annotate the handler with a // public endpoint comment if it is intentionally open.",
-          matchedText: site.name,
-        });
-      }
+        .filter((site) => !hasPublicCommentNear(contentLines, site.line))
+        .map((site) => buildFinding(ctx.filePath, kind, site, middlewareEnforcesAuth));
 
       return Promise.resolve(findings);
     } catch {

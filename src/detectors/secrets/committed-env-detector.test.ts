@@ -116,48 +116,9 @@ describe("committedEnvDetector — clean cases (FP allowlist paths)", () => {
   });
 });
 
-describe("committedEnvDetector — clean cases (gitignore-excluded)", () => {
-  it("does NOT flag .env when .gitignore lists it by exact basename", async () => {
+describe("committedEnvDetector — gitignore is decided by the walker, not here", () => {
+  it("flags any env file it receives, even one a root .gitignore lists (git may still track it)", async () => {
     const files = { ".env": "SECRET=abc123", ".gitignore": "node_modules\n.env\ndist\n" };
-    const ctx = makeContext(".env", files);
-
-    const findings = await committedEnvDetector.detect(ctx);
-
-    expect(findings).toHaveLength(0);
-  });
-
-  it("does NOT flag .env when .gitignore lists a .env* glob entry", async () => {
-    const files = { ".env": "SECRET=abc123", ".gitignore": "node_modules\n.env*\n" };
-    const ctx = makeContext(".env", files);
-
-    const findings = await committedEnvDetector.detect(ctx);
-
-    expect(findings).toHaveLength(0);
-  });
-
-  it("does NOT flag .env when .gitignore lists the full relative path", async () => {
-    const files = { "config/.env": "SECRET=abc123", ".gitignore": "config/.env\n" };
-    const ctx = makeContext("config/.env", files);
-
-    const findings = await committedEnvDetector.detect(ctx);
-
-    expect(findings).toHaveLength(0);
-  });
-
-  it("ignores blank lines and # comments in .gitignore when checking exclusion", async () => {
-    const files = {
-      ".env": "SECRET=abc123",
-      ".gitignore": "# secrets\n\n.env\n\n# build\ndist\n",
-    };
-    const ctx = makeContext(".env", files);
-
-    const findings = await committedEnvDetector.detect(ctx);
-
-    expect(findings).toHaveLength(0);
-  });
-
-  it("STILL flags .env when .gitignore exists but does not exclude it", async () => {
-    const files = { ".env": "SECRET=abc123", ".gitignore": "node_modules\ndist\n" };
     const ctx = makeContext(".env", files);
 
     const findings = await committedEnvDetector.detect(ctx);
