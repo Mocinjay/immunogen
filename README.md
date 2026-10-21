@@ -33,13 +33,13 @@ Run against a deliberately contaminated fixture app:
 GRADE: F — Critical
 Ship Score: 0/100 — High risk
 Verdict: blocked
-Critical: 17  High: 34
+Critical: 13  High: 6
 
   CRITICAL SEC-05 .env:1
     Committed environment file (.env) found in the scanned tree. [confidence: HIGH]
 
   CRITICAL SEC-01 .env:2
-    Hardcoded Stripe live secret key (sk_live_) found in source. [confidence: HIGH]
+    Hardcoded Stripe live secret key (sk_live_/rk_live_) found in source. [confidence: HIGH]
     matched: sk_l****
 
   CRITICAL SEC-04 .env:3
@@ -53,13 +53,9 @@ Critical: 17  High: 34
     Exported Next.js route handler POST has no authentication or authorization check. [confidence: MEDIUM]
     matched: POST
 
-  CRITICAL AUTH-01 app/api/users/route.ts:5
-    Exported Next.js route handler GET has no authentication or authorization check. [confidence: MEDIUM]
-    matched: GET
-
-  CRITICAL AUTH-01 app/debug/route.ts:5
-    Exported Next.js route handler GET has no authentication or authorization check. [confidence: MEDIUM]
-    matched: GET
+  CRITICAL AUTH-02 firestore.rules:5
+    Firebase rule grants public read/write access (allow ...: if true). [confidence: HIGH]
+    matched: allow read, write: if true;
 ```
 
 🔴 **Contaminated — quarantine before shipping.** Every hit above is a detected contaminant with a `ruleId` and exact `file:line` — secrets are redacted, never printed in full.
@@ -104,17 +100,17 @@ immunogen isn't the only scanner for AI-built apps — but it's the only one tha
 
 ## What it screens for
 
-11 categories and 17 detectors on a repo scan — plus a 12th category of 5 web-probe detectors when you screen a live URL — the launch-blocking problems coding agents quietly ship.
+11 categories and 19 detectors on a repo scan — plus a 12th category of 5 web-probe detectors when you screen a live URL — the launch-blocking problems coding agents quietly ship.
 
 | Category | What it catches |
 |---|---|
-| Secrets | Hardcoded provider keys (Stripe, AWS, OpenAI incl. `sk-proj-`, Anthropic, Supabase `service_role`/`sb_secret_`), committed `.env` files, high-entropy tokens (prose, URLs, hashes, and lockfiles are ignored) |
-| Client-bundle exposure | Secret-named env vars leaking into the browser via `NEXT_PUBLIC_`/`VITE_` prefixes |
-| Auth & RLS | Unauthenticated route handlers, open Firebase rules, missing Supabase row-level security |
-| Payment safety | Stripe webhook handlers that skip signature verification |
+| Secrets | Hardcoded provider keys (Stripe, AWS, OpenAI incl. `sk-proj-`, Anthropic, Supabase `service_role`/`sb_secret_`, GitHub, Slack, SendGrid, Groq, xAI, Hugging Face, Replicate, npm), committed private keys / service-account JSON, committed `.env` files (git-tracked, or not covered by any `.gitignore`), high-entropy tokens (prose, URLs, hashes, and lockfiles are ignored) |
+| Client-bundle exposure | Secret-named env vars inlined into the client via `NEXT_PUBLIC_`/`VITE_`/`EXPO_PUBLIC_`/`REACT_APP_`/`NUXT_PUBLIC_`/`GATSBY_` (public-by-design keys like the Supabase anon key are not flagged), LLM SDKs run in the browser with `dangerouslyAllowBrowser` |
+| Auth & RLS | Unauthenticated App Router handlers, Pages Router API routes, and Server Actions; Supabase tables created without RLS and `using (true)` write policies (read from your migrations); open Firebase rules incl. test-mode and signed-in-only wildcards; `jwt.decode()` without verify |
+| Payment safety | Stripe webhook handlers that skip signature verification, charge amounts taken from the request |
 | Dependencies (OSV) | Known CVEs in the direct dependencies of every `package.json` (root and nested apps like `app/` or `apps/web/`) via the OSV.dev batch API, with offline fallback |
-| Injection / XSS | Unsanitized `dangerouslySetInnerHTML` |
-| CORS & headers | Wildcard CORS with credentials, missing Content-Security-Policy |
+| Injection / XSS | Unsanitized `dangerouslySetInnerHTML`, SQL built by interpolation into raw query APIs (`$queryRawUnsafe`, `` .query(`... ${x}`) ``), `eval`/`new Function`/shell `exec` on dynamic input |
+| CORS & headers | Wildcard CORS with credentials, `cors({ origin: true, credentials: true })` / reflected origins, missing Content-Security-Policy |
 | Storage | Public Firebase/Firestore/Storage rules, unpoliced Supabase buckets |
 | Legal | Missing privacy-policy / terms surface when the app collects user data |
 | Config / debug | Full `process.env` dumps to logs or debug endpoints |
@@ -123,22 +119,34 @@ immunogen isn't the only scanner for AI-built apps — but it's the only one tha
 ## Architecture
 
 ```
-repo → ingest (walk + AST cache) → detectors (17, 11 categories) → Ship Score → reporters (terminal · json · sarif)
+repo → ingest (walk + AST cache) → detectors (19, 11 categories) → Ship Score → reporters (terminal · json · sarif)
 ```
 
 ## CLI usage
 
 ```sh
-immunogen [path] [--format terminal|json|sarif] [--offline] [--no-llm] [--authorize] [--allow-private]
+immunogen [path] [--format terminal|json|sarif] [--offline] [--no-ignore] [--no-llm] [--authorize] [--allow-private]
 ```
 
-- `[path]` — path to the repository to scan (default: the current directory), or a live `https://`/`http://` URL to screen.
+- `[path]` — path to the repository to scan (default: the current directory), a git repo URL to clone and scan (`https://github.com/owner/repo`, GitLab, Bitbucket, Codeberg, or any `.git` URL), or a live `https://`/`http://` URL to screen.
 - `--format terminal|json|sarif` — output format (default `terminal`). `json` is a stable machine-readable `ScanResult`; `sarif` is for GitHub code scanning / other SARIF-aware tooling.
 - `--offline` — never touch the network: skip the OSV.dev lookup and check dependencies against the bundled offline advisory list only (the report notes the dependency check is incomplete).
+- `--no-ignore` — disregard `.immunogenignore` and inline `immunogen-ignore` comments (see [Suppressing findings](#suppressing-findings)) — use it when auditing a repo you do not control.
 - `--no-llm` — disable LLM fix-prompt enrichment. This is already the default; the flag exists for explicitness in scripts/CI.
 - `--authorize` — required consent gate to screen a live URL target (see [Screen a live URL](#screen-a-live-url)). Has no effect when `<path>` is a local repo.
 - `--allow-private` — escape hatch letting live-URL screening target a loopback/private/link-local host (local dev/test only).
 - **Exit code:** `1` when the verdict is `blocked` (contaminated), `0` when `pass` (cleared), `2` when the scan could not run at all (bad path, missing `--authorize`, refused private host, ...) — drop it straight into a CI gate.
+
+### Suppressing findings
+
+Accept a reviewed finding with a comment on its line or the line above it — bare to cover every rule there, or with the rule ids to cover just those:
+
+```ts
+// immunogen-ignore AUTH-01 — public newsletter signup, rate-limited upstream
+export async function POST(req: Request) { /* ... */ }
+```
+
+Exclude whole paths (vendored code, seed data) with a `.immunogenignore` file at the scan root, in `.gitignore` syntax. Route handlers can also be marked with a `// public` comment.
 
 ### Library usage
 
