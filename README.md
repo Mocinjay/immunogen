@@ -15,7 +15,7 @@
 
 </div>
 
-A clean bill of health for AI-built apps, before you ship. immunogen is a static, offline-first screen for repos built with Cursor, Claude Code, Lovable, Bolt, v0, or Replit — it never executes your code, reads it once, and returns a 0–100 **Ship Score** across 11 categories, including the AI layer itself (skills, MCP servers, agent/system prompts) — a surface most scanners skip entirely.
+A clean bill of health for AI-built apps, before you ship. immunogen is a static, offline-first screen for repos built with Cursor, Claude Code, Lovable, Bolt, v0, or Replit — JavaScript/TypeScript, Python, and Go — it never executes your code, reads it once, and returns a 0–100 **Ship Score** across 12 categories, including the AI layer itself (skills, MCP servers, agent/system prompts) — a surface most scanners skip entirely.
 
 ## Quickstart
 
@@ -100,26 +100,27 @@ immunogen isn't the only scanner for AI-built apps — but it's the only one tha
 
 ## What it screens for
 
-11 categories and 19 detectors on a repo scan — plus a 12th category of 5 web-probe detectors when you screen a live URL — the launch-blocking problems coding agents quietly ship.
+12 categories and 23 detectors on a repo scan (JavaScript/TypeScript, Python, Go) — plus 5 web-probe detectors when you screen a live URL — the launch-blocking problems coding agents quietly ship.
 
 | Category | What it catches |
 |---|---|
-| Secrets | Hardcoded provider keys (Stripe, AWS, OpenAI incl. `sk-proj-`, Anthropic, Supabase `service_role`/`sb_secret_`, GitHub, Slack, SendGrid, Groq, xAI, Hugging Face, Replicate, npm), committed private keys / service-account JSON, committed `.env` files (git-tracked, or not covered by any `.gitignore`), high-entropy tokens (prose, URLs, hashes, and lockfiles are ignored) |
+| Secrets | Hardcoded provider keys (Stripe, AWS, OpenAI incl. `sk-proj-`, Anthropic, Gemini / Google `AIza` keys outside Firebase/Maps client config, Supabase `service_role`/`sb_secret_`, GitHub, Slack, SendGrid, Resend, Groq, xAI, Hugging Face, Replicate, npm), committed private keys / service-account JSON, committed `.env` files (git-tracked, or not covered by any `.gitignore`), high-entropy tokens (prose, URLs, hashes, and lockfiles are ignored) |
 | Client-bundle exposure | Secret-named env vars inlined into the client via `NEXT_PUBLIC_`/`VITE_`/`EXPO_PUBLIC_`/`REACT_APP_`/`NUXT_PUBLIC_`/`GATSBY_` (public-by-design keys like the Supabase anon key are not flagged), LLM SDKs run in the browser with `dangerouslyAllowBrowser` |
-| Auth & RLS | Unauthenticated App Router handlers, Pages Router API routes, and Server Actions; Supabase tables created without RLS and `using (true)` write policies (read from your migrations); open Firebase rules incl. test-mode and signed-in-only wildcards; `jwt.decode()` without verify |
-| Payment safety | Stripe webhook handlers that skip signature verification, charge amounts taken from the request |
-| Dependencies (OSV) | Known CVEs in the direct dependencies of every `package.json` (root and nested apps like `app/` or `apps/web/`) via the OSV.dev batch API, with offline fallback |
-| Injection / XSS | Unsanitized `dangerouslySetInnerHTML`, SQL built by interpolation into raw query APIs (`$queryRawUnsafe`, `` .query(`... ${x}`) ``), `eval`/`new Function`/shell `exec` on dynamic input |
-| CORS & headers | Wildcard CORS with credentials, `cors({ origin: true, credentials: true })` / reflected origins, missing Content-Security-Policy |
+| Auth & RLS | Unauthenticated routes — Next.js App Router handlers, Pages Router API routes, Server Actions, Express/Fastify/Hono/Koa, FastAPI/Flask, Go (Gin/Echo/Chi/Fiber/net/http); Supabase tables created without RLS and `using (true)` write policies (read from your migrations); open Firebase rules incl. test-mode and signed-in-only wildcards; JWTs decoded without verification; auth tokens stored in `localStorage` |
+| Abuse / rate limiting | AI endpoints that call a paid LLM API and login/sign-up/password-reset endpoints with no rate limiting |
+| Payment safety | Stripe webhook handlers that skip signature verification, charge amounts taken from the request (JS, Python, Go) |
+| Dependencies (OSV) | Known vulnerabilities in every resolved package — direct and transitive, read from `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` / `bun.lock` / `poetry.lock` / `uv.lock` / `Pipfile.lock`, or from `package.json` / `requirements.txt` / `pyproject.toml` / `go.mod` when there is no lockfile — rated by each advisory's real severity (GitHub rating or CVSS v3 score), with an offline fallback |
+| Injection / XSS | Unsanitized `dangerouslySetInnerHTML`; SQL built by interpolation (`$queryRawUnsafe`, `` .query(`... ${x}`) ``, Python f-string `execute`, Go `Sprintf` queries); `eval` / `exec` / shell commands / unsafe YAML or pickle on dynamic input; server-side request forgery (fetching a URL taken from the request); open redirects |
+| CORS & headers | Wildcard CORS with credentials, any-origin-with-credentials setups (`cors({ origin: true, credentials: true })`, FastAPI/flask-cors, Go cors packages, reflected origins), missing Content-Security-Policy |
 | Storage | Public Firebase/Firestore/Storage rules, unpoliced Supabase buckets |
 | Legal | Missing privacy-policy / terms surface when the app collects user data |
-| Config / debug | Full `process.env` dumps to logs or debug endpoints |
+| Config / debug | Full environment dumps (`process.env`, `os.environ`, `os.Environ()`) to logs or HTTP responses |
 | ⭐ AI layer | Prompt-injection strings, data-exfiltration patterns, and MCP tool-poisoning/least-privilege gaps in skills, rules, and agent prompts — a layer most scanners skip |
 
 ## Architecture
 
 ```
-repo → ingest (walk + AST cache) → detectors (19, 11 categories) → Ship Score → reporters (terminal · json · sarif)
+repo → ingest (walk + AST cache) → detectors (23, 12 categories) → Ship Score → reporters (terminal · json · sarif)
 ```
 
 ## CLI usage
@@ -241,7 +242,7 @@ A `blocked` verdict fails the step; a `pass` verdict clears it — the repo's ex
 
 ## Roadmap
 
-Planned for v2: Python/Go detector coverage, and deeper detectors (transitive lockfile traversal, slopsquatting/hallucinated-package detection, JWT storage checks, SQL injection detection). Live-URL screening shipped in v2 (see [Screen a live URL](#screen-a-live-url)).
+Planned: Django and Rails route coverage, slopsquatting / hallucinated-package detection, and cross-file data-flow for injection rules. Shipped since v1: live-URL screening (see [Screen a live URL](#screen-a-live-url)), Python and Go support, lockfile (transitive) dependency checks with real advisory severity, SSRF / open-redirect / rate-limit / token-storage rules.
 
 ## Contributing
 
