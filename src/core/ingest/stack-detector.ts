@@ -5,8 +5,8 @@
  * dependencies and directory structure (the walker's `Map<relativePath,
  * rawText>` output — see src/core/ingest/file-walker.ts) and returns a
  * frozen `StackHints` object (src/core/types.ts) identifying Next.js,
- * Vite, Express, Supabase, Firebase, Stripe, Prisma, MCP JSON, Claude
- * skills, and Cursor rules.
+ * Vite, Express, Fastify, Hono, Koa, React Native, Supabase, Firebase,
+ * Stripe, Prisma, MCP JSON, Claude skills, and Cursor rules.
  *
  * These hints gate which framework-specific detectors run later in the
  * pipeline (ARCHITECTURE.md Pattern 4: a Supabase RLS detector should
@@ -158,6 +158,9 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
   const isVite = hasViteDep || hasViteConfig;
 
   const isExpress = "express" in deps;
+  const isFastify = "fastify" in deps;
+  const isHono = "hono" in deps;
+  const isKoa = "koa" in deps || "@koa/router" in deps || "koa-router" in deps;
 
   const isReactNative = "react-native" in deps || "expo" in deps;
 
@@ -186,6 +189,15 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
   }
   if (isExpress) {
     frameworks.add("express");
+  }
+  if (isFastify) {
+    frameworks.add("fastify");
+  }
+  if (isHono) {
+    frameworks.add("hono");
+  }
+  if (isKoa) {
+    frameworks.add("koa");
   }
   if (isReactNative) {
     frameworks.add("react-native");

@@ -87,7 +87,7 @@ function pathHasPrivacyOrTermsEvidence(path: string): boolean {
 }
 
 /** Stack hints that mark a user-facing app (see APP GATE above). */
-const APP_FRAMEWORKS = ["nextjs", "vite", "express", "react-native", "supabase", "firebase"];
+const APP_FRAMEWORKS = ["nextjs", "vite", "express", "fastify", "hono", "koa", "react-native", "supabase", "firebase"];
 
 export const legalDetector: Detector = {
   config: {

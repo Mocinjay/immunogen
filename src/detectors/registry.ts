@@ -37,7 +37,7 @@ import { corsDetector, cspDetector } from "./cors-headers/index.js";
 import { stripeDetector } from "./payment/index.js";
 import { legalDetector } from "./legal/index.js";
 import { firebaseRulesDetector, supabaseDetector, supabaseRlsDetector } from "./storage/index.js";
-import { routeAuthDetector } from "./auth/index.js";
+import { routeAuthDetector, serverRouteAuthDetector } from "./auth/index.js";
 import { dangerousCodeDetector, xssDetector } from "./injection/index.js";
 import { osvDetector } from "./deps/index.js";
 import {
@@ -75,6 +75,7 @@ export const DEFAULT_DETECTORS: Detector[] = [
   supabaseDetector,
   supabaseRlsDetector,
   routeAuthDetector,
+  serverRouteAuthDetector,
   xssDetector,
   dangerousCodeDetector,
   osvDetector,

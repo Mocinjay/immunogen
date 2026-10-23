@@ -64,6 +64,7 @@ describe("runDetectors — fan-out and aggregation", () => {
       "supabase",
       "supabase-rls",
       "route-auth",
+      "server-route-auth",
       "xss",
       "dangerous-code",
       "osv",
