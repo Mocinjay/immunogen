@@ -68,6 +68,7 @@ export type Category =
   | "legal"
   | "config"
   | "ai-layer"
+  | "abuse"
   | "web";
 
 /**

@@ -69,6 +69,7 @@ describe("runDetectors — fan-out and aggregation", () => {
       "xss",
       "dangerous-code",
       "py-go-code",
+      "rate-limit",
       "osv",
       "prompt-injection",
       "exfiltration",
