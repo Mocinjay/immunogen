@@ -2,3 +2,5 @@
 export { routeAuthDetector } from "./route-auth-detector.js";
 /** Barrel re-export of serverRouteAuthDetector (AUTH-01 for Express / Fastify / Hono / Koa routes). */
 export { serverRouteAuthDetector } from "./server-route-auth-detector.js";
+/** Barrel re-export of pyGoRouteAuthDetector (AUTH-01 for FastAPI / Flask / Go routes). */
+export { pyGoRouteAuthDetector } from "./py-go-route-auth-detector.js";

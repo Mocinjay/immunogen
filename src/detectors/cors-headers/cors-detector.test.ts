@@ -175,3 +175,40 @@ describe("corsDetector — CORS-02 credentials for any (reflected) origin", () =
     expect(await summarize("res.setHeader('Access-Control-Allow-Origin', req.headers.origin);")).toEqual([]);
   });
 });
+
+describe("corsDetector — Python and Go CORS-02", () => {
+  async function ruleIds(content: string, filePath: string): Promise<string[]> {
+    const findings = await corsDetector.detect(makeContext(content, filePath));
+    return findings.map((finding) => `${finding.ruleId} L${String(finding.line)}`);
+  }
+
+  it("flags FastAPI CORSMiddleware with allow_origins=['*'] and allow_credentials=True", async () => {
+    const content = [
+      "app.add_middleware(",
+      "    CORSMiddleware,",
+      '    allow_origins=["*"],',
+      "    allow_credentials=True,",
+      ")",
+    ].join("\n");
+
+    expect(await ruleIds(content, "main.py")).toEqual(["CORS-02 L3"]);
+  });
+
+  it("flags flask-cors with supports_credentials and no origin restriction", async () => {
+    expect(await ruleIds("CORS(app, supports_credentials=True)", "app.py")).toEqual(["CORS-02 L1"]);
+    expect(await ruleIds('CORS(app, origins="https://app.example.com", supports_credentials=True)', "app.py")).toEqual([]);
+  });
+
+  it("flags Go rs/cors and gin-contrib/cors any-origin + credentials", async () => {
+    const rsCors = 'c := cors.New(cors.Options{\n\tAllowedOrigins: []string{"*"},\n\tAllowCredentials: true,\n})';
+    const gin = "r.Use(cors.New(cors.Config{\n\tAllowAllOrigins: true,\n\tAllowCredentials: true,\n}))";
+
+    expect(await ruleIds(rsCors, "main.go")).toEqual(["CORS-02 L2"]);
+    expect(await ruleIds(gin, "server/main.go")).toEqual(["CORS-02 L2"]);
+  });
+
+  it("does NOT flag any-origin without credentials", async () => {
+    expect(await ruleIds('app.add_middleware(CORSMiddleware, allow_origins=["*"])', "main.py")).toEqual([]);
+    expect(await ruleIds('cors.Options{AllowedOrigins: []string{"*"}}', "main.go")).toEqual([]);
+  });
+});

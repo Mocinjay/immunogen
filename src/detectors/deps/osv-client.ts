@@ -45,10 +45,12 @@ const OSV_TIMEOUT_MS = 10_000;
 /** OSV.dev batch query endpoint — no API key required (ARCHITECTURE.md "Integration Points"). */
 const OSV_QUERYBATCH_URL = "https://api.osv.dev/v1/querybatch";
 
-/** A single dependency to check, reduced to the only two fields ever sent over the network. */
+/** A single dependency to check, reduced to the only fields ever sent over the network. */
 export interface OsvQuery {
   name: string;
   version: string;
+  /** OSV ecosystem; defaults to npm. */
+  ecosystem?: "npm" | "PyPI" | "Go";
 }
 
 /** A single OSV.dev vulnerability record, narrowed to the `id` field this detector consumes. */
@@ -80,7 +82,7 @@ const sessionCache = new Map<string, OsvResult>();
 
 /** Builds the stable `name@version` cache key for a single query. */
 function cacheKey(query: OsvQuery): string {
-  return `${query.name}@${query.version}`;
+  return `${query.ecosystem ?? "npm"}:${query.name}@${query.version}`;
 }
 
 /**
@@ -141,7 +143,7 @@ export async function queryOsvBatch(queries: OsvQuery[]): Promise<OsvResult[]> {
     try {
       const body = JSON.stringify({
         queries: uncachedQueries.map((query) => ({
-          package: { name: query.name, ecosystem: "npm" },
+          package: { name: query.name, ecosystem: query.ecosystem ?? "npm" },
           version: query.version,
         })),
       });

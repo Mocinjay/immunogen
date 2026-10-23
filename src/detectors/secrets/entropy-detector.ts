@@ -618,7 +618,7 @@ export const secretsDetector: Detector = {
   config: {
     name: "secrets",
     category: "secrets",
-    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,json,env,txt,md}", "**/.env*"],
+    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,json,env,txt,md,py,go,yaml,yml,toml,ini,cfg,sh}", "**/.env*"],
   },
 
   // Not declared `async` — there is no network/disk wait in this text-only

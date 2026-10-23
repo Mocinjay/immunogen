@@ -237,3 +237,25 @@ describe("configDebugDetector — config", () => {
     expect(configDebugDetector.config.category).toBe("config");
   });
 });
+
+describe("configDebugDetector — Python and Go", () => {
+  async function ruleIds(content: string, filePath: string): Promise<string[]> {
+    const findings = await configDebugDetector.detect(makeContext(content, filePath));
+    return findings.map((finding) => `${finding.ruleId} L${String(finding.line)}`);
+  }
+
+  it("flags printing/logging the whole environment as CONFIG-01", async () => {
+    expect(await ruleIds("print(os.environ)\nlogger.info(dict(os.environ))", "app.py")).toEqual(["CONFIG-01 L1", "CONFIG-01 L2"]);
+    expect(await ruleIds("log.Println(os.Environ())", "main.go")).toEqual(["CONFIG-01 L1"]);
+  });
+
+  it("flags returning the whole environment from a handler as CONFIG-02", async () => {
+    expect(await ruleIds("    return jsonify(dict(os.environ))", "app.py")).toEqual(["CONFIG-02 L1"]);
+    expect(await ruleIds("\tc.JSON(200, os.Environ())", "main.go")).toEqual(["CONFIG-02 L1"]);
+  });
+
+  it("does NOT flag reading a single variable", async () => {
+    expect(await ruleIds('print(os.environ["PORT"])\nprint(os.environ.get("PORT"))', "app.py")).toEqual([]);
+    expect(await ruleIds('log.Println(os.Getenv("PORT"))', "main.go")).toEqual([]);
+  });
+});

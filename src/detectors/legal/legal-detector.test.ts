@@ -93,8 +93,21 @@ describe("legalDetector — config", () => {
     expect(legalDetector.config.category).toBe("legal");
   });
 
-  it("declares globs anchored on package.json only (the fires-once anchor)", () => {
-    expect(legalDetector.config.globs).toEqual(["package.json"]);
+  it("declares globs anchored on root manifests only (the fires-once anchor)", () => {
+    expect(legalDetector.config.globs).toEqual(["package.json", "pyproject.toml", "requirements.txt", "go.mod"]);
+  });
+
+  it("fires once, on the highest-priority manifest present, for a mixed-language repo", async () => {
+    const fileSet = new Map([
+      ["package.json", "{}"],
+      ["requirements.txt", "fastapi==0.110.0"],
+    ]);
+    const stackHints = { ...STACK_HINTS, frameworks: new Set(["fastapi"]) };
+    const onPackage = await legalDetector.detect({ filePath: "package.json", content: "{}", stackHints, fileSet });
+    const onRequirements = await legalDetector.detect({ filePath: "requirements.txt", content: "", stackHints, fileSet });
+
+    expect(onPackage).toHaveLength(1);
+    expect(onRequirements).toEqual([]);
   });
 });
 

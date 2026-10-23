@@ -132,7 +132,7 @@ describe("osvDetector — offline degradation is VISIBLE, never silent", () => {
 });
 
 describe("osvDetector — privacy (only name/version/ecosystem ever sent to OSV)", () => {
-  it("the request payload built for OSV contains ONLY name + version (queryOsvBatch's own argument), never other package.json fields", async () => {
+  it("the request payload built for OSV contains ONLY name + version + ecosystem (queryOsvBatch's own argument), never other package.json fields", async () => {
     queryOsvBatchMock.mockResolvedValue([{ vulns: [] }]);
     const packageJsonWithExtraFields = JSON.stringify({
       name: "fixture-app",
@@ -152,9 +152,9 @@ describe("osvDetector — privacy (only name/version/ecosystem ever sent to OSV)
     expect(serialized).not.toContain("someone@example.com");
     expect(serialized).not.toContain("scripts");
     expect(serialized).not.toContain("secret=abc123");
-    // Every query entry exposes only name + version (no other package.json keys leak through).
+    // Every query entry exposes only name + version + ecosystem (no other package.json keys leak through).
     for (const query of calledWith ?? []) {
-      expect(Object.keys(query).sort()).toEqual(["name", "version"]);
+      expect(Object.keys(query).sort()).toEqual(["ecosystem", "name", "version"]);
     }
   });
 });
@@ -237,5 +237,41 @@ describe("osvDetector — one finding per vulnerable package", () => {
     expect(findings[0]?.message).toBe(
       "Vulnerable dependency: next@14.0.0 (4 OSV advisories: GHSA-a, GHSA-b, GHSA-c, +1 more).",
     );
+  });
+});
+
+describe("osvDetector — Python and Go manifests", () => {
+  it("queries PyPI for pinned requirements.txt entries and reports at the manifest line", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "PYSEC-2023-1" }] }, { vulns: [] }]);
+    const content = "# deps\nFlask==2.0.1\nrequests>=2.0\nPyYAML==5.3\n";
+
+    const findings = await osvDetector.detect(makeContext(content, "api/requirements.txt"));
+
+    expect(queryOsvBatchMock.mock.calls[0]?.[0]).toEqual([
+      { name: "flask", version: "2.0.1", ecosystem: "PyPI" },
+      { name: "pyyaml", version: "5.3", ecosystem: "PyPI" },
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "DEP-01", file: "api/requirements.txt", line: 2 });
+    expect(findings[0]?.message).toBe("Vulnerable dependency: flask@2.0.1 (OSV advisory PYSEC-2023-1).");
+  });
+
+  it("queries the Go ecosystem for go.mod requirements", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "GO-2023-1" }] }]);
+
+    const findings = await osvDetector.detect(makeContext("module x\nrequire github.com/gin-gonic/gin v1.9.0\n", "go.mod"));
+
+    expect(queryOsvBatchMock.mock.calls[0]?.[0]).toEqual([
+      { name: "github.com/gin-gonic/gin", version: "1.9.0", ecosystem: "Go" },
+    ]);
+    expect(findings[0]?.remediation).toContain("ecosystem=Go");
+  });
+
+  it("emits the DEP-OFFLINE sentinel (no npm fallback list) when a Python manifest cannot be checked online", async () => {
+    queryOsvBatchMock.mockRejectedValue(new Error("offline"));
+
+    const findings = await osvDetector.detect(makeContext("flask==2.0.1\n", "requirements.txt"));
+
+    expect(findings.map((finding) => finding.ruleId)).toEqual(["DEP-OFFLINE"]);
   });
 });

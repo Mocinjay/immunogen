@@ -94,6 +94,53 @@ const OPTIONS_ANY_ORIGIN_RE = /\borigin\s*:\s*(?:true\b|['"`]\*['"`])/;
 const REFLECTED_ORIGIN_RE =
   /access-control-allow-origin['"`]?\s*[,:]\s*(?:req|request)\.(?:headers\.origin|headers\[\s*['"`]origin['"`]\s*\]|headers\.get\(\s*['"`]origin['"`]\s*\)|header\(\s*['"`]origin['"`]\s*\))/i;
 
+/**
+ * Python / Go CORS configurations that reflect any origin with credentials:
+ * FastAPI/Starlette `CORSMiddleware(allow_origins=["*"], allow_credentials=True)`
+ * (Starlette echoes the request Origin when both are set), flask-cors
+ * `CORS(app, supports_credentials=True)` with no or `"*"` origins, Go
+ * rs/cors `AllowedOrigins: []string{"*"}` / gin-contrib `AllowAllOrigins:
+ * true` / fiber `AllowOrigins: "*"` with `AllowCredentials: true`, or an
+ * `AllowOriginFunc` that always returns true. Each entry pairs an
+ * any-origin pattern with the credentials pattern it needs alongside.
+ */
+const PY_GO_ANY_ORIGIN_PATTERNS: ReadonlyArray<{ anyOrigin: (line: string) => boolean; credentials: RegExp; how: string }> = [
+  {
+    anyOrigin: (line) => /allow_origins\s*=\s*\[\s*["']\*["']\s*\]/.test(line),
+    credentials: /allow_credentials\s*=\s*True\b/,
+    how: "CORSMiddleware with allow_origins=['*'] and allow_credentials=True",
+  },
+  {
+    // flask-cors defaults to every origin when neither origins= nor resources= narrows it.
+    anyOrigin: (line) =>
+      /\bCORS\(/.test(line) &&
+      (!/\b(?:origins|resources)\s*=/.test(line) || /\borigins\s*=\s*["']\*["']/.test(line)),
+    credentials: /supports_credentials\s*=\s*True\b/,
+    how: "flask-cors with supports_credentials=True and any origin",
+  },
+  {
+    anyOrigin: (line) =>
+      /AllowedOrigins:\s*\[\]string\{\s*"\*"\s*\}|AllowAllOrigins:\s*true|AllowOrigins:\s*"\*"|AllowOrigins:\s*\[\]string\{\s*"\*"|AllowOriginFunc:\s*func\([^)]*\)\s*bool\s*\{\s*return\s+true/.test(line),
+    credentials: /AllowCredentials:\s*true/,
+    how: "Go CORS middleware with any origin and AllowCredentials: true",
+  },
+];
+
+/** CORS-02 findings for Python / Go files (see PY_GO_ANY_ORIGIN_PATTERNS). */
+function pythonGoReflectedOriginFindings(ctx: DetectorContext, lines: string[]): Finding[] {
+  const findings: Finding[] = [];
+  for (const pattern of PY_GO_ANY_ORIGIN_PATTERNS) {
+    if (!pattern.credentials.test(ctx.content)) {
+      continue;
+    }
+    const index = lines.findIndex((line) => pattern.anyOrigin(line));
+    if (index !== -1) {
+      findings.push(reflectedOriginFinding(ctx.filePath, index + 1, pattern.how));
+    }
+  }
+  return findings;
+}
+
 /** Builds a CORS-02 finding at `line`. */
 function reflectedOriginFinding(filePath: string, line: number, how: string): Finding {
   return {
@@ -134,7 +181,7 @@ export const corsDetector: Detector = {
   config: {
     name: "cors",
     category: "cors-headers",
-    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,json}"],
+    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,json,py,go}"],
   },
 
   // Not declared `async` — no network/disk wait in this text-only detector;
@@ -148,6 +195,10 @@ export const corsDetector: Detector = {
       }
 
       const lines = ctx.content.split("\n");
+
+      if (/\.(?:py|go)$/.test(ctx.filePath)) {
+        return Promise.resolve(pythonGoReflectedOriginFindings(ctx, lines));
+      }
 
       // First pass: find the line of the FIRST wildcard-origin header match
       // (if any) — this is the Finding's reported line per the plan's

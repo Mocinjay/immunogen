@@ -87,22 +87,51 @@ function pathHasPrivacyOrTermsEvidence(path: string): boolean {
 }
 
 /** Stack hints that mark a user-facing app (see APP GATE above). */
-const APP_FRAMEWORKS = ["nextjs", "vite", "express", "fastify", "hono", "koa", "react-native", "supabase", "firebase"];
+const APP_FRAMEWORKS = [
+  "nextjs",
+  "vite",
+  "express",
+  "fastify",
+  "hono",
+  "koa",
+  "react-native",
+  "supabase",
+  "firebase",
+  "fastapi",
+  "flask",
+  "django",
+  "gin",
+  "echo",
+  "chi",
+  "fiber",
+];
+
+/**
+ * Root manifests that can anchor this whole-repo check, in priority order:
+ * the first one present is the single anchor, so a repo with both a
+ * package.json and a pyproject.toml still gets exactly one finding.
+ */
+const ANCHOR_MANIFESTS = ["package.json", "pyproject.toml", "requirements.txt", "go.mod"];
 
 export const legalDetector: Detector = {
   config: {
     name: "legal",
     category: "legal",
-    // Fires-once anchor (see file header): package.json exists exactly once
-    // at root in every scanned repo, so detect() runs exactly once total —
-    // never once per file — for this whole-repo absence check.
-    globs: ["package.json"],
+    // Fires-once anchor (see file header): root manifests only, and detect()
+    // returns early for every one but the highest-priority manifest present
+    // (ANCHOR_MANIFESTS), so this whole-repo absence check runs once total.
+    globs: ANCHOR_MANIFESTS,
   },
 
   // Not declared `async` — no network/disk wait in this text-only detector;
   // the body is plain synchronous work wrapped in `Promise.resolve()`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
+      const anchor = ANCHOR_MANIFESTS.find((manifest) => ctx.fileSet.has(manifest)) ?? ctx.filePath;
+      if (ctx.filePath !== anchor) {
+        return Promise.resolve([]);
+      }
+
       const { frameworks, hasStripe } = ctx.stackHints;
       const isUserFacingApp = hasStripe || APP_FRAMEWORKS.some((framework) => frameworks.has(framework));
       if (!isUserFacingApp) {

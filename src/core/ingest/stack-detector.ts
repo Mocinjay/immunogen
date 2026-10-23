@@ -21,6 +21,8 @@
  * scanned package.json as a module (ENG-05) — it only reads strings out
  * of the in-memory fileSet and JSON.parses one of them, defensively.
  */
+import { manifestParserFor } from "./manifests.js";
+
 import type { StackHints } from "../types.js";
 
 /** package.json dependency/devDependency record shape, defensively typed. */
@@ -58,6 +60,32 @@ function readMergedDeps(fileSet: Map<string, string>): DepRecord {
     }
   }
   return merged;
+}
+
+/**
+ * Names of every Python and Go dependency declared in the repo's manifests
+ * (requirements*.txt, pyproject.toml, Pipfile, go.mod), keyed by ecosystem.
+ * Python names are PEP 503-normalized; Go names are full module paths.
+ */
+function readPythonAndGoDeps(fileSet: Map<string, string>): { python: Set<string>; go: Set<string> } {
+  const python = new Set<string>();
+  const go = new Set<string>();
+  for (const [path, content] of fileSet) {
+    const segments = path.split("/");
+    const parse = manifestParserFor(path);
+    if (parse === undefined || segments.some((segment) => SKIPPED_MANIFEST_SEGMENTS.has(segment))) {
+      continue;
+    }
+    for (const dependency of parse(content)) {
+      (dependency.ecosystem === "Go" ? go : python).add(dependency.name);
+    }
+  }
+  return { python, go };
+}
+
+/** True when any Go module path in `go` starts with one of `prefixes`. */
+function hasGoModule(go: Set<string>, prefixes: readonly string[]): boolean {
+  return [...go].some((module) => prefixes.some((prefix) => module.startsWith(prefix)));
 }
 
 /** True when any fileSet key (root or a nested app directory, never node_modules) has one of `configBasenames`. */
@@ -147,6 +175,7 @@ const VITE_CONFIG_BASENAMES = ["vite.config.js", "vite.config.ts", "vite.config.
  */
 export function detectStack(fileSet: Map<string, string>): StackHints {
   const deps = readMergedDeps(fileSet);
+  const { python, go } = readPythonAndGoDeps(fileSet);
 
   const hasNextDep = "next" in deps;
   const hasNextConfig = hasRootConfigFile(fileSet, NEXT_CONFIG_BASENAMES);
@@ -170,15 +199,18 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
   const hasSupabaseConfig = [...fileSet.keys()].some(
     (key) => key === "supabase/config.toml" || key.endsWith("/supabase/config.toml"),
   );
-  const hasSupabase = hasSupabaseDep || hasSupabaseConfig;
+  const hasSupabase = hasSupabaseDep || hasSupabaseConfig || python.has("supabase") || hasGoModule(go, ["github.com/supabase-community/"]);
 
-  const hasFirebase = ["firebase", "firebase-admin", "@react-native-firebase/app"].some((name) => name in deps);
+  const hasFirebase =
+    ["firebase", "firebase-admin", "@react-native-firebase/app"].some((name) => name in deps) ||
+    python.has("firebase-admin") ||
+    hasGoModule(go, ["firebase.google.com/go"]);
 
   const hasPrismaDep = "prisma" in deps;
   const hasPrismaSchema = fileSet.has("prisma/schema.prisma");
   const isPrisma = hasPrismaDep || hasPrismaSchema;
 
-  const hasStripe = "stripe" in deps;
+  const hasStripe = "stripe" in deps || python.has("stripe") || hasGoModule(go, ["github.com/stripe/stripe-go"]);
 
   const frameworks = new Set<string>();
   if (isNextjs) {
@@ -201,6 +233,28 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
   }
   if (isReactNative) {
     frameworks.add("react-native");
+  }
+  if (python.size > 0) {
+    frameworks.add("python");
+  }
+  for (const name of ["fastapi", "flask", "django"]) {
+    if (python.has(name)) {
+      frameworks.add(name);
+    }
+  }
+  if (go.size > 0 || [...fileSet.keys()].some((key) => key === "go.mod" || key.endsWith("/go.mod"))) {
+    frameworks.add("go");
+  }
+  const goFrameworks: ReadonlyArray<[string, string]> = [
+    ["gin", "github.com/gin-gonic/gin"],
+    ["echo", "github.com/labstack/echo"],
+    ["chi", "github.com/go-chi/chi"],
+    ["fiber", "github.com/gofiber/fiber"],
+  ];
+  for (const [hint, module] of goFrameworks) {
+    if (hasGoModule(go, [module])) {
+      frameworks.add(hint);
+    }
   }
   if (hasSupabase) {
     frameworks.add("supabase");

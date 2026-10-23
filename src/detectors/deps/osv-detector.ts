@@ -55,6 +55,7 @@
  */
 import { checkFallback, type FallbackEntry } from "./osv-fallback.js";
 import { queryOsvBatch } from "./osv-client.js";
+import { manifestParserFor, type Ecosystem } from "../../core/ingest/manifests.js";
 
 import type { Confidence, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
 import type { OsvQuery } from "./osv-client.js";
@@ -72,17 +73,23 @@ const DEP_OFFLINE_MESSAGE =
 /** Directory segments whose package.json is test scaffolding, not a shipped manifest (mirrors the secrets detector's FP allowlist). */
 const SKIPPED_MANIFEST_SEGMENTS = new Set(["node_modules", "__tests__", "fixtures", "mocks", "examples"]);
 
-/** True when `filePath` is a real `package.json` manifest this detector should check. */
+/** True when `filePath` is a real dependency manifest (package.json, or a Python/Go manifest) this detector should check. */
 function isScannableManifest(filePath: string): boolean {
   const segments = filePath.split("/");
-  return segments.at(-1) === "package.json" && !segments.some((segment) => SKIPPED_MANIFEST_SEGMENTS.has(segment));
+  const isManifest = segments.at(-1) === "package.json" || manifestParserFor(filePath) !== undefined;
+  return isManifest && !segments.some((segment) => SKIPPED_MANIFEST_SEGMENTS.has(segment));
 }
 
-/** A single direct dependency parsed out of package.json, ready for either the OSV or fallback path. */
+/** A single direct dependency parsed out of a manifest, ready for either the OSV or fallback path. */
 interface ParsedDependency {
+  ecosystem: Ecosystem;
   name: string;
-  /** The raw version specifier as written in package.json (may be a range, "latest", etc.). */
+  /** The version specifier as written (may be a range for npm), shown in messages. */
   rawVersion: string;
+  /** The version sent to OSV. */
+  queryVersion: string;
+  /** 1-indexed manifest line of the declaration. */
+  line: number;
 }
 
 /** package.json dependency/devDependency record shape, defensively typed (mirrors stack-detector.ts). */
@@ -142,7 +149,37 @@ function parseDirectDependencies(content: string): ParsedDependency[] {
     if (isUncomparableSpecifier(rawValue)) {
       continue;
     }
-    result.push({ name, rawVersion: rawValue });
+    result.push({
+      ecosystem: "npm",
+      name,
+      rawVersion: rawValue,
+      queryVersion: cleanVersionSpecifier(rawValue),
+      line: findDependencyLine(content, name),
+    });
+  }
+  return result;
+}
+
+/**
+ * Parses a Python or Go manifest into the dependencies OSV can check —
+ * only exactly-pinned versions (a range cannot be matched to advisories).
+ */
+function parseOtherEcosystemDependencies(filePath: string, content: string): ParsedDependency[] {
+  const parse = manifestParserFor(filePath);
+  if (parse === undefined) {
+    return [];
+  }
+  const result: ParsedDependency[] = [];
+  for (const dependency of parse(content)) {
+    if (dependency.version !== undefined) {
+      result.push({
+        ecosystem: dependency.ecosystem,
+        name: dependency.name,
+        rawVersion: dependency.version,
+        queryVersion: dependency.version,
+        line: dependency.line,
+      });
+    }
   }
   return result;
 }
@@ -194,7 +231,7 @@ const MAX_LISTED_ADVISORIES = 3;
  * (20+ advisories for an old `next`) flood the report and zero out the
  * Ship Score on its own.
  */
-function buildOsvFinding(filePath: string, dependency: ParsedDependency, content: string, vulnIds: string[]): Finding {
+function buildOsvFinding(filePath: string, dependency: ParsedDependency, vulnIds: string[]): Finding {
   const listed = vulnIds.slice(0, MAX_LISTED_ADVISORIES).join(", ");
   const more = vulnIds.length > MAX_LISTED_ADVISORIES ? `, +${String(vulnIds.length - MAX_LISTED_ADVISORIES)} more` : "";
   const advisories = vulnIds.length === 1 ? `OSV advisory ${listed}` : `${String(vulnIds.length)} OSV advisories: ${listed}${more}`;
@@ -203,11 +240,11 @@ function buildOsvFinding(filePath: string, dependency: ParsedDependency, content
     category: "deps",
     detectorName: "osv",
     file: filePath,
-    line: findDependencyLine(content, dependency.name),
+    line: dependency.line,
     severity: OSV_HIT_SEVERITY,
     confidence: OSV_HIT_CONFIDENCE,
     message: `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}).`,
-    remediation: `Upgrade ${dependency.name} to a version that resolves ${vulnIds.length === 1 ? "this advisory" : "these advisories"} — check https://osv.dev/list?ecosystem=npm&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`,
+    remediation: `Upgrade ${dependency.name} to a version that resolves ${vulnIds.length === 1 ? "this advisory" : "these advisories"} — check https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`,
   };
 }
 
@@ -215,7 +252,6 @@ function buildOsvFinding(filePath: string, dependency: ParsedDependency, content
 function buildFallbackFinding(
   filePath: string,
   dependency: ParsedDependency,
-  content: string,
   hit: Pick<FallbackEntry, "advisoryId" | "severity" | "title">,
 ): Finding {
   return {
@@ -223,7 +259,7 @@ function buildFallbackFinding(
     category: "deps",
     detectorName: "osv",
     file: filePath,
-    line: findDependencyLine(content, dependency.name),
+    line: dependency.line,
     severity: hit.severity,
     confidence: FALLBACK_HIT_CONFIDENCE,
     message: `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${hit.title}; advisory ${hit.advisoryId}).`,
@@ -254,13 +290,16 @@ function buildOfflineSentinel(filePath: string): Finding {
  * appends the DEP-OFFLINE sentinel afterward regardless of this list's
  * length (offline must never be a silent clean pass).
  */
-function runFallbackCheck(filePath: string, dependencies: ParsedDependency[], content: string): Finding[] {
+function runFallbackCheck(filePath: string, dependencies: ParsedDependency[]): Finding[] {
   const findings: Finding[] = [];
   for (const dependency of dependencies) {
-    const cleanedVersion = cleanVersionSpecifier(dependency.rawVersion);
-    const hit = checkFallback(dependency.name, cleanedVersion);
+    // The bundled offline list is npm-only.
+    if (dependency.ecosystem !== "npm") {
+      continue;
+    }
+    const hit = checkFallback(dependency.name, dependency.queryVersion);
     if (hit !== undefined) {
-      findings.push(buildFallbackFinding(filePath, dependency, content, hit));
+      findings.push(buildFallbackFinding(filePath, dependency, hit));
     }
   }
   return findings;
@@ -270,7 +309,14 @@ export const osvDetector: Detector = {
   config: {
     name: "osv",
     category: "deps",
-    globs: ["package.json", "**/package.json"],
+    globs: [
+      "package.json",
+      "**/package.json",
+      "**/requirements*.txt",
+      "**/pyproject.toml",
+      "**/Pipfile",
+      "**/go.mod",
+    ],
     requiresNetwork: true,
   },
 
@@ -280,18 +326,21 @@ export const osvDetector: Detector = {
         return [];
       }
 
-      const dependencies = parseDirectDependencies(ctx.content);
+      const dependencies = ctx.filePath.endsWith("package.json")
+        ? parseDirectDependencies(ctx.content)
+        : parseOtherEcosystemDependencies(ctx.filePath, ctx.content);
       if (dependencies.length === 0) {
         return [];
       }
 
       // Privacy contract (threat T-05-07-01): the OSV query payload is
-      // reduced to ONLY {name, version} here — nothing else from the
-      // parsed package.json (scripts, author, etc.) is ever passed to
+      // reduced to ONLY {name, version, ecosystem} here — nothing else from
+      // the parsed manifest (scripts, author, etc.) is ever passed to
       // queryOsvBatch, which itself only accepts this exact shape.
       const queries: OsvQuery[] = dependencies.map((dependency) => ({
         name: dependency.name,
-        version: cleanVersionSpecifier(dependency.rawVersion),
+        version: dependency.queryVersion,
+        ecosystem: dependency.ecosystem,
       }));
 
       try {
@@ -315,7 +364,7 @@ export const osvDetector: Detector = {
           }
           const vulnIds = [...new Set((result.vulns ?? []).map((vuln) => vuln.id))];
           if (vulnIds.length > 0) {
-            findings.push(buildOsvFinding(ctx.filePath, dependency, ctx.content, vulnIds));
+            findings.push(buildOsvFinding(ctx.filePath, dependency, vulnIds));
           }
         });
 
@@ -327,7 +376,7 @@ export const osvDetector: Detector = {
         // vulnerabilities found" (PITFALLS.md Pitfall 10). This catch
         // deliberately does not branch on the error's type or message: no
         // failure mode is special-cased back into a clean pass.
-        const fallbackFindings = runFallbackCheck(ctx.filePath, dependencies, ctx.content);
+        const fallbackFindings = runFallbackCheck(ctx.filePath, dependencies);
         // The DEP-OFFLINE sentinel is appended UNCONDITIONALLY here, even
         // when fallbackFindings.length === 0 — this is the non-negotiable
         // "offline is never a silent clean pass" requirement.

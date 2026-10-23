@@ -2,3 +2,5 @@
 export { xssDetector } from "./xss-detector.js";
 /** Barrel re-export of dangerousCodeDetector (INJECT-02 SQL injection, INJECT-03 eval/exec, AUTH-06 unverified JWT). */
 export { dangerousCodeDetector } from "./dangerous-code-detector.js";
+/** Barrel re-export of pyGoCodeDetector (INJECT-02 / INJECT-03 / AUTH-06 for Python and Go). */
+export { pyGoCodeDetector } from "./py-go-code-detector.js";
