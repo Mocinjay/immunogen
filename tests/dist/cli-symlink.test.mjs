@@ -26,8 +26,14 @@ const linkedCli = join(linkDir, "immunogen");
 
 /** Runs the symlinked CLI with `args` from `cwd`; returns { status, stdout, stderr }. */
 function runLinkedCli(args, cwd) {
-  const result = spawnSync(process.execPath, [linkedCli, ...args], { cwd, encoding: "utf8" });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  // NO_COLOR + ANSI stripping: CI forces colored output (picocolors honors the CI env var).
+  const result = spawnSync(process.execPath, [linkedCli, ...args], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, NO_COLOR: "1" },
+  });
+  const stripAnsi = (text) => text.replace(/\u001b\[[0-9;]*m/g, "");
+  return { status: result.status, stdout: stripAnsi(result.stdout), stderr: stripAnsi(result.stderr) };
 }
 
 /** Throws a descriptive error when `condition` is false. */
