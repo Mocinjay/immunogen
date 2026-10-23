@@ -130,3 +130,34 @@ describe("pyGoCodeDetector — INJECT-04 SSRF", () => {
     expect(await ruleIds(code, path)).toEqual([]);
   });
 });
+
+describe("pyGoCodeDetector — REDIRECT-01 open redirect", () => {
+  it.each([
+    ["Flask redirect(request.args.get('next'))", 'return redirect(request.args.get("next"))', "app.py"],
+    ["Django HttpResponseRedirect of request.GET", 'nxt = request.GET.get("next")\nreturn HttpResponseRedirect(nxt)', "views.py"],
+    ["FastAPI RedirectResponse(url=next)", '@app.get("/cb")\nasync def cb(next: str):\n    return RedirectResponse(url=next)', "main.py"],
+    ["Go http.Redirect of a query value", 'to := r.URL.Query().Get("to")\nhttp.Redirect(w, r, to, http.StatusFound)', "main.go"],
+    ["Gin c.Redirect of c.Query", 'c.Redirect(http.StatusFound, c.Query("next"))', "main.go"],
+  ])("flags %s", async (_label, code, path) => {
+    expect(await ruleIds(code, path)).toEqual(["REDIRECT-01"]);
+  });
+
+  it.each([
+    ["a fixed path", 'return redirect("/dashboard")', "app.py"],
+    ["a fixed-prefix f-string", 'return redirect(f"/orders/{request.args.get(\'id\')}")', "app.py"],
+    ["a Django-validated target", 'nxt = request.GET.get("next")\nif not url_has_allowed_host_and_scheme(nxt, allowed_hosts=None): nxt = "/"\nreturn HttpResponseRedirect(nxt)', "views.py"],
+    ["a Go prefix check", 'to := r.URL.Query().Get("to")\nif !strings.HasPrefix(to, "/") { to = "/" }\nhttp.Redirect(w, r, to, 302)', "main.go"],
+  ])("does NOT flag %s", async (_label, code, path) => {
+    expect(await ruleIds(code, path)).toEqual([]);
+  });
+});
+
+describe("pyGoCodeDetector — fixed-origin f-strings are not SSRF", () => {
+  it("does NOT flag a request value used only in the path of a fixed host", async () => {
+    expect(await ruleIds("requests.get(f\"https://api.example.com/items/{request.args['id']}\")", "app.py")).toEqual([]);
+  });
+
+  it("still flags a request value in the host position", async () => {
+    expect(await ruleIds("requests.get(f\"https://{request.args['host']}/status\")", "app.py")).toEqual(["INJECT-04"]);
+  });
+});

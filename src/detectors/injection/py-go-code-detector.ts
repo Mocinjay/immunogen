@@ -33,7 +33,13 @@
  *             from the request (`r.URL.Query().Get`, `r.FormValue`, Gin/Echo/
  *             Fiber `c.Query`/`c.PostForm`/`c.Param`/`c.FormValue`).
  *
- * SSRF is skipped in files that validate targets against an allowlist.
+ *   REDIRECT-01 (both, MEDIUM) Flask/Django/FastAPI `redirect(...)`,
+ *             `RedirectResponse(...)`, `HttpResponseRedirect(...)`, Go
+ *             `http.Redirect(w, r, X, ...)`, Gin/Echo/Fiber `c.Redirect(...)`
+ *             with a request-controlled target.
+ *
+ * SSRF is skipped in files that validate targets against an allowlist, and
+ * REDIRECT-01 in files that validate redirect targets.
  *
  * All findings are HIGH/MEDIUM, matching the JS rules.
  *
@@ -50,7 +56,7 @@ const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "exampl
 /** Static text that opens a SQL statement. */
 const SQL_START_RE = /^\s*(?:select|insert|update|delete|with|replace|merge|upsert|create|drop|alter)\b/i;
 
-type RuleId = "INJECT-02" | "INJECT-03" | "AUTH-06" | "INJECT-04";
+type RuleId = "INJECT-02" | "INJECT-03" | "AUTH-06" | "INJECT-04" | "REDIRECT-01";
 
 /** Message, remediation, and category per ruleId. */
 const RULE_COPY: Record<RuleId, { category: Category; message: string; remediation: string }> = {
@@ -73,6 +79,13 @@ const RULE_COPY: Record<RuleId, { category: Category; message: string; remediati
       "Server-side request to a URL taken from the request (SSRF) — an attacker can make your server call internal services (cloud metadata at 169.254.169.254, localhost admin ports) and read the response.",
     remediation:
       "Never fetch a user-supplied URL directly: parse it, allow only an explicit list of hosts (and https), reject private/link-local addresses after DNS resolution, and disable redirects.",
+  },
+  "REDIRECT-01": {
+    category: "injection",
+    message:
+      "Redirect target taken from the request (open redirect) — a link to your site can bounce users to a phishing page, and login flows can leak tokens to it.",
+    remediation:
+      "Only redirect to relative paths you control (Django: url_has_allowed_host_and_scheme; otherwise accept only values starting with a single \"/\") or map the value to an allowlist of destinations.",
   },
   "AUTH-06": {
     category: "auth",
@@ -151,8 +164,26 @@ const GO_JWT_VERIFIED_RE = /\bjwt\.Parse(?:WithClaims)?\(|\.Parse(?:WithClaims)?
 /** Python: request input. */
 const PY_REQUEST_SOURCE_RE = /\brequest\.(?:args|form|json|values|query_params|GET|POST|data|get_json\(|path_params)/;
 
-/** Python: a route parameter whose name says it carries a URL (FastAPI binds query/body params to these). */
-const PY_URL_PARAM_RE = /\b(url|uri|target|link|endpoint|callback(?:_url)?|webhook(?:_url)?|image_url|src|href|feed_url)\s*:\s*(?:str|HttpUrl|AnyUrl)/g;
+/** Python: a route parameter whose name says it carries a URL or redirect target (FastAPI binds query/body params to these). */
+const PY_URL_PARAM_RE =
+  /\b(url|uri|target|link|endpoint|callback|callback_url|webhook|webhook_url|image_url|src|href|feed_url|next|redirect|redirect_to|redirect_url|return_to|continue_url)\s*:\s*(?:str|HttpUrl|AnyUrl)/g;
+
+/** Python: a redirect call, capturing its target argument (matched with any `url=` keyword already stripped). */
+const PY_REDIRECT_CALL_RE = /\b(?:redirect|RedirectResponse|HttpResponseRedirect|HttpResponsePermanentRedirect)\(\s*([^,)\n]+)/;
+
+/** Python: evidence the file validates redirect targets. */
+const PY_REDIRECT_VALIDATION_RE =
+  /url_has_allowed_host_and_scheme|is_safe_url|urlparse\([^)]*\)\.netloc|\.startswith\(\s*["']\/["']\s*\)|ALLOWED_REDIRECT|is_safe_redirect/i;
+
+/** Go: redirect calls, capturing the target argument. */
+const GO_REDIRECT_CALL_RES: readonly RegExp[] = [
+  /\bhttp\.Redirect\(\s*\w+\s*,\s*\w+\s*,\s*([^,)\n]+)/,
+  /\bc\.Redirect\(\s*(?:http\.Status\w+|\d+)\s*,\s*([^,)\n]+)/,
+  /\bc\.Redirect\(\s*([^,)\n]+)\)/,
+];
+
+/** Go: evidence the file validates redirect targets. */
+const GO_REDIRECT_VALIDATION_RE = /strings\.HasPrefix\([^,]+,\s*"\/"\)|\.Host\s*(?:==|!=)|\.Hostname\(\)\s*(?:==|!=)|isSafeRedirect|allowedRedirect/i;
 
 /**
  * Python: an outbound HTTP call, capturing the first argument's leading
@@ -209,16 +240,21 @@ function requestTaintedNames(lines: string[], source: RegExp, language: "py" | "
 /** True when an outbound call's URL argument text is request-controlled (a tainted name, a direct read, or an f-string/format whose host is). */
 function isTaintedUrlArgument(argument: string, tainted: ReadonlySet<string>, source: RegExp): boolean {
   const text = argument.trim();
-  if (source.test(text)) {
+  const isStringLiteral = /^[fFrRbB]?["'`]/.test(text);
+  if (!isStringLiteral && source.test(text)) {
     return true;
   }
   const leadingName = text.match(/^(?:str\()?(\w+)/)?.[1];
   if (leadingName !== undefined && tainted.has(leadingName)) {
     return true;
   }
-  // f"{url}/x" / f"https://{host}/x" — the host part is a tainted name.
-  const hostExpression = text.replace(/^([fF]["'])https?:\/\//, "$1").match(/^[fF]["']\{(\w+)/)?.[1];
-  return hostExpression !== undefined && tainted.has(hostExpression);
+  // f"{url}/x" / f"https://{host}/x" — only a leading (scheme/host) placeholder lets the request pick the target.
+  const hostExpression = text.replace(/^([fF]["'])https?:\/\//, "$1").match(/^[fF]["']\{([^}]*)\}/)?.[1];
+  if (hostExpression === undefined) {
+    return false;
+  }
+  const hostName = hostExpression.match(/^\w+/)?.[0];
+  return source.test(hostExpression) || (hostName !== undefined && tainted.has(hostName));
 }
 
 /** One matched line. */
@@ -231,8 +267,11 @@ interface Site {
 /** Python rules over `lines`. */
 function pythonSites(lines: string[]): Site[] {
   const sites: Site[] = [];
-  const checksSsrf = !PY_GO_URL_ALLOWLIST_RE.test(lines.join("\n"));
-  const tainted = checksSsrf ? requestTaintedNames(lines, PY_REQUEST_SOURCE_RE, "py") : new Set<string>();
+  const content = lines.join("\n");
+  const checksSsrf = !PY_GO_URL_ALLOWLIST_RE.test(content);
+  const checksRedirects = !PY_REDIRECT_VALIDATION_RE.test(content);
+  const requestTainted = requestTaintedNames(lines, PY_REQUEST_SOURCE_RE, "py");
+  const tainted = checksSsrf ? requestTainted : new Set<string>();
   for (const [index, line] of lines.entries()) {
     if (/^\s*#/.test(line)) {
       continue;
@@ -249,6 +288,13 @@ function pythonSites(lines: string[]): Site[] {
       const argument = call?.[1] ?? call?.[2];
       if (argument !== undefined && isTaintedUrlArgument(argument, tainted, PY_REQUEST_SOURCE_RE)) {
         sites.push({ ruleId: "INJECT-04", line: index + 1, text: line });
+        continue;
+      }
+    }
+    if (checksRedirects) {
+      const target = line.replace(/\(\s*url\s*=\s*/, "(").match(PY_REDIRECT_CALL_RE)?.[1];
+      if (target !== undefined && isTaintedUrlArgument(target, requestTainted, PY_REQUEST_SOURCE_RE)) {
+        sites.push({ ruleId: "REDIRECT-01", line: index + 1, text: line });
       }
     }
   }
@@ -260,7 +306,9 @@ function goSites(lines: string[], content: string): Site[] {
   const sites: Site[] = [];
   const verifiesTokens = GO_JWT_VERIFIED_RE.test(content);
   const checksSsrf = !PY_GO_URL_ALLOWLIST_RE.test(content);
-  const tainted = checksSsrf ? requestTaintedNames(lines, GO_REQUEST_SOURCE_RE, "go") : new Set<string>();
+  const checksRedirects = !GO_REDIRECT_VALIDATION_RE.test(content);
+  const allTainted = requestTaintedNames(lines, GO_REQUEST_SOURCE_RE, "go");
+  const tainted = checksSsrf ? allTainted : new Set<string>();
   for (const [index, rawLine] of lines.entries()) {
     if (/^\s*\/\//.test(rawLine)) {
       continue;
@@ -279,6 +327,13 @@ function goSites(lines: string[], content: string): Site[] {
       const argument = call?.[1] ?? call?.[2] ?? call?.[3];
       if (argument !== undefined && isTaintedUrlArgument(argument, tainted, GO_REQUEST_SOURCE_RE)) {
         sites.push({ ruleId: "INJECT-04", line: index + 1, text: rawLine });
+        continue;
+      }
+    }
+    if (checksRedirects) {
+      const target = GO_REDIRECT_CALL_RES.map((pattern) => line.match(pattern)?.[1]).find((value) => value !== undefined);
+      if (target !== undefined && isTaintedUrlArgument(target, allTainted, GO_REQUEST_SOURCE_RE)) {
+        sites.push({ ruleId: "REDIRECT-01", line: index + 1, text: rawLine });
       }
     }
   }
@@ -307,7 +362,7 @@ export const pyGoCodeDetector: Detector = {
         detectorName: "py-go-code",
         file: ctx.filePath,
         line: site.line,
-        severity: "HIGH",
+        severity: site.ruleId === "REDIRECT-01" ? "MEDIUM" : "HIGH",
         confidence: "MEDIUM",
         message: RULE_COPY[site.ruleId].message,
         remediation: RULE_COPY[site.ruleId].remediation,

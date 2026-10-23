@@ -127,3 +127,33 @@ describe("dangerousCodeDetector — INJECT-04 SSRF", () => {
     expect(await ruleIds('const q = useSearchParams();\nfetch(q.get("url"));', "components/Viewer.tsx")).toEqual([]);
   });
 });
+
+describe("dangerousCodeDetector — REDIRECT-01 open redirect", () => {
+  async function summarize(code: string, filePath = "app/login/route.ts"): Promise<string[]> {
+    const findings = await dangerousCodeDetector.detect(makeContext(code, filePath));
+    return findings.map((finding) => `${finding.ruleId} ${finding.severity} L${String(finding.line)}`);
+  }
+
+  it.each([
+    ["Next.js redirect() of searchParams", 'const next = req.nextUrl.searchParams.get("next");\nredirect(next);'],
+    ["NextResponse.redirect(new URL(next, req.url))", 'const next = searchParams.get("next");\nreturn NextResponse.redirect(new URL(next, req.url));'],
+    ["Express res.redirect(req.query.returnTo)", "app.get('/cb', (req, res) => res.redirect(req.query.returnTo));"],
+    ["Express res.redirect with a status first", "res.redirect(302, req.query.to);"],
+    ["a client router.push of a query param", 'const params = useSearchParams();\nrouter.push(params.get("redirect"));'],
+    ["window.location.href assignment", 'const target = new URLSearchParams(location.search).get("next");\nwindow.location.href = target;'],
+  ])("flags %s as MEDIUM", async (_label, code) => {
+    const result = await summarize(code);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatch(/^REDIRECT-01 MEDIUM/);
+  });
+
+  it.each([
+    ["a fixed path", "redirect('/dashboard');"],
+    ["a fixed path prefix with a query value", 'const id = searchParams.get("id");\nredirect(`/orders/${id}`);'],
+    ["a validated target", 'const next = searchParams.get("next");\nif (!next.startsWith("/") || next.startsWith("//")) throw new Error();\nredirect(next);'],
+    ["array push of a request value", "const items = [];\nitems.push(req.query.item);"],
+    ["string replace of a request value", "const s = req.query.q.replace(/a/g, 'b');"],
+  ])("does NOT flag %s", async (_label, code) => {
+    expect(await summarize(code)).toEqual([]);
+  });
+});

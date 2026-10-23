@@ -23,6 +23,15 @@
  *   a request-controlled path is not flagged. Skipped in client
  *   components and in files that validate targets against an allowlist.
  *
+ *   REDIRECT-01 (MEDIUM): open redirect — Next.js `redirect()` /
+ *   `NextResponse.redirect()`, `Response.redirect()`, Express/Koa/Hono/
+ *   Fastify `res|ctx|c|reply.redirect()`, `router.push/replace()`, or a
+ *   `location` assignment/`assign()`/`replace()` whose target starts with a
+ *   request-controlled value (`?next=https://evil.example` sends users to a
+ *   phishing page under your domain's reputation). Client code counts here.
+ *   Skipped in files that validate the target (a leading-"/" check, an
+ *   origin/host comparison, a safe-redirect helper).
+ *
  * All three are MEDIUM confidence: the interpolated value may be a trusted
  * constant, which static analysis cannot always prove.
  *
@@ -75,6 +84,36 @@ const HTTP_CLIENT_METHODS = new Set(["get", "post", "put", "patch", "delete", "h
 /** Evidence that the file validates outbound targets (allowlist / hostname check) — suppresses INJECT-04. */
 const URL_ALLOWLIST_RE =
   /allowed(?:Hosts|Domains|Origins|Urls)|ALLOWED_(?:HOSTS|DOMAINS|ORIGINS|URLS)|isAllowed(?:Url|Host)|isSafeUrl|validateUrl|\.hostname\s*(?:===|!==)|ssrf/i;
+
+/** Redirect calls: bare functions (`redirect(x)`) and member calls (`res.redirect(x)`, `router.push(x)`). */
+const REDIRECT_FUNCTIONS = new Set(["redirect", "permanentRedirect"]);
+const REDIRECT_METHODS = new Set(["redirect", "push", "replace", "assign"]);
+
+/** Receivers whose `.push/.replace/.assign` navigates (as opposed to array push / string replace). */
+const NAVIGATION_RECEIVERS = /^(?:router|navigation|location|window\.location|history)$/;
+
+/** Evidence that the file validates redirect targets — suppresses REDIRECT-01. */
+const REDIRECT_VALIDATION_RE =
+  /startsWith\(\s*["'`]\/["'`]\s*\)|isSafe(?:Redirect|Url)|safeRedirect|isRelative(?:Url|Path)|allowedRedirect|ALLOWED_REDIRECT|\.origin\s*(?:===|!==)|\.host(?:name)?\s*(?:===|!==)/;
+
+/** The navigation-target argument of a redirect call, when the call is one. */
+function redirectTargetArgument(call: CallExpression, content: string): Node | undefined {
+  const callee = call.callee;
+  if (callee.type === "Identifier" && REDIRECT_FUNCTIONS.has(callee.name)) {
+    return call.arguments.at(0);
+  }
+  if (callee.type !== "MemberExpression" || callee.property.type !== "Identifier") {
+    return undefined;
+  }
+  const method = callee.property.name;
+  const receiver = content.slice(callee.object.start ?? 0, callee.object.end ?? 0);
+  if (method === "redirect") {
+    // Express `res.redirect(301, url)` puts the status first.
+    const first = call.arguments.at(0);
+    return first?.type === "NumericLiteral" ? call.arguments.at(1) : first;
+  }
+  return REDIRECT_METHODS.has(method) && NAVIGATION_RECEIVERS.test(receiver) ? call.arguments.at(0) : undefined;
+}
 
 /** True for client-side code, where a request to a user-chosen URL runs in the user's own browser, not on the server. */
 function isClientCode(filePath: string, content: string): boolean {
@@ -177,7 +216,7 @@ function isNonLiteral(node: Node | undefined): boolean {
 }
 
 interface Site {
-  ruleId: "INJECT-02" | "INJECT-03" | "AUTH-06" | "INJECT-04";
+  ruleId: "INJECT-02" | "INJECT-03" | "AUTH-06" | "INJECT-04" | "REDIRECT-01";
   line: number;
   matchedText: string;
 }
@@ -209,6 +248,13 @@ const RULE_COPY: Record<Site["ruleId"], { category: Category; message: string; r
     remediation:
       "Never fetch a user-supplied URL directly: parse it with new URL(), allow only an explicit list of hosts (and https), reject private/link-local addresses after DNS resolution, and disable automatic redirects.",
   },
+  "REDIRECT-01": {
+    category: "injection",
+    message:
+      "Redirect target taken from the request (open redirect) — a link to your site can bounce users to a phishing page, and OAuth/login flows can leak tokens to it.",
+    remediation:
+      "Only redirect to relative paths you control: accept the value only if it starts with a single \"/\" (not \"//\" or a backslash), or map it to an allowlist of destinations; fall back to a fixed page otherwise.",
+  },
 };
 
 export const dangerousCodeDetector: Detector = {
@@ -228,6 +274,7 @@ export const dangerousCodeDetector: Detector = {
       const sites: Site[] = [];
       const fileVerifiesTokens = TOKEN_VERIFY_RE.test(ctx.content);
       const checksSsrf = !isClientCode(ctx.filePath, ctx.content) && !URL_ALLOWLIST_RE.test(ctx.content);
+      const checksRedirects = !REDIRECT_VALIDATION_RE.test(ctx.content);
       const tainted = collectRequestTaintedNames(ctx.ast, ctx.content);
 
       const checkCall = (call: CallExpression | NewExpression): void => {
@@ -270,6 +317,12 @@ export const dangerousCodeDetector: Detector = {
           isRequestControlled(outboundUrlArgument(call), tainted, ctx.content, "url")
         ) {
           sites.push({ ruleId: "INJECT-04", line, matchedText: name });
+        } else if (
+          checksRedirects &&
+          call.type === "CallExpression" &&
+          isRequestControlled(redirectTargetArgument(call, ctx.content), tainted, ctx.content, "redirect")
+        ) {
+          sites.push({ ruleId: "REDIRECT-01", line, matchedText: name });
         }
       };
 
@@ -280,6 +333,18 @@ export const dangerousCodeDetector: Detector = {
         NewExpression(path) {
           checkCall(path.node);
         },
+        AssignmentExpression(path) {
+          // `window.location.href = next` / `location = next`
+          const { left, right } = path.node;
+          const target = ctx.content.slice(left.start ?? 0, left.end ?? 0);
+          if (
+            checksRedirects &&
+            /^(?:window\.)?location(?:\.href)?$/.test(target) &&
+            isRequestControlled(right, tainted, ctx.content, "redirect")
+          ) {
+            sites.push({ ruleId: "REDIRECT-01", line: path.node.loc?.start.line ?? 1, matchedText: target });
+          }
+        },
       });
 
       const findings: Finding[] = sites.map((site) => ({
@@ -288,7 +353,7 @@ export const dangerousCodeDetector: Detector = {
         detectorName: "dangerous-code",
         file: ctx.filePath,
         line: site.line,
-        severity: "HIGH",
+        severity: site.ruleId === "REDIRECT-01" ? "MEDIUM" : "HIGH",
         confidence: "MEDIUM",
         message: RULE_COPY[site.ruleId].message,
         remediation: RULE_COPY[site.ruleId].remediation,
