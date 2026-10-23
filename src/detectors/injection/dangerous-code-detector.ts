@@ -17,6 +17,12 @@
  *   verifies a token — `decode` only base64-decodes the payload, so anyone
  *   can mint a token claiming to be any user.
  *
+ *   INJECT-04 (HIGH): server-side request forgery — `fetch` / `axios` /
+ *   `got` / `ky` / `http(s).get` / `undici` called with a URL whose scheme
+ *   or host comes from the request (request-input.ts). A fixed origin with
+ *   a request-controlled path is not flagged. Skipped in client
+ *   components and in files that validate targets against an allowlist.
+ *
  * All three are MEDIUM confidence: the interpolated value may be a trusted
  * constant, which static analysis cannot always prove.
  *
@@ -28,6 +34,7 @@
  * inside a try/catch returning `[]` on any failure.
  */
 import { isBabelFile, traverseAst } from "../ast/ast-utils.js";
+import { collectRequestTaintedNames, isRequestControlled } from "./request-input.js";
 
 import type { Category, Detector, DetectorContext, Finding } from "../../core/types.js";
 import type { CallExpression, Expression, NewExpression, Node } from "@babel/types";
@@ -55,6 +62,52 @@ const JWT_RECEIVERS = new Set(["jwt", "jsonwebtoken"]);
 
 /** A token verification anywhere in the file (jsonwebtoken, jose, or a project helper). */
 const TOKEN_VERIFY_RE = /\b(?:jwt|jsonwebtoken)\s*\.\s*verify\s*\(|\bjwtVerify\s*\(|\bverify(?:Token|Jwt|IdToken)\s*\(/;
+
+/** Outbound HTTP clients called as a bare function: `fetch(url)`, `got(url)`, `axios(url)`. */
+const HTTP_CLIENT_FUNCTIONS = new Set(["fetch", "$fetch", "ofetch", "got", "ky", "axios", "needle", "request", "superagent"]);
+
+/** Outbound HTTP client receivers whose `.get/.post/.request(...)` takes the URL first. */
+const HTTP_CLIENT_RECEIVERS = new Set(["axios", "got", "ky", "http", "https", "undici", "superagent", "needle", "ofetch"]);
+
+/** HTTP client methods that take the target URL as their first argument. */
+const HTTP_CLIENT_METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "request", "fetch", "stream"]);
+
+/** Evidence that the file validates outbound targets (allowlist / hostname check) — suppresses INJECT-04. */
+const URL_ALLOWLIST_RE =
+  /allowed(?:Hosts|Domains|Origins|Urls)|ALLOWED_(?:HOSTS|DOMAINS|ORIGINS|URLS)|isAllowed(?:Url|Host)|isSafeUrl|validateUrl|\.hostname\s*(?:===|!==)|ssrf/i;
+
+/** True for client-side code, where a request to a user-chosen URL runs in the user's own browser, not on the server. */
+function isClientCode(filePath: string, content: string): boolean {
+  if (/^\s*["']use client["']/m.test(content)) {
+    return true;
+  }
+  return filePath.split("/").some((segment) => segment === "components" || segment === "hooks");
+}
+
+/** The URL argument of an outbound HTTP call (first argument, or the `url` property of an options object), when the call is one. */
+function outboundUrlArgument(call: CallExpression): Node | undefined {
+  const callee = call.callee;
+  const isClientFunction = callee.type === "Identifier" && HTTP_CLIENT_FUNCTIONS.has(callee.name);
+  const isClientMethod =
+    callee.type === "MemberExpression" &&
+    callee.object.type === "Identifier" &&
+    HTTP_CLIENT_RECEIVERS.has(callee.object.name) &&
+    callee.property.type === "Identifier" &&
+    HTTP_CLIENT_METHODS.has(callee.property.name);
+  if (!isClientFunction && !isClientMethod) {
+    return undefined;
+  }
+  const first = call.arguments.at(0);
+  if (first?.type === "ObjectExpression") {
+    for (const property of first.properties) {
+      if (property.type === "ObjectProperty" && property.key.type === "Identifier" && property.key.name === "url") {
+        return property.value;
+      }
+    }
+    return undefined;
+  }
+  return first;
+}
 
 /** True when `filePath` falls inside a test/fixture/mock/example directory, or is a test/story file. */
 function isAllowlistedPath(filePath: string): boolean {
@@ -124,7 +177,7 @@ function isNonLiteral(node: Node | undefined): boolean {
 }
 
 interface Site {
-  ruleId: "INJECT-02" | "INJECT-03" | "AUTH-06";
+  ruleId: "INJECT-02" | "INJECT-03" | "AUTH-06" | "INJECT-04";
   line: number;
   matchedText: string;
 }
@@ -149,6 +202,13 @@ const RULE_COPY: Record<Site["ruleId"], { category: Category; message: string; r
     remediation:
       "Use jwt.verify(token, secret) (or jose's jwtVerify) before trusting any claim; jwt.decode() does not check the signature.",
   },
+  "INJECT-04": {
+    category: "injection",
+    message:
+      "Server-side request to a URL taken from the request (SSRF) — an attacker can make your server call internal services (cloud metadata at 169.254.169.254, localhost admin ports) and read the response.",
+    remediation:
+      "Never fetch a user-supplied URL directly: parse it with new URL(), allow only an explicit list of hosts (and https), reject private/link-local addresses after DNS resolution, and disable automatic redirects.",
+  },
 };
 
 export const dangerousCodeDetector: Detector = {
@@ -167,6 +227,8 @@ export const dangerousCodeDetector: Detector = {
 
       const sites: Site[] = [];
       const fileVerifiesTokens = TOKEN_VERIFY_RE.test(ctx.content);
+      const checksSsrf = !isClientCode(ctx.filePath, ctx.content) && !URL_ALLOWLIST_RE.test(ctx.content);
+      const tainted = collectRequestTaintedNames(ctx.ast, ctx.content);
 
       const checkCall = (call: CallExpression | NewExpression): void => {
         const name = calleeName(call);
@@ -202,6 +264,12 @@ export const dangerousCodeDetector: Detector = {
           !fileVerifiesTokens
         ) {
           sites.push({ ruleId: "AUTH-06", line, matchedText: "jwt.decode" });
+        } else if (
+          checksSsrf &&
+          call.type === "CallExpression" &&
+          isRequestControlled(outboundUrlArgument(call), tainted, ctx.content, "url")
+        ) {
+          sites.push({ ruleId: "INJECT-04", line, matchedText: name });
         }
       };
 

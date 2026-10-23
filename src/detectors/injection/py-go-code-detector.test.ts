@@ -106,3 +106,27 @@ describe("pyGoCodeDetector — Go", () => {
     expect(await ruleIds('db.Query(fmt.Sprintf("SELECT %s", x))', "store_test.go")).toEqual([]);
   });
 });
+
+describe("pyGoCodeDetector — INJECT-04 SSRF", () => {
+  it.each([
+    ["requests.get of request.args", 'r = requests.get(request.args.get("url"))', "app.py"],
+    ["a variable assigned from request.json", 'target = request.json["webhook"]\nhttpx.post(target, json=payload)', "app.py"],
+    ["a FastAPI url: str parameter", '@app.get("/preview")\nasync def preview(url: str):\n    return requests.get(url).text', "main.py"],
+    ["urlopen of a request value", "u = request.args['u']\nurlopen(u)", "app.py"],
+    ["an f-string whose host is request-controlled", 'host = request.args.get("h")\nrequests.get(f"https://{host}/status")', "app.py"],
+    ["Go http.Get of r.URL.Query()", 'target := r.URL.Query().Get("url")\nresp, err := http.Get(target)', "main.go"],
+    ["Go NewRequest with c.Query", 'u := c.Query("url")\nreq, _ := http.NewRequest("GET", u, nil)', "main.go"],
+  ])("flags %s", async (_label, code, path) => {
+    expect(await ruleIds(code, path)).toEqual(["INJECT-04"]);
+  });
+
+  it.each([
+    ["a fixed URL", 'requests.get("https://api.example.com/items")', "app.py"],
+    ["a fixed host with a request-controlled path", 'item = request.args.get("id")\nrequests.get(f"https://api.example.com/items/{item}")', "app.py"],
+    ["an allowlisted host", 'u = request.args.get("url")\nif urlparse(u).hostname not in ALLOWED_HOSTS: abort(400)\nrequests.get(u)', "app.py"],
+    ["Flask session.get of a literal key", 'user = session.get("user")', "app.py"],
+    ["a Go constant URL", 'resp, err := http.Get("https://example.com")', "main.go"],
+  ])("does NOT flag %s", async (_label, code, path) => {
+    expect(await ruleIds(code, path)).toEqual([]);
+  });
+});

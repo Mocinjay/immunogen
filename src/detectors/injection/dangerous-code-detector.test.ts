@@ -98,3 +98,32 @@ describe("dangerousCodeDetector — guards", () => {
     expect(await dangerousCodeDetector.detect(ctx)).toEqual([]);
   });
 });
+
+describe("dangerousCodeDetector — INJECT-04 SSRF", () => {
+  it.each([
+    ["a URL from searchParams", 'const target = new URL(req.url).searchParams.get("url");\nconst r = await fetch(target);'],
+    ["a URL destructured from the JSON body", "const { url } = await req.json();\nawait axios.get(url);"],
+    ["a URL two variables away", "const body = await request.json();\nconst target = body.webhookUrl;\nawait fetch(target, { method: 'POST' });"],
+    ["an Express query param", "app.get('/proxy', async (req, res) => { const r = await got(req.query.url); res.send(r.body); });"],
+    ["a request-controlled host in a template", "const host = req.query.host;\nawait fetch(`https://${host}/internal/status`);"],
+    ["axios with an options object", "await axios({ method: 'get', url: req.body.callback });"],
+    ["Hono c.req.query", "app.get('/img', async (c) => fetch(c.req.query('src')));"],
+  ])("flags %s", async (_label, code) => {
+    expect(await ruleIds(code, "app/api/proxy/route.ts")).toEqual(["INJECT-04"]);
+  });
+
+  it.each([
+    ["a fixed origin with a request-controlled path", "const id = req.query.id;\nawait fetch(`https://api.example.com/items/${id}`);"],
+    ["a constant URL", "await fetch(process.env.API_URL + '/health');"],
+    ["a URL checked against an allowlist", "const u = new URL(req.query.url);\nif (!ALLOWED_HOSTS.includes(u.hostname)) throw new Error();\nawait fetch(u);"],
+  ])("does NOT flag %s", async (_label, code) => {
+    expect(await ruleIds(code, "app/api/proxy/route.ts")).toEqual([]);
+  });
+
+  it("does NOT flag client components (the request runs in the user's browser)", async () => {
+    const code = '"use client";\nconst q = useSearchParams();\nfetch(q.get("url"));';
+
+    expect(await ruleIds(code, "app/viewer/page.tsx")).toEqual([]);
+    expect(await ruleIds('const q = useSearchParams();\nfetch(q.get("url"));', "components/Viewer.tsx")).toEqual([]);
+  });
+});

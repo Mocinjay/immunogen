@@ -19,6 +19,9 @@
  *             `pickle.loads(...)` / `marshal.loads(...)` of request data.
  *   AUTH-06   PyJWT `jwt.decode(..., options={"verify_signature": False})`
  *             or `verify=False`.
+ *   INJECT-04 `requests` / `httpx` / `urllib` / aiohttp fetching a URL read
+ *             from the request (`request.args`, `request.json`, a route
+ *             parameter named like a URL), directly or via a local variable.
  * Go:
  *   INJECT-02 `db.Query(fmt.Sprintf("SELECT ...%s", x))` and the Exec/
  *             QueryRow/*Context/sqlx/gorm `Raw`/`Exec` variants, or a `"..." +`
@@ -26,6 +29,11 @@
  *   INJECT-03 `exec.Command("sh"|"bash"|"cmd", "-c"|"/c", <non-literal>)`.
  *   AUTH-06   golang-jwt `ParseUnverified(` in a file that never calls a
  *             verifying `Parse`/`ParseWithClaims`.
+ *   INJECT-04 `http.Get` / `http.Post` / `http.NewRequest*` with a URL read
+ *             from the request (`r.URL.Query().Get`, `r.FormValue`, Gin/Echo/
+ *             Fiber `c.Query`/`c.PostForm`/`c.Param`/`c.FormValue`).
+ *
+ * SSRF is skipped in files that validate targets against an allowlist.
  *
  * All findings are HIGH/MEDIUM, matching the JS rules.
  *
@@ -42,7 +50,7 @@ const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "exampl
 /** Static text that opens a SQL statement. */
 const SQL_START_RE = /^\s*(?:select|insert|update|delete|with|replace|merge|upsert|create|drop|alter)\b/i;
 
-type RuleId = "INJECT-02" | "INJECT-03" | "AUTH-06";
+type RuleId = "INJECT-02" | "INJECT-03" | "AUTH-06" | "INJECT-04";
 
 /** Message, remediation, and category per ruleId. */
 const RULE_COPY: Record<RuleId, { category: Category; message: string; remediation: string }> = {
@@ -58,6 +66,13 @@ const RULE_COPY: Record<RuleId, { category: Category; message: string; remediati
       "Dynamic code/shell execution or unsafe deserialization of a non-literal input (eval / exec / shell command / yaml.load / pickle) — possible remote code execution.",
     remediation:
       "Remove the dynamic evaluation: parse data with json / yaml.safe_load, map user choices to a fixed allowlist, and run subprocesses with an argument list (no shell) — subprocess.run([...]) / exec.Command(name, args...).",
+  },
+  "INJECT-04": {
+    category: "injection",
+    message:
+      "Server-side request to a URL taken from the request (SSRF) — an attacker can make your server call internal services (cloud metadata at 169.254.169.254, localhost admin ports) and read the response.",
+    remediation:
+      "Never fetch a user-supplied URL directly: parse it, allow only an explicit list of hosts (and https), reject private/link-local addresses after DNS resolution, and disable redirects.",
   },
   "AUTH-06": {
     category: "auth",
@@ -133,6 +148,79 @@ const GO_SHELL_EXEC_RE =
 const GO_JWT_UNVERIFIED_RE = /\.ParseUnverified\(/;
 const GO_JWT_VERIFIED_RE = /\bjwt\.Parse(?:WithClaims)?\(|\.Parse(?:WithClaims)?\(\s*\w+\s*,[^)]*func\s*\(/;
 
+/** Python: request input. */
+const PY_REQUEST_SOURCE_RE = /\brequest\.(?:args|form|json|values|query_params|GET|POST|data|get_json\(|path_params)/;
+
+/** Python: a route parameter whose name says it carries a URL (FastAPI binds query/body params to these). */
+const PY_URL_PARAM_RE = /\b(url|uri|target|link|endpoint|callback(?:_url)?|webhook(?:_url)?|image_url|src|href|feed_url)\s*:\s*(?:str|HttpUrl|AnyUrl)/g;
+
+/**
+ * Python: an outbound HTTP call, capturing the first argument's leading
+ * text. Matched against a line whose leading `"GET",` method argument
+ * (`requests.request("GET", url)`) is already stripped (see pythonSites).
+ */
+const PY_HTTP_CALL_RE =
+  /\b(?:requests|httpx|client|session|aiohttp\.ClientSession\(\)|urllib\.request|urllib3\.PoolManager\(\))\.(?:get|post|put|patch|delete|head|request|urlopen|stream)\(\s*([^,)\n]+)|\burlopen\(\s*([^,)\n]+)/;
+
+/** Go: request input. */
+const GO_REQUEST_SOURCE_RE = /\br\.URL\.Query\(\)\.Get\(|\br\.(?:FormValue|PostFormValue)\(|\bc\.(?:Query|PostForm|Param|QueryParam|FormValue|Params|DefaultQuery)\(/;
+
+/** Go: an outbound HTTP call, capturing the URL argument. */
+const GO_HTTP_CALL_RE =
+  /\bhttp\.(?:Get|Head|Post|PostForm)\(\s*([^,)\n]+)|\bhttp\.NewRequest\(\s*[^,]+,\s*([^,)\n]+)|\bhttp\.NewRequestWithContext\(\s*[^,]+,\s*[^,]+,\s*([^,)\n]+)/;
+
+/** Evidence that a file validates outbound targets — suppresses INJECT-04. */
+const PY_GO_URL_ALLOWLIST_RE = /allowed_?(?:hosts|domains|urls)|ALLOWED_(?:HOSTS|DOMAINS|URLS)|is_?(?:allowed|safe)_?(?:url|host)|validate_?url|\.hostname\s+(?:not\s+in|in)\b|\.Hostname\(\)\s*(?:==|!=)|ssrf/i;
+
+/**
+ * Names assigned from request input on any line (`url = request.args.get("u")`,
+ * `target := c.Query("url")`), iterated so a second hop (`u = url.strip()`) is
+ * also caught, plus — for Python — route parameters named like a URL.
+ */
+function requestTaintedNames(lines: string[], source: RegExp, language: "py" | "go"): Set<string> {
+  const tainted = new Set<string>();
+  if (language === "py") {
+    for (const match of lines.join("\n").matchAll(PY_URL_PARAM_RE)) {
+      tainted.add(match[1] ?? "");
+    }
+  }
+  // Go allows `url, err := ...`; the class after the name swallows `, err `.
+  const assignment = language === "py" ? /^\s*(\w+)\s*=\s*(.+)$/ : /^\s*(\w+)[\s,\w]*:?=\s*(.+)$/;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const line of lines) {
+      const match = line.match(assignment);
+      const name = match?.[1];
+      const value = match?.[2] ?? "";
+      if (name === undefined || tainted.has(name)) {
+        continue;
+      }
+      const usesTainted = (value.match(/\w+/g) ?? []).some((word) => tainted.has(word));
+      if (source.test(value) || usesTainted) {
+        tainted.add(name);
+        changed = true;
+      }
+    }
+  }
+  return tainted;
+}
+
+/** True when an outbound call's URL argument text is request-controlled (a tainted name, a direct read, or an f-string/format whose host is). */
+function isTaintedUrlArgument(argument: string, tainted: ReadonlySet<string>, source: RegExp): boolean {
+  const text = argument.trim();
+  if (source.test(text)) {
+    return true;
+  }
+  const leadingName = text.match(/^(?:str\()?(\w+)/)?.[1];
+  if (leadingName !== undefined && tainted.has(leadingName)) {
+    return true;
+  }
+  // f"{url}/x" / f"https://{host}/x" — the host part is a tainted name.
+  const hostExpression = text.replace(/^([fF]["'])https?:\/\//, "$1").match(/^[fF]["']\{(\w+)/)?.[1];
+  return hostExpression !== undefined && tainted.has(hostExpression);
+}
+
 /** One matched line. */
 interface Site {
   ruleId: RuleId;
@@ -143,6 +231,8 @@ interface Site {
 /** Python rules over `lines`. */
 function pythonSites(lines: string[]): Site[] {
   const sites: Site[] = [];
+  const checksSsrf = !PY_GO_URL_ALLOWLIST_RE.test(lines.join("\n"));
+  const tainted = checksSsrf ? requestTaintedNames(lines, PY_REQUEST_SOURCE_RE, "py") : new Set<string>();
   for (const [index, line] of lines.entries()) {
     if (/^\s*#/.test(line)) {
       continue;
@@ -154,6 +244,12 @@ function pythonSites(lines: string[]): Site[] {
       sites.push({ ruleId: "INJECT-03", line: index + 1, text: line });
     } else if (PY_JWT_UNVERIFIED_RE.test(line)) {
       sites.push({ ruleId: "AUTH-06", line: index + 1, text: line });
+    } else if (checksSsrf) {
+      const call = line.replace(/\(\s*["'](?:GET|POST|PUT|PATCH|DELETE)["']\s*,\s*/, "(").match(PY_HTTP_CALL_RE);
+      const argument = call?.[1] ?? call?.[2];
+      if (argument !== undefined && isTaintedUrlArgument(argument, tainted, PY_REQUEST_SOURCE_RE)) {
+        sites.push({ ruleId: "INJECT-04", line: index + 1, text: line });
+      }
     }
   }
   return sites;
@@ -163,6 +259,8 @@ function pythonSites(lines: string[]): Site[] {
 function goSites(lines: string[], content: string): Site[] {
   const sites: Site[] = [];
   const verifiesTokens = GO_JWT_VERIFIED_RE.test(content);
+  const checksSsrf = !PY_GO_URL_ALLOWLIST_RE.test(content);
+  const tainted = checksSsrf ? requestTaintedNames(lines, GO_REQUEST_SOURCE_RE, "go") : new Set<string>();
   for (const [index, rawLine] of lines.entries()) {
     if (/^\s*\/\//.test(rawLine)) {
       continue;
@@ -176,6 +274,12 @@ function goSites(lines: string[], content: string): Site[] {
       sites.push({ ruleId: "INJECT-03", line: index + 1, text: rawLine });
     } else if (GO_JWT_UNVERIFIED_RE.test(line) && !verifiesTokens) {
       sites.push({ ruleId: "AUTH-06", line: index + 1, text: rawLine });
+    } else if (checksSsrf) {
+      const call = line.match(GO_HTTP_CALL_RE);
+      const argument = call?.[1] ?? call?.[2] ?? call?.[3];
+      if (argument !== undefined && isTaintedUrlArgument(argument, tainted, GO_REQUEST_SOURCE_RE)) {
+        sites.push({ ruleId: "INJECT-04", line: index + 1, text: rawLine });
+      }
     }
   }
   return sites;
