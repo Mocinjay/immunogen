@@ -47,6 +47,26 @@ import type { Diagnostic, ScanOptions } from "../types.js";
 /** Default per-file size cap, in bytes (overridable via ScanOptions). */
 const DEFAULT_MAX_FILE_SIZE_BYTES = 512 * 1024;
 
+/**
+ * Per-file cap for package-manager lockfiles. A real app's
+ * package-lock.json / pnpm-lock.yaml routinely exceeds the default cap, and
+ * it is the only record of the exact (and transitive) versions installed,
+ * which the dependency check reads.
+ */
+const LOCKFILE_MAX_FILE_SIZE_BYTES = 16 * 1024 * 1024;
+
+/** Lockfile basenames that get LOCKFILE_MAX_FILE_SIZE_BYTES. */
+const LOCKFILE_BASENAMES = new Set([
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "poetry.lock",
+  "uv.lock",
+  "Pipfile.lock",
+]);
+
 /** Default total-repo byte cap across all read files (overridable via ScanOptions.maxTotalBytes). */
 const DEFAULT_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
@@ -296,7 +316,11 @@ export async function walkFiles(
     }
 
     const absPath = join(rootDir, relPath);
-    const content = await readIfEligible(absPath, maxFileSizeBytes);
+    const isLockfile = LOCKFILE_BASENAMES.has(relPath.slice(relPath.lastIndexOf("/") + 1));
+    const content = await readIfEligible(
+      absPath,
+      isLockfile ? Math.max(maxFileSizeBytes, LOCKFILE_MAX_FILE_SIZE_BYTES) : maxFileSizeBytes,
+    );
     if (content === undefined) {
       continue;
     }

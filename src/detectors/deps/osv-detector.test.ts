@@ -317,3 +317,87 @@ describe("osvDetector — real advisory severity", () => {
     expect(findings.map((finding) => [finding.ruleId, finding.severity])).toEqual([["DEP-01", "HIGH"]]);
   });
 });
+
+describe("osvDetector — lockfiles", () => {
+  const PACKAGE_JSON = JSON.stringify({ name: "app", dependencies: { lodash: "^4.17.0", debug: "^2.6.0" } }, null, 2);
+  const LOCK = JSON.stringify(
+    {
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "app" },
+        "node_modules/lodash": { version: "4.17.15" },
+        "node_modules/debug": { version: "2.6.8" },
+        "node_modules/ms": { version: "2.0.0" },
+      },
+    },
+    null,
+    2,
+  );
+
+  function lockContext(filePath: string, files: Record<string, string>): DetectorContext {
+    const fileSet = new Map(Object.entries(files));
+    return { filePath, content: fileSet.get(filePath) ?? "", stackHints: STACK_HINTS, fileSet };
+  }
+
+  it("leaves package.json to its lockfile (no duplicate, no range guessing)", async () => {
+    const findings = await osvDetector.detect(lockContext("package.json", { "package.json": PACKAGE_JSON, "package-lock.json": LOCK }));
+
+    expect(findings).toEqual([]);
+    expect(queryOsvBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("queries every resolved version, pointing direct deps at package.json and transitive ones at the lockfile", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "GHSA-lodash" }] }, { vulns: [] }, { vulns: [{ id: "GHSA-ms" }] }]);
+
+    const findings = await osvDetector.detect(lockContext("package-lock.json", { "package.json": PACKAGE_JSON, "package-lock.json": LOCK }));
+
+    expect(queryOsvBatchMock.mock.calls[0]?.[0]).toEqual([
+      { name: "lodash", version: "4.17.15", ecosystem: "npm" },
+      { name: "debug", version: "2.6.8", ecosystem: "npm" },
+      { name: "ms", version: "2.0.0", ecosystem: "npm" },
+    ]);
+    expect(findings.map((finding) => [finding.file, finding.line, finding.message])).toEqual([
+      ["package.json", 4, "Vulnerable dependency: lodash@4.17.15 (OSV advisory GHSA-lodash)."],
+      [
+        "package-lock.json",
+        13,
+        "Vulnerable transitive dependency: ms@2.0.0 (OSV advisory GHSA-ms) — installed by another package, resolved in this lockfile.",
+      ],
+    ]);
+    expect(findings[1]?.remediation).toContain("overrides");
+  });
+
+  it("lets a monorepo root lockfile govern a workspace package.json", async () => {
+    const findings = await osvDetector.detect(
+      lockContext("apps/web/package.json", { "apps/web/package.json": PACKAGE_JSON, "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" }),
+    );
+
+    expect(findings).toEqual([]);
+  });
+
+  it("checks exact locked versions against the offline list and emits the sentinel when OSV is unreachable", async () => {
+    queryOsvBatchMock.mockRejectedValue(new Error("offline"));
+
+    const findings = await osvDetector.detect(lockContext("package-lock.json", { "package.json": PACKAGE_JSON, "package-lock.json": LOCK }));
+
+    expect(findings.map((finding) => [finding.ruleId, finding.file])).toEqual([
+      ["DEP-01", "package.json"],
+      ["DEP-OFFLINE", "package-lock.json"],
+    ]);
+  });
+
+  it("reads Python lockfiles next to pyproject.toml", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "PYSEC-1" }] }]);
+    const files = {
+      "pyproject.toml": '[tool.poetry.dependencies]\npython = "^3.11"\nflask = "^2.0"\n',
+      "poetry.lock": '[[package]]\nname = "flask"\nversion = "2.0.1"\n',
+    };
+
+    expect(await osvDetector.detect(lockContext("pyproject.toml", files))).toEqual([]);
+    const findings = await osvDetector.detect(lockContext("poetry.lock", files));
+
+    expect(findings.map((finding) => [finding.file, finding.line, finding.message])).toEqual([
+      ["pyproject.toml", 3, "Vulnerable dependency: flask@2.0.1 (OSV advisory PYSEC-1)."],
+    ]);
+  });
+});

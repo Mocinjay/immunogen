@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchVulnSeverities } from "./osv-client.js";
+import { fetchVulnSeverities, queryOsvBatch } from "./osv-client.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -41,5 +41,23 @@ describe("fetchVulnSeverities", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
 
     await expect(fetchVulnSeverities(["GHSA-test-bbbb-0004", "../../etc/passwd", ""])).resolves.toEqual(new Map());
+  });
+});
+
+describe("queryOsvBatch", () => {
+  it("splits more than 1000 queries into API-sized requests and keeps results aligned", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { queries: Array<{ package: { name: string } }> };
+      const results = body.queries.map((query) => (query.package.name === "pkg-1200" ? { vulns: [{ id: "GHSA-1200" }] } : {}));
+      return Promise.resolve(new Response(JSON.stringify({ results }), { status: 200 }));
+    });
+    const queries = Array.from({ length: 1500 }, (_, index) => ({ name: `pkg-${String(index)}`, version: "9.9.9-chunk-test" }));
+
+    const results = await queryOsvBatch(queries);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(results).toHaveLength(1500);
+    expect(results.at(1200)).toEqual({ vulns: [{ id: "GHSA-1200" }] });
+    expect(results.at(0)).toEqual({});
   });
 });

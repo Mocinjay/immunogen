@@ -119,6 +119,70 @@ function narrowOsvResults(parsed: unknown): OsvResult[] | undefined {
   });
 }
 
+/** OSV.dev accepts at most this many queries per querybatch request. */
+const OSV_MAX_BATCH = 1000;
+
+/**
+ * POSTs one querybatch request (at most OSV_MAX_BATCH queries) and stores
+ * each aligned result in the session cache. Throws OsvUnavailableError on
+ * any failure (see `queryOsvBatch`).
+ */
+async function queryOsvChunk(uncachedQueries: OsvQuery[]): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, OSV_TIMEOUT_MS);
+
+  try {
+    const body = JSON.stringify({
+      queries: uncachedQueries.map((query) => ({
+        package: { name: query.name, ecosystem: query.ecosystem ?? "npm" },
+        version: query.version,
+      })),
+    });
+
+    const response = await fetch(OSV_QUERYBATCH_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new OsvUnavailableError(`OSV.dev responded with HTTP ${String(response.status)}`);
+    }
+
+    const parsedBody: unknown = await response.json();
+    const resultsObject = parsedBody as { results?: unknown };
+    const results = narrowOsvResults(resultsObject.results);
+    if (results === undefined || results.length !== uncachedQueries.length) {
+      throw new OsvUnavailableError("OSV.dev returned a response in an unexpected shape");
+    }
+
+    // Zips `uncachedQueries` with `results` into pairs up front (both
+    // arrays were just verified to have equal length above), then
+    // iterates the pairs directly — avoids indexing into `results` by a
+    // loop counter entirely, sidestepping security/detect-object-injection
+    // rather than just asserting the index is safe.
+    const pairs: Array<[OsvQuery, OsvResult]> = uncachedQueries.map((query, index) => [
+      query,
+      results.at(index) ?? {},
+    ]);
+    for (const [query, result] of pairs) {
+      sessionCache.set(cacheKey(query), result);
+    }
+  } catch (error) {
+    if (error instanceof OsvUnavailableError) {
+      throw error;
+    }
+    throw new OsvUnavailableError("OSV.dev query failed (network error, timeout, or malformed response)", {
+      cause: error,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 /**
  * POSTs `queries` to OSV.dev's batch endpoint and returns the aligned
  * `OsvResult[]` (one entry per input query, same order). Queries already
@@ -138,62 +202,19 @@ function narrowOsvResults(parsed: unknown): OsvResult[] | undefined {
  * returns a placeholder/empty result on failure.
  */
 export async function queryOsvBatch(queries: OsvQuery[]): Promise<OsvResult[]> {
-  const uncachedQueries = queries.filter((query) => !sessionCache.has(cacheKey(query)));
-
-  if (uncachedQueries.length > 0) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-    }, OSV_TIMEOUT_MS);
-
-    try {
-      const body = JSON.stringify({
-        queries: uncachedQueries.map((query) => ({
-          package: { name: query.name, ecosystem: query.ecosystem ?? "npm" },
-          version: query.version,
-        })),
-      });
-
-      const response = await fetch(OSV_QUERYBATCH_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new OsvUnavailableError(`OSV.dev responded with HTTP ${String(response.status)}`);
-      }
-
-      const parsedBody: unknown = await response.json();
-      const resultsObject = parsedBody as { results?: unknown };
-      const results = narrowOsvResults(resultsObject.results);
-      if (results === undefined || results.length !== uncachedQueries.length) {
-        throw new OsvUnavailableError("OSV.dev returned a response in an unexpected shape");
-      }
-
-      // Zips `uncachedQueries` with `results` into pairs up front (both
-      // arrays were just verified to have equal length above), then
-      // iterates the pairs directly — avoids indexing into `results` by a
-      // loop counter entirely, sidestepping security/detect-object-injection
-      // rather than just asserting the index is safe.
-      const pairs: Array<[OsvQuery, OsvResult]> = uncachedQueries.map((query, index) => [
-        query,
-        results.at(index) ?? {},
-      ]);
-      for (const [query, result] of pairs) {
-        sessionCache.set(cacheKey(query), result);
-      }
-    } catch (error) {
-      if (error instanceof OsvUnavailableError) {
-        throw error;
-      }
-      throw new OsvUnavailableError("OSV.dev query failed (network error, timeout, or malformed response)", {
-        cause: error,
-      });
-    } finally {
-      clearTimeout(timeoutId);
+  const seen = new Set<string>();
+  const uncachedQueries = queries.filter((query) => {
+    const key = cacheKey(query);
+    if (sessionCache.has(key) || seen.has(key)) {
+      return false;
     }
+    seen.add(key);
+    return true;
+  });
+
+  // A lockfile can resolve thousands of packages: query in API-sized chunks.
+  for (let start = 0; start < uncachedQueries.length; start += OSV_MAX_BATCH) {
+    await queryOsvChunk(uncachedQueries.slice(start, start + OSV_MAX_BATCH));
   }
 
   return queries.map((query) => sessionCache.get(cacheKey(query)) ?? {});

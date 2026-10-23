@@ -56,6 +56,7 @@
 import { checkFallback, type FallbackEntry } from "./osv-fallback.js";
 import { fetchVulnSeverities, queryOsvBatch } from "./osv-client.js";
 import { worstSeverity } from "./osv-severity.js";
+import { lockfileParserFor, NPM_LOCKFILES, PYTHON_LOCKFILES } from "../../core/ingest/lockfiles.js";
 import { manifestParserFor, type Ecosystem } from "../../core/ingest/manifests.js";
 
 import type { Confidence, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
@@ -74,11 +75,44 @@ const DEP_OFFLINE_MESSAGE =
 /** Directory segments whose package.json is test scaffolding, not a shipped manifest (mirrors the secrets detector's FP allowlist). */
 const SKIPPED_MANIFEST_SEGMENTS = new Set(["node_modules", "__tests__", "fixtures", "mocks", "examples"]);
 
-/** True when `filePath` is a real dependency manifest (package.json, or a Python/Go manifest) this detector should check. */
+/** True when `filePath` is a real dependency manifest or lockfile this detector should check. */
 function isScannableManifest(filePath: string): boolean {
   const segments = filePath.split("/");
-  const isManifest = segments.at(-1) === "package.json" || manifestParserFor(filePath) !== undefined;
+  const isManifest =
+    segments.at(-1) === "package.json" ||
+    manifestParserFor(filePath) !== undefined ||
+    lockfileParserFor(filePath) !== undefined;
   return isManifest && !segments.some((segment) => SKIPPED_MANIFEST_SEGMENTS.has(segment));
+}
+
+/** Directory part of a repo-relative path ("" at the root). */
+function dirOf(filePath: string): string {
+  const slash = filePath.lastIndexOf("/");
+  return slash === -1 ? "" : filePath.slice(0, slash);
+}
+
+/**
+ * The lockfile that resolves `manifestPath`'s dependencies — same
+ * ecosystem, in the manifest's directory or any ancestor (a monorepo's
+ * root lockfile covers every workspace package.json). When one exists, it
+ * is the source of truth: the lockfile's own detect() call checks the
+ * exact installed versions, transitive ones included.
+ */
+function governingLockfile(manifestPath: string, fileSet: ReadonlyMap<string, string>): string | undefined {
+  const basename = manifestPath.split("/").at(-1) ?? "";
+  const candidates =
+    basename === "package.json" ? NPM_LOCKFILES : basename === "pyproject.toml" || basename === "Pipfile" ? PYTHON_LOCKFILES : [];
+  let dir: string | undefined = dirOf(manifestPath);
+  while (dir !== undefined) {
+    for (const lockfile of candidates) {
+      const candidate = dir === "" ? lockfile : `${dir}/${lockfile}`;
+      if (fileSet.has(candidate)) {
+        return candidate;
+      }
+    }
+    dir = dir === "" ? undefined : dirOf(dir);
+  }
+  return undefined;
 }
 
 /** A single direct dependency parsed out of a manifest, ready for either the OSV or fallback path. */
@@ -91,6 +125,10 @@ interface ParsedDependency {
   queryVersion: string;
   /** 1-indexed manifest line of the declaration. */
   line: number;
+  /** File the finding should point at, when not the file being scanned (a direct dependency found via its lockfile). */
+  file?: string;
+  /** Resolved from a lockfile but not declared in the sibling manifest. */
+  transitive?: boolean;
 }
 
 /** package.json dependency/devDependency record shape, defensively typed (mirrors stack-detector.ts). */
@@ -159,6 +197,63 @@ function parseDirectDependencies(content: string): ParsedDependency[] {
     });
   }
   return result;
+}
+
+/** Direct dependency names (with their declaration lines) of the manifest sitting next to a lockfile. */
+function siblingManifestDependencies(lockfilePath: string, fileSet: ReadonlyMap<string, string>): { file: string; lines: Map<string, number> } | undefined {
+  const dir = dirOf(lockfilePath);
+  const prefix = dir === "" ? "" : `${dir}/`;
+  const isNpm = NPM_LOCKFILES.includes(lockfilePath.split("/").at(-1) ?? "");
+  for (const basename of isNpm ? ["package.json"] : ["pyproject.toml", "Pipfile"]) {
+    const file = `${prefix}${basename}`;
+    const content = fileSet.get(file);
+    if (content === undefined) {
+      continue;
+    }
+    const lines = new Map<string, number>();
+    if (isNpm) {
+      try {
+        const parsed = JSON.parse(content) as ParsedPackageJson;
+        for (const name of Object.keys({ ...parsed.dependencies, ...parsed.devDependencies })) {
+          lines.set(name, findDependencyLine(content, name));
+        }
+      } catch {
+        // Malformed manifest — every locked package reports against the lockfile.
+      }
+    } else {
+      for (const dependency of manifestParserFor(file)?.(content) ?? []) {
+        lines.set(dependency.name, dependency.line);
+      }
+    }
+    return { file, lines };
+  }
+  return undefined;
+}
+
+/**
+ * Every exact version resolved by a lockfile. Packages the sibling manifest
+ * declares directly report against that manifest's line (the line a
+ * developer edits); everything else is marked transitive and reports
+ * against its lockfile entry.
+ */
+function parseLockfileDependencies(lockfilePath: string, content: string, fileSet: ReadonlyMap<string, string>): ParsedDependency[] {
+  const parse = lockfileParserFor(lockfilePath);
+  if (parse === undefined) {
+    return [];
+  }
+  const manifest = siblingManifestDependencies(lockfilePath, fileSet);
+  return parse(content).map((locked) => {
+    const manifestLine = manifest?.lines.get(locked.name);
+    const base = {
+      ecosystem: locked.ecosystem,
+      name: locked.name,
+      rawVersion: locked.version,
+      queryVersion: locked.version,
+    };
+    return manifest !== undefined && manifestLine !== undefined
+      ? { ...base, line: manifestLine, file: manifest.file }
+      : { ...base, line: locked.line, transitive: true };
+  });
 }
 
 /**
@@ -252,12 +347,17 @@ function buildOsvFinding(
     ruleId: DEP_RULE_ID,
     category: "deps",
     detectorName: "osv",
-    file: filePath,
+    file: dependency.file ?? filePath,
     line: dependency.line,
     severity: worst ?? OSV_HIT_SEVERITY,
     confidence: OSV_HIT_CONFIDENCE,
-    message: `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}).`,
-    remediation: `Upgrade ${dependency.name} to a version that resolves ${vulnIds.length === 1 ? "this advisory" : "these advisories"} — check https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`,
+    message: dependency.transitive === true
+      ? `Vulnerable transitive dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}) — installed by another package, resolved in this lockfile.`
+      : `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}).`,
+    remediation:
+      dependency.transitive === true
+        ? `Update the package that depends on ${dependency.name}, or force a patched version with npm "overrides" / pnpm "pnpm.overrides" / yarn "resolutions" (or a direct pin in Python) — check https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`
+        : `Upgrade ${dependency.name} to a version that resolves ${vulnIds.length === 1 ? "this advisory" : "these advisories"} — check https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`,
   };
 }
 
@@ -271,7 +371,7 @@ function buildFallbackFinding(
     ruleId: DEP_RULE_ID,
     category: "deps",
     detectorName: "osv",
-    file: filePath,
+    file: dependency.file ?? filePath,
     line: dependency.line,
     severity: hit.severity,
     confidence: FALLBACK_HIT_CONFIDENCE,
@@ -329,6 +429,14 @@ export const osvDetector: Detector = {
       "**/pyproject.toml",
       "**/Pipfile",
       "**/go.mod",
+      "**/package-lock.json",
+      "**/npm-shrinkwrap.json",
+      "**/pnpm-lock.yaml",
+      "**/yarn.lock",
+      "**/bun.lock",
+      "**/poetry.lock",
+      "**/uv.lock",
+      "**/Pipfile.lock",
     ],
     requiresNetwork: true,
   },
@@ -339,9 +447,17 @@ export const osvDetector: Detector = {
         return [];
       }
 
-      const dependencies = ctx.filePath.endsWith("package.json")
-        ? parseDirectDependencies(ctx.content)
-        : parseOtherEcosystemDependencies(ctx.filePath, ctx.content);
+      if (governingLockfile(ctx.filePath, ctx.fileSet) !== undefined) {
+        // The lockfile's own detect() call checks the exact installed versions.
+        return [];
+      }
+
+      const dependencies =
+        lockfileParserFor(ctx.filePath) !== undefined
+          ? parseLockfileDependencies(ctx.filePath, ctx.content, ctx.fileSet)
+          : ctx.filePath.endsWith("package.json")
+            ? parseDirectDependencies(ctx.content)
+            : parseOtherEcosystemDependencies(ctx.filePath, ctx.content);
       if (dependencies.length === 0) {
         return [];
       }

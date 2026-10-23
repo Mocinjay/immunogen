@@ -311,3 +311,17 @@ describe("walkFiles — .immunogenignore", () => {
     expect(overridden.has("src/api.generated.ts")).toBe(true);
   });
 });
+
+describe("walkFiles — lockfile size cap", () => {
+  it("reads a lockfile larger than the default per-file cap, but not other large files", async () => {
+    const big = `{"lockfileVersion":3,"packages":{${'"node_modules/x":{"version":"1.0.0"},'.repeat(20_000)}"":{}}}`;
+    const tree = await makeRepoTree({ "package-lock.json": big, "data.json": big });
+    trees.push(tree);
+
+    const { fileSet: result } = await walkFiles(tree.root);
+
+    expect(big.length).toBeGreaterThan(512 * 1024);
+    expect(result.has("package-lock.json")).toBe(true);
+    expect(result.has("data.json")).toBe(false);
+  });
+});
