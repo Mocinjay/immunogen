@@ -2,7 +2,9 @@
  * osv-client — OSV.dev batch vulnerability query client (DEP-01).
  *
  * `queryOsvBatch` is the ONLY function in this codebase that POSTs to
- * OSV.dev (api.osv.dev/v1/querybatch). It exists as its own module
+ * OSV.dev (api.osv.dev/v1/querybatch); `fetchVulnSeverities` GETs the full
+ * record of advisories that query already returned (public advisory ids
+ * only) to rate them. Both live in their own module
  * specifically so `osv-detector.ts`'s tests can stub it at the module
  * boundary (`vi.mock("./osv-client.js", ...)`) rather than reaching for
  * global fetch directly — per the plan's pattern_analog note.
@@ -38,6 +40,10 @@
  * under PITFALLS Pitfall 10 as a "How to avoid" option this plan does not
  * implement).
  */
+
+import { severityFromOsvRecord } from "./osv-severity.js";
+
+import type { Severity } from "../../core/types.js";
 
 /** 10-second hard timeout for the entire OSV.dev round trip (ARCHITECTURE.md Pattern 2). */
 const OSV_TIMEOUT_MS = 10_000;
@@ -191,4 +197,61 @@ export async function queryOsvBatch(queries: OsvQuery[]): Promise<OsvResult[]> {
   }
 
   return queries.map((query) => sessionCache.get(cacheKey(query)) ?? {});
+}
+
+/** OSV.dev single-vulnerability endpoint (full record, incl. severity). */
+const OSV_VULN_URL = "https://api.osv.dev/v1/vulns/";
+
+/** Concurrent record fetches per `fetchVulnSeverities` call. */
+const SEVERITY_FETCH_CONCURRENCY = 8;
+
+/** OSV advisory ids are short tokens like GHSA-xxxx-xxxx-xxxx, PYSEC-2023-1, GO-2023-1, CVE-2024-1. */
+const OSV_ID_RE = /^[A-Za-z0-9._:-]{3,64}$/;
+
+/** Session cache: advisory id -> its severity, or null when the record carries none. */
+const severityCache = new Map<string, Severity | null>();
+
+/**
+ * Fetches the full OSV record for each advisory id and returns the
+ * severities it could determine (see osv-severity.ts). Best-effort by
+ * design: the batch query already established THAT a package is
+ * vulnerable, so a failed or slow lookup here only loses the precise
+ * rating — the id is simply absent from the result and the caller keeps
+ * its default. Only public advisory ids are sent. Never throws.
+ */
+export async function fetchVulnSeverities(ids: string[]): Promise<Map<string, Severity>> {
+  const pending = [...new Set(ids)].filter((id) => OSV_ID_RE.test(id) && !severityCache.has(id));
+  if (pending.length > 0) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, OSV_TIMEOUT_MS);
+    try {
+      const queue = [...pending];
+      const worker = async (): Promise<void> => {
+        for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+          try {
+            const response = await fetch(`${OSV_VULN_URL}${encodeURIComponent(id)}`, { signal: controller.signal });
+            if (response.ok) {
+              severityCache.set(id, severityFromOsvRecord(await response.json()) ?? null);
+            }
+          } catch {
+            // Leave this id unrated; a later scan in the same process may retry it.
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(SEVERITY_FETCH_CONCURRENCY, pending.length) }, worker));
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  const severities = new Map<string, Severity>();
+  for (const id of ids) {
+    const severity = severityCache.get(id);
+    if (severity !== undefined && severity !== null) {
+      severities.set(id, severity);
+    }
+  }
+  return severities;
 }

@@ -54,7 +54,8 @@
  * `require()`s, `eval`s, or executes the scanned package.json as code.
  */
 import { checkFallback, type FallbackEntry } from "./osv-fallback.js";
-import { queryOsvBatch } from "./osv-client.js";
+import { fetchVulnSeverities, queryOsvBatch } from "./osv-client.js";
+import { worstSeverity } from "./osv-severity.js";
 import { manifestParserFor, type Ecosystem } from "../../core/ingest/manifests.js";
 
 import type { Confidence, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
@@ -205,13 +206,13 @@ function findDependencyLine(content: string, dependencyName: string): number {
 }
 
 /**
- * Maps an OSV/GHSA/CVE advisory id to a Severity. OSV.dev's querybatch
- * response (the lightweight `id`-only shape this detector requests) does
- * not include a CVSS/severity field per-vuln in the batch response, so
- * every OSV-sourced hit is conservatively reported as HIGH — a known
- * vulnerability with an assigned advisory id is, at minimum, a real risk
- * worth surfacing; a developer can read the linked advisory for the exact
- * CVSS score. (Fallback-path hits use the curated severity from
+ * Default Severity for an OSV-sourced hit whose real rating is unknown.
+ * OSV.dev's querybatch response carries advisory ids only; each finding is
+ * rated by the worst of its advisories' full records (`fetchVulnSeverities`
+ * + osv-severity.ts: GitHub's database severity, else the CVSS v3 base
+ * score). When no record can be fetched or rated, the hit stays HIGH — a
+ * known vulnerability with an assigned advisory id is, at minimum, a real
+ * risk worth surfacing. (Fallback-path hits use the curated severity from
  * `FALLBACK_VULNERABLE_NPM` instead, which IS pre-classified.)
  */
 const OSV_HIT_SEVERITY: Severity = "HIGH";
@@ -231,17 +232,29 @@ const MAX_LISTED_ADVISORIES = 3;
  * (20+ advisories for an old `next`) flood the report and zero out the
  * Ship Score on its own.
  */
-function buildOsvFinding(filePath: string, dependency: ParsedDependency, vulnIds: string[]): Finding {
-  const listed = vulnIds.slice(0, MAX_LISTED_ADVISORIES).join(", ");
+function buildOsvFinding(
+  filePath: string,
+  dependency: ParsedDependency,
+  vulnIds: string[],
+  severities: ReadonlyMap<string, Severity>,
+): Finding {
+  // Most severe advisories first, so the listed ids are the ones that matter.
+  const rank = (id: string): number => ["LOW", "MEDIUM", "HIGH", "CRITICAL"].indexOf(severities.get(id) ?? "");
+  const ordered = [...vulnIds].sort((left, right) => rank(right) - rank(left));
+  const worst = worstSeverity(vulnIds.flatMap((id) => severities.get(id) ?? []));
+  const listed = ordered.slice(0, MAX_LISTED_ADVISORIES).join(", ");
   const more = vulnIds.length > MAX_LISTED_ADVISORIES ? `, +${String(vulnIds.length - MAX_LISTED_ADVISORIES)} more` : "";
-  const advisories = vulnIds.length === 1 ? `OSV advisory ${listed}` : `${String(vulnIds.length)} OSV advisories: ${listed}${more}`;
+  const advisories =
+    vulnIds.length === 1
+      ? `${worst === undefined ? "" : `${worst} `}OSV advisory ${listed}`
+      : `${String(vulnIds.length)} OSV advisories${worst === undefined ? "" : `, highest ${worst}`}: ${listed}${more}`;
   return {
     ruleId: DEP_RULE_ID,
     category: "deps",
     detectorName: "osv",
     file: filePath,
     line: dependency.line,
-    severity: OSV_HIT_SEVERITY,
+    severity: worst ?? OSV_HIT_SEVERITY,
     confidence: OSV_HIT_CONFIDENCE,
     message: `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}).`,
     remediation: `Upgrade ${dependency.name} to a version that resolves ${vulnIds.length === 1 ? "this advisory" : "these advisories"} — check https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`,
@@ -350,7 +363,7 @@ export const osvDetector: Detector = {
           throw new Error("offline mode: OSV.dev query skipped");
         }
         const results = await queryOsvBatch(queries);
-        const findings: Finding[] = [];
+        const hits: Array<{ dependency: ParsedDependency; vulnIds: string[] }> = [];
 
         results.forEach((result, index) => {
           // `.at(index)` (not bracket indexing) over `results`, which
@@ -364,11 +377,20 @@ export const osvDetector: Detector = {
           }
           const vulnIds = [...new Set((result.vulns ?? []).map((vuln) => vuln.id))];
           if (vulnIds.length > 0) {
-            findings.push(buildOsvFinding(ctx.filePath, dependency, vulnIds));
+            hits.push({ dependency, vulnIds });
           }
         });
 
-        return findings;
+        // Real ratings are best-effort: an unreachable or partial lookup
+        // keeps the conservative HIGH default rather than failing the scan.
+        let severities: ReadonlyMap<string, Severity> = new Map();
+        try {
+          severities = await fetchVulnSeverities(hits.flatMap((hit) => hit.vulnIds));
+        } catch {
+          // Leave every advisory at the default rating.
+        }
+
+        return hits.map((hit) => buildOsvFinding(ctx.filePath, hit.dependency, hit.vulnIds, severities));
       } catch {
         // ANY OSV failure (a typed OsvUnavailableError from osv-client.ts,
         // OR any other unexpected throw/rejection) triggers the offline

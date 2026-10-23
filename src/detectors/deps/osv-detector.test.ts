@@ -11,8 +11,11 @@ import type { OsvResult } from "./osv-client.js";
 // separate module import so the test can stub it").
 const queryOsvBatchMock = vi.fn<(queries: Array<{ name: string; version: string }>) => Promise<OsvResult[]>>();
 
+const fetchVulnSeveritiesMock = vi.fn<(ids: string[]) => Promise<Map<string, string>>>(() => Promise.resolve(new Map()));
+
 vi.mock("./osv-client.js", () => ({
   queryOsvBatch: (queries: Array<{ name: string; version: string }>) => queryOsvBatchMock(queries),
+  fetchVulnSeverities: (ids: string[]) => fetchVulnSeveritiesMock(ids),
 }));
 
 /** Minimal StackHints fixture — osvDetector reads ctx.content only, never ctx.stackHints. */
@@ -273,5 +276,44 @@ describe("osvDetector — Python and Go manifests", () => {
     const findings = await osvDetector.detect(makeContext("flask==2.0.1\n", "requirements.txt"));
 
     expect(findings.map((finding) => finding.ruleId)).toEqual(["DEP-OFFLINE"]);
+  });
+});
+
+describe("osvDetector — real advisory severity", () => {
+  it("rates a package by its worst advisory and lists the worst first", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "GHSA-low" }, { id: "GHSA-crit" }, { id: "GHSA-mod" }] }]);
+    fetchVulnSeveritiesMock.mockResolvedValueOnce(
+      new Map([
+        ["GHSA-low", "LOW"],
+        ["GHSA-crit", "CRITICAL"],
+        ["GHSA-mod", "MEDIUM"],
+      ]),
+    );
+
+    const findings = await osvDetector.detect(makeContext(JSON.stringify({ dependencies: { next: "14.0.0" } })));
+
+    expect(fetchVulnSeveritiesMock).toHaveBeenCalledWith(["GHSA-low", "GHSA-crit", "GHSA-mod"]);
+    expect(findings[0]).toMatchObject({ severity: "CRITICAL" });
+    expect(findings[0]?.message).toBe(
+      "Vulnerable dependency: next@14.0.0 (3 OSV advisories, highest CRITICAL: GHSA-crit, GHSA-mod, GHSA-low).",
+    );
+  });
+
+  it("can rate a package below HIGH when its advisories are minor", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "GHSA-only" }] }]);
+    fetchVulnSeveritiesMock.mockResolvedValueOnce(new Map([["GHSA-only", "LOW"]]));
+
+    const findings = await osvDetector.detect(makeContext(JSON.stringify({ dependencies: { pkg: "1.0.0" } })));
+
+    expect(findings[0]).toMatchObject({ severity: "LOW", message: "Vulnerable dependency: pkg@1.0.0 (LOW OSV advisory GHSA-only)." });
+  });
+
+  it("keeps the HIGH default when the severity lookup fails", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "GHSA-x" }] }]);
+    fetchVulnSeveritiesMock.mockRejectedValueOnce(new Error("network"));
+
+    const findings = await osvDetector.detect(makeContext(JSON.stringify({ dependencies: { pkg: "1.0.0" } })));
+
+    expect(findings.map((finding) => [finding.ruleId, finding.severity])).toEqual([["DEP-01", "HIGH"]]);
   });
 });
