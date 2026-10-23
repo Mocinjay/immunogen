@@ -32,6 +32,12 @@
  *   Skipped in files that validate the target (a leading-"/" check, an
  *   origin/host comparison, a safe-redirect helper).
  *
+ *   AUTH-07 (MEDIUM): an auth token written to `localStorage` /
+ *   `sessionStorage` (`setItem("token", ...)`, `localStorage.jwt = ...`)
+ *   — readable by every script on the page, so a single XSS or compromised
+ *   npm dependency exfiltrates every user's session. httpOnly cookies keep
+ *   the token out of JavaScript's reach.
+ *
  * All three are MEDIUM confidence: the interpolated value may be a trusted
  * constant, which static analysis cannot always prove.
  *
@@ -113,6 +119,46 @@ function redirectTargetArgument(call: CallExpression, content: string): Node | u
     return first?.type === "NumericLiteral" ? call.arguments.at(1) : first;
   }
   return REDIRECT_METHODS.has(method) && NAVIGATION_RECEIVERS.test(receiver) ? call.arguments.at(0) : undefined;
+}
+
+/** Web Storage objects (as written in source). */
+const WEB_STORAGE_RE = /^(?:window\.|globalThis\.)?(?:localStorage|sessionStorage)$/;
+
+/** Key-name parts that mark auth material on their own (`accessToken`, `jwt`, `auth`, `apiKey`). */
+const AUTH_KEY_PARTS = new Set(["token", "tokens", "jwt", "bearer", "credential", "credentials", "apikey", "auth"]);
+
+/**
+ * True when a storage key names auth material, judged on its word parts
+ * (`accessToken` -> access/token, `sb-x-auth-token`, `user_session_id`) so
+ * `author`, `accessibilityMode`, or `sessionCount` never match.
+ */
+function isAuthStorageKey(key: string): boolean {
+  const parts = key
+    .split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/)
+    .map((part) => part.toLowerCase())
+    .filter((part) => part !== "");
+  const joined = parts.join("");
+  if (parts.some((part) => AUTH_KEY_PARTS.has(part)) || joined.includes("apikey")) {
+    return true;
+  }
+  return parts.includes("session") && parts.some((part) => part === "id" || part === "key" || part === "token");
+}
+
+/** The storage key text of `setItem(key, …)`: a literal's value, or a constant's name (`TOKEN_KEY`). */
+function storageKeyText(node: Node | undefined): string | undefined {
+  if (node?.type === "StringLiteral") {
+    return node.value;
+  }
+  if (node?.type === "TemplateLiteral") {
+    return node.quasis.map((quasi) => quasi.value.cooked ?? "").join("");
+  }
+  if (node?.type === "Identifier") {
+    return node.name;
+  }
+  if (node?.type === "MemberExpression" && node.property.type === "Identifier") {
+    return node.property.name;
+  }
+  return undefined;
 }
 
 /** True for client-side code, where a request to a user-chosen URL runs in the user's own browser, not on the server. */
@@ -216,7 +262,7 @@ function isNonLiteral(node: Node | undefined): boolean {
 }
 
 interface Site {
-  ruleId: "INJECT-02" | "INJECT-03" | "AUTH-06" | "INJECT-04" | "REDIRECT-01";
+  ruleId: "INJECT-02" | "INJECT-03" | "AUTH-06" | "INJECT-04" | "REDIRECT-01" | "AUTH-07";
   line: number;
   matchedText: string;
 }
@@ -247,6 +293,13 @@ const RULE_COPY: Record<Site["ruleId"], { category: Category; message: string; r
       "Server-side request to a URL taken from the request (SSRF) — an attacker can make your server call internal services (cloud metadata at 169.254.169.254, localhost admin ports) and read the response.",
     remediation:
       "Never fetch a user-supplied URL directly: parse it with new URL(), allow only an explicit list of hosts (and https), reject private/link-local addresses after DNS resolution, and disable automatic redirects.",
+  },
+  "AUTH-07": {
+    category: "auth",
+    message:
+      "Auth token stored in localStorage/sessionStorage — any script on the page (one XSS, one compromised npm package) can read it and take over the session.",
+    remediation:
+      "Keep session tokens in an httpOnly, Secure, SameSite cookie set by the server (most auth libraries — NextAuth, Supabase SSR, Clerk — can do this for you) instead of Web Storage.",
   },
   "REDIRECT-01": {
     category: "injection",
@@ -323,6 +376,14 @@ export const dangerousCodeDetector: Detector = {
           isRequestControlled(redirectTargetArgument(call, ctx.content), tainted, ctx.content, "redirect")
         ) {
           sites.push({ ruleId: "REDIRECT-01", line, matchedText: name });
+        } else if (
+          call.type === "CallExpression" &&
+          name === "setItem" &&
+          call.callee.type === "MemberExpression" &&
+          WEB_STORAGE_RE.test(ctx.content.slice(call.callee.object.start ?? 0, call.callee.object.end ?? 0)) &&
+          isAuthStorageKey(storageKeyText(call.arguments.at(0)) ?? "")
+        ) {
+          sites.push({ ruleId: "AUTH-07", line, matchedText: `setItem(${storageKeyText(call.arguments.at(0)) ?? ""})` });
         }
       };
 
@@ -344,6 +405,14 @@ export const dangerousCodeDetector: Detector = {
           ) {
             sites.push({ ruleId: "REDIRECT-01", line: path.node.loc?.start.line ?? 1, matchedText: target });
           }
+          // `localStorage.token = t` / `localStorage["jwt"] = t`
+          if (
+            left.type === "MemberExpression" &&
+            WEB_STORAGE_RE.test(ctx.content.slice(left.object.start ?? 0, left.object.end ?? 0)) &&
+            isAuthStorageKey(storageKeyText(left.property) ?? "")
+          ) {
+            sites.push({ ruleId: "AUTH-07", line: path.node.loc?.start.line ?? 1, matchedText: target });
+          }
         },
       });
 
@@ -353,7 +422,7 @@ export const dangerousCodeDetector: Detector = {
         detectorName: "dangerous-code",
         file: ctx.filePath,
         line: site.line,
-        severity: site.ruleId === "REDIRECT-01" ? "MEDIUM" : "HIGH",
+        severity: site.ruleId === "REDIRECT-01" || site.ruleId === "AUTH-07" ? "MEDIUM" : "HIGH",
         confidence: "MEDIUM",
         message: RULE_COPY[site.ruleId].message,
         remediation: RULE_COPY[site.ruleId].remediation,

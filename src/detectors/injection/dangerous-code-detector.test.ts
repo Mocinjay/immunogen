@@ -157,3 +157,35 @@ describe("dangerousCodeDetector — REDIRECT-01 open redirect", () => {
     expect(await summarize(code)).toEqual([]);
   });
 });
+
+describe("dangerousCodeDetector — AUTH-07 tokens in Web Storage", () => {
+  async function summarize(code: string): Promise<string[]> {
+    const findings = await dangerousCodeDetector.detect(makeContext(code, "src/lib/auth.ts"));
+    return findings.map((finding) => `${finding.ruleId} ${finding.severity} L${String(finding.line)}`);
+  }
+
+  it.each([
+    ['localStorage.setItem("token", t)'],
+    ['window.localStorage.setItem("accessToken", data.access_token)'],
+    ["sessionStorage.setItem('jwt', jwt)"],
+    ["localStorage.setItem(TOKEN_KEY, token)"],
+    ["localStorage.setItem(`${prefix}-auth-token`, token)"],
+    ['localStorage.setItem("user_session_id", id)'],
+    ["localStorage.authToken = token"],
+    ['localStorage["refresh_token"] = rt'],
+  ])("flags %s as MEDIUM", async (code) => {
+    expect(await summarize(code)).toEqual(["AUTH-07 MEDIUM L1"]);
+  });
+
+  it.each([
+    ['localStorage.setItem("theme", "dark")'],
+    ['localStorage.setItem("author", name)'],
+    ['localStorage.setItem("accessibilityMode", "on")'],
+    ['localStorage.setItem("sessionCount", String(n))'],
+    ['const t = localStorage.getItem("token")'],
+    ['localStorage.removeItem("token")'],
+    ['cache.setItem("token", t)'],
+  ])("does NOT flag %s", async (code) => {
+    expect(await summarize(code)).toEqual([]);
+  });
+});
