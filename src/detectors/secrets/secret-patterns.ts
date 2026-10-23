@@ -91,8 +91,12 @@ export interface ProviderKeyPattern {
  * SEC-08 is any PEM private key block (a committed Firebase/GCP service
  * account JSON, a TLS or SSH key). SEC-09 covers other prefixed tokens AI
  * apps commonly hardcode, one entry per provider: GitHub, Slack, Stripe
- * webhook signing secrets, SendGrid, Groq, xAI, Hugging Face, Replicate, npm.
- * Every SEC-09 prefix is distinctive enough to need no keyword anchor.
+ * webhook signing secrets, SendGrid, Groq, xAI, Hugging Face, Replicate, npm,
+ * Resend, and Google API keys (`AIza...`). Every SEC-09 prefix is distinctive
+ * enough to need no keyword anchor; the Google entry is the one exception the
+ * detector gates on context, since Firebase web/mobile config and Maps
+ * browser keys use the same shape and are public by design (the redactor
+ * still redacts every match).
  */
 export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
   {
@@ -133,6 +137,8 @@ export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
   { ruleId: "SEC-09", provider: "Hugging Face", regex: /\bhf_[A-Za-z0-9]{34,}/g },
   { ruleId: "SEC-09", provider: "Replicate", regex: /\br8_[A-Za-z0-9]{37,}/g },
   { ruleId: "SEC-09", provider: "npm", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { ruleId: "SEC-09", provider: "Resend", regex: /\bre_[A-Za-z0-9]{8}_(?=[a-z0-9]*[A-Z0-9])[A-Za-z0-9]{24}\b/g },
+  { ruleId: "SEC-09", provider: "Google", regex: /\bAIza[0-9A-Za-z_-]{35}/g },
 ];
 
 /**

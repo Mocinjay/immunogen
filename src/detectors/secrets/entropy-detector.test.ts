@@ -481,3 +481,51 @@ describe("secretsDetector — private keys and third-party tokens (SEC-08 / SEC-
     expect(await summarize('const k = "rk_live_51AbCdEfGhIjKlMnOp";')).toEqual([expect.stringMatching(/^SEC-01 CRITICAL/)]);
   });
 });
+
+describe("secretsDetector — Google and Resend keys (SEC-09)", () => {
+  const GOOGLE_KEY = "AIzaSyA1b2C3d4E5f6G7h8I9j0KlMnOpQrStUvW";
+
+  async function summarize(content: string, filePath?: string): Promise<string[]> {
+    const findings = await secretsDetector.detect(makeContext(content, filePath));
+    return findings.map((finding) => `${finding.ruleId} ${finding.severity} ${finding.message.slice(0, 32)}`);
+  }
+
+  it("flags a Gemini key as CRITICAL", async () => {
+    const content = `import { GoogleGenerativeAI } from "@google/generative-ai";\nconst genAI = new GoogleGenerativeAI("${GOOGLE_KEY}");`;
+
+    expect(await summarize(content, "app/api/chat/route.ts")).toEqual([expect.stringMatching(/^SEC-09 CRITICAL Hardcoded Google Gemini/)]);
+  });
+
+  it("flags a Google key with no client-config context as HIGH", async () => {
+    expect(await summarize(`const YOUTUBE_DATA = 1;\n\n\n\n\n\n\n\n\n\nconst GOOGLE_KEY = "${GOOGLE_KEY}";`, "server/google.ts")).toEqual([
+      expect.stringMatching(/^SEC-09 HIGH Hardcoded Google API key/),
+    ]);
+  });
+
+  it("does NOT flag Firebase web config, Maps keys, or Firebase mobile config files", async () => {
+    const firebase = [
+      "const firebaseConfig = {",
+      `  apiKey: "${GOOGLE_KEY}",`,
+      '  authDomain: "demo.firebaseapp.com",',
+      '  projectId: "demo",',
+      "};",
+    ].join("\n");
+
+    expect(await summarize(firebase, "lib/firebase.ts")).toEqual([]);
+    expect(await summarize(`const googleMapsApiKey = "${GOOGLE_KEY}";`, "lib/maps.ts")).toEqual([]);
+    expect(await summarize(`{ "api_key": [{ "current_key": "${GOOGLE_KEY}" }] }`, "android/app/google-services.json")).toEqual([]);
+  });
+
+  it("flags a Resend API key as CRITICAL and never prints it", async () => {
+    const key = "re_c1tpEyD8_NKFusih9vKVQknRAQfmFcWCv";
+    const findings = await secretsDetector.detect(makeContext(`const resend = new Resend("${key}");`));
+
+    expect(findings.map((finding) => `${finding.ruleId} ${finding.severity}`)).toEqual(["SEC-09 CRITICAL"]);
+    expect(findings[0]?.message).toContain("Resend");
+    expect(JSON.stringify(findings)).not.toContain(key);
+  });
+
+  it("does NOT mistake a snake_case identifier for a Resend key", async () => {
+    expect(await summarize("const v = re_validate_userprofilesettingsform();")).toEqual([]);
+  });
+});

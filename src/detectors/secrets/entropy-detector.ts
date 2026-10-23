@@ -117,7 +117,8 @@ function sharedRegex(ruleId: string, provider?: string): RegExp {
 
 /** One SEC-09 entry per provider in the shared table, each with its own message. */
 function thirdPartyTokenPatterns(): ProviderPattern[] {
-  return PROVIDER_KEY_PATTERNS.filter((pattern) => pattern.ruleId === "SEC-09").map((pattern) => {
+  // Google keys need context (see runGoogleKeyPass); every other SEC-09 shape is unambiguous.
+  return PROVIDER_KEY_PATTERNS.filter((pattern) => pattern.ruleId === "SEC-09" && pattern.provider !== "Google").map((pattern) => {
     const provider = pattern.provider ?? "third-party";
     const lowImpact = provider === "Slack webhook" || provider === "Stripe webhook signing";
     return {
@@ -194,6 +195,69 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
   },
   ...thirdPartyTokenPatterns(),
 ];
+
+/**
+ * Text near a Google `AIza...` key that marks it as public-by-design client
+ * config: a Firebase web config object (`authDomain`, `messagingSenderId`,
+ * `storageBucket`, `firebaseConfig`), a Maps / Places browser key, or a
+ * reCAPTCHA / YouTube embed.
+ */
+const GOOGLE_PUBLIC_CONTEXT_RE =
+  /authDomain|messagingSenderId|storageBucket|firebase|maps\.googleapis\.com|maps_?api_?key|mapsApiKey|googleMapsApiKey|places|recaptcha|youtube/i;
+
+/** Text near a Google key that marks it as a Gemini / Generative Language API key — a paid, server-side secret. */
+const GOOGLE_GENAI_CONTEXT_RE = /gemini|generativeai|genai|generativelanguage|vertex|palm|GoogleGenerativeAI/i;
+
+/** Basenames of Firebase mobile config files, whose `current_key` / `API_KEY` is public by design. */
+const FIREBASE_MOBILE_CONFIG_BASENAMES = new Set(["google-services.json", "GoogleService-Info.plist"]);
+
+/** Lines of context examined on each side of a Google key. */
+const GOOGLE_CONTEXT_LINES = 8;
+
+/**
+ * Google API keys (`AIza...`, SEC-09). The same key shape is used by
+ * Firebase web/mobile config and Maps browser keys, which are public by
+ * design and restricted in the Google Cloud console, so a key is only
+ * reported when nothing within GOOGLE_CONTEXT_LINES lines marks it as such
+ * client config (and never in google-services.json / GoogleService-Info.plist).
+ * CRITICAL when the surrounding code names Gemini / the Generative Language
+ * API (a paid server key), HIGH otherwise. Returns the claimed spans.
+ */
+function runGoogleKeyPass(
+  lines: string[],
+  index: number,
+  filePath: string,
+  detectorName: string,
+  findings: Finding[],
+): Array<[number, number]> {
+  const line = lines.at(index) ?? "";
+  const spans: Array<[number, number]> = [];
+  const basename = filePath.split("/").at(-1) ?? "";
+  for (const match of line.matchAll(sharedRegex("SEC-09", "Google"))) {
+    spans.push([match.index, match.index + match[0].length]);
+    const context = lines.slice(Math.max(0, index - GOOGLE_CONTEXT_LINES), index + GOOGLE_CONTEXT_LINES + 1).join("\n");
+    if (FIREBASE_MOBILE_CONFIG_BASENAMES.has(basename) || GOOGLE_PUBLIC_CONTEXT_RE.test(context)) {
+      continue;
+    }
+    const isGenAi = GOOGLE_GENAI_CONTEXT_RE.test(context);
+    findings.push({
+      ruleId: "SEC-09",
+      category: "secrets",
+      detectorName,
+      file: filePath,
+      line: index + 1,
+      severity: isGenAi ? "CRITICAL" : "HIGH",
+      confidence: isGenAi ? "HIGH" : "MEDIUM",
+      message: isGenAi
+        ? "Hardcoded Google Gemini API key found in source — anyone with it can run paid model calls on your account."
+        : "Hardcoded Google API key found in source (not Firebase or Maps client config) — if it is unrestricted, anyone can use it on your bill.",
+      remediation:
+        "Move the key to an untracked server-side environment variable, rotate it in the Google Cloud console, and restrict it to the APIs (and referrers/IPs) that need it.",
+      matchedText: maskSecret(match[0]),
+    });
+  }
+  return spans;
+}
 
 /** Ruleid assigned to every Supabase service_role signal (JWT decode OR env-name shortcut). */
 const SUPABASE_SERVICE_ROLE_RULE_ID = "SEC-04";
@@ -655,7 +719,8 @@ export const secretsDetector: Detector = {
           providerSpans,
           findings,
         );
-        const claimedSpans = [...providerSpans, ...supabaseSpans];
+        const googleSpans = runGoogleKeyPass(lines, index, ctx.filePath, "secrets", findings);
+        const claimedSpans = [...providerSpans, ...supabaseSpans, ...googleSpans];
         runEntropyPass(line, lineNumber, ctx.filePath, "secrets", claimedSpans, findings, entropyCount);
       }
 
