@@ -37,6 +37,7 @@
  * "KEY"/"TOKEN" and would otherwise match the secret-keyword filter — the
  * `PUBLIC_BY_DESIGN_MARKERS` exclusion prevents these headline false
  * positives, but never for a name that also says SECRET / SERVICE_ROLE /
+ * immunogen-ignore BUNDLE-01 — the next line names the pattern as documentation
  * PRIVATE / PASSWORD / ADMIN (`NEXT_PUBLIC_FIREBASE_PRIVATE_KEY` still fires).
  *
  * FP allowlist (PITFALLS.md Pitfall 1): `detect()` opens with the same
@@ -217,6 +218,7 @@ export const clientExposureDetector: Detector = {
             severity: "HIGH",
             confidence: "MEDIUM",
             message:
+              // immunogen-ignore BUNDLE-02 — this finding's own message text names the pattern
               "LLM SDK client runs in the browser (dangerouslyAllowBrowser: true) — the API key it is given ships to every visitor, who can use it on your bill.",
             remediation:
               "Move the LLM call behind a server route (or edge function) that holds the key server-side and checks the caller's session; only keep this flag if every user supplies their own key.",

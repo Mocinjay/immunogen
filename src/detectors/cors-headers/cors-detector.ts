@@ -157,6 +157,7 @@ function reflectedOriginFinding(filePath: string, line: number, how: string): Fi
   };
 }
 
+// immunogen-ignore CORS-02 — the doc comment below names the pattern this function detects
 /** CORS-02 findings: `cors({ origin: true|'*', credentials: true })` options, or a reflected Origin header with credentials. */
 function reflectedOriginFindings(ctx: DetectorContext, lines: string[], hasCredentialsTrue: boolean): Finding[] {
   const findings: Finding[] = [];
