@@ -25,6 +25,20 @@ npx immunogen
 
 Run it in your project directory — it scans the current folder, no API key required, and prints a terminal report with a Ship Score. Point it elsewhere with `npx immunogen ./path/to/app`. The only network call it ever makes is a dependency-vulnerability lookup against OSV.dev (package names + versions only); add `--offline` to skip that too.
 
+Requires Node.js 22 or newer. Other ways to install:
+
+```sh
+npm install -g immunogen           # global CLI
+npm install --save-dev immunogen   # per-project (CI gate / library use)
+```
+
+Or run it in Docker with no Node toolchain at all:
+
+```sh
+docker build -t immunogen https://github.com/Mocinjay/immunogen.git
+docker run --rm -v "$PWD:/app" immunogen /app
+```
+
 ## Sample output
 
 Run against a deliberately contaminated fixture app:
@@ -136,6 +150,7 @@ immunogen [path] [--format terminal|json|sarif] [--offline] [--no-ignore] [--no-
 - `--no-llm` — disable LLM fix-prompt enrichment. This is already the default; the flag exists for explicitness in scripts/CI.
 - `--authorize` — required consent gate to screen a live URL target (see [Screen a live URL](#screen-a-live-url)). Has no effect when `<path>` is a local repo.
 - `--allow-private` — escape hatch letting live-URL screening target a loopback/private/link-local host (local dev/test only).
+- `-v, --version` — print the installed version.
 - **Exit code:** `1` when the verdict is `blocked` (contaminated), `0` when `pass` (cleared), `2` when the scan could not run at all (bad path, missing `--authorize`, refused private host, ...) — drop it straight into a CI gate.
 
 ### Suppressing findings
@@ -209,7 +224,7 @@ is enforced by a test), so the grade, Ship Score, and findings match the CLI.
 **Install it:**
 
 ```sh
-# 1. get immunogen and build it (until it's on npm)
+# 1. get immunogen and build it
 git clone https://github.com/Mocinjay/immunogen.git
 cd immunogen && pnpm install && pnpm build
 
@@ -226,19 +241,38 @@ made.
 
 ## CI gate example
 
-Screen every push and upload results as a GitHub code-scanning alert:
+Screen every push and upload results as GitHub code-scanning alerts:
 
 ```yaml
-- name: Screen with immunogen
-  run: npx immunogen . --format sarif > results.sarif
+name: immunogen
 
-- name: Upload SARIF
-  uses: github/codeql-action/upload-sarif@v3
-  with:
-    sarif_file: results.sarif
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Screen with immunogen
+        run: npx --yes immunogen . --format sarif > results.sarif
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
 ```
 
-A `blocked` verdict fails the step; a `pass` verdict clears it — the repo's exit code is the gate.
+A `blocked` verdict fails the step; a `pass` verdict clears it — the exit code is the gate. `if: always()` makes sure the findings still reach the Security tab when the gate fails.
 
 ## Roadmap
 
@@ -246,11 +280,11 @@ Planned: Django and Rails route coverage, slopsquatting / hallucinated-package d
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, how to add a detector, and commit conventions.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, how to add a detector, and commit conventions. Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
-## Install name
+## Security
 
-`immunogen` may already be taken on npm — if so, this package publishes under `@<scope>/immunogen` instead, with an identical CLI and library API.
+Found a vulnerability in immunogen itself (not in a repo you scanned)? Please report it privately — see [SECURITY.md](./SECURITY.md).
 
 ## License
 
