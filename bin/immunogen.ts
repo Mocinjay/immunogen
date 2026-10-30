@@ -34,6 +34,7 @@
  * every installed `immunogen` invocation silently print nothing and exit 0.
  */
 import { realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
@@ -42,6 +43,14 @@ import { scan } from "../src/index.js";
 import { getReporter } from "../src/reporters/index.js";
 
 import type { ScanOptions } from "../src/index.js";
+
+/**
+ * The package version, read from package.json at runtime. Both the source
+ * entry (bin/immunogen.ts) and the built entry (dist/immunogen.js) sit one
+ * directory below the package root, so the same relative path resolves in
+ * dev, in tests, and in an installed npm package.
+ */
+const { version: VERSION } = createRequire(import.meta.url)("../package.json") as { version: string };
 
 /**
  * Runs one CLI scan action: calls `scan(path, { format, noLlm, authorize,
@@ -127,6 +136,7 @@ if (isEntryScript()) {
     .description(
       "Scan an AI-built repo (or screen a live URL with --authorize) for launch-blocking issues and print a Ship Score.",
     )
+    .version(VERSION, "-v, --version", "print the immunogen version")
     .argument(
       "[path]",
       "path to the repository to scan (default: current directory), or a live https:// URL to screen (requires --authorize)",

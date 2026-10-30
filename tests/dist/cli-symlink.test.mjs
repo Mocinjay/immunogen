@@ -15,7 +15,7 @@
  * the network.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -59,7 +59,12 @@ try {
   check(clean.status === 0, "symlinked CLI with no path must scan the current directory and pass", clean);
   check(clean.stdout.includes("Scanned: ."), "no-path run must report scanning '.'", clean);
 
-  console.log("CLI symlink OK: installed-bin invocation scans, sets exit codes, and defaults to the current directory.");
+  const { version } = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  const versionRun = runLinkedCli(["--version"], repoRoot);
+  check(versionRun.status === 0, "symlinked CLI --version must exit 0", versionRun);
+  check(versionRun.stdout.trim() === version, "symlinked CLI --version must print the package.json version", versionRun);
+
+  console.log("CLI symlink OK: installed-bin invocation scans, sets exit codes, defaults to the current directory, and reports --version.");
 } finally {
   rmSync(linkDir, { recursive: true, force: true });
 }
