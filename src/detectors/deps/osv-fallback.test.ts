@@ -33,6 +33,21 @@ describe("checkFallback — bundled offline vulnerable-version list", () => {
     expect(checkFallback("axios", "1.7.0")).toBeUndefined();
   });
 
+  it("does NOT flag patched backport releases on older lines (semver 5.7.2/6.3.1, minimist 0.2.4, ws 7.5.10)", () => {
+    expect(checkFallback("semver", "5.7.2")).toBeUndefined();
+    expect(checkFallback("semver", "6.3.1")).toBeUndefined();
+    expect(checkFallback("minimist", "0.2.4")).toBeUndefined();
+    expect(checkFallback("ws", "7.5.10")).toBeUndefined();
+  });
+
+  it("still flags versions below the backport on that line, and lines with no backport", () => {
+    expect(checkFallback("semver", "5.7.1")).toBeDefined();
+    expect(checkFallback("semver", "6.3.0")).toBeDefined();
+    expect(checkFallback("semver", "5.6.0")).toBeDefined();
+    expect(checkFallback("semver", "4.3.6")).toBeDefined();
+    expect(checkFallback("ws", "7.5.9")).toBeDefined();
+  });
+
   it("does NOT flag a package that is not in the bundled list", () => {
     const hit = checkFallback("some-unlisted-pkg", "1.0.0");
 
@@ -79,6 +94,9 @@ describe("checkFallback — bundled offline vulnerable-version list", () => {
       expect(entry.advisoryId).toMatch(/\S+/);
       expect(entry.severity).toMatch(/^(CRITICAL|HIGH|MEDIUM|LOW|INFO)$/);
       expect(entry.title).toMatch(/\S+/);
+      for (const fix of entry.backportFixes ?? []) {
+        expect(fix).toMatch(/^\d+\.\d+\.\d+$/);
+      }
     }
   });
 });
