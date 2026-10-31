@@ -80,13 +80,13 @@
   "devDependencies": {
     "@types/babel__traverse": "7.28.0",
     "@types/node": "22.19.21",
-    "@typescript-eslint/eslint-plugin": "8.61.1",
-    "@typescript-eslint/parser": "8.61.1",
+    "@typescript-eslint/eslint-plugin": "8.72.1",
+    "@typescript-eslint/parser": "8.72.1",
     "eslint": "9.39.4",
-    "eslint-plugin-security": "4.0.1",
+    "eslint-plugin-security": "4.2.0",
     "license-checker": "25.0.1",
     "tsup": "8.5.1",
-    "tsx": "4.22.4",
+    "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vitest": "4.1.9"
   },
