@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 
 import type { Reporter } from "./interface.js";
 import type {
+  SarifArtifactLocation,
   SarifLevel,
   SarifLocation,
   SarifLog,
@@ -38,7 +39,11 @@ import type {
   SarifRun,
 } from "./sarif-types.js";
 
-import type { Category, Finding, ScanResult, Severity } from "../core/types.js";
+import { VERSION } from "../version.js";
+
+import type { SarifNotification } from "./sarif-types.js";
+
+import type { Category, Diagnostic, Finding, ScanResult, Severity } from "../core/types.js";
 
 /** SARIF 2.1.0's published schema URI — pinned so consumers can validate against it. */
 const SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json";
@@ -49,12 +54,8 @@ const SARIF_VERSION = "2.1.0" as const;
 /** `tool.driver.name` — identifies immunogen as the producing tool. */
 const DRIVER_NAME = "immunogen";
 
-/**
- * Placeholder project URL for `tool.driver.informationUri`. A real published
- * repository URL can replace this constant later without touching any other
- * part of the reporter.
- */
-const DRIVER_INFORMATION_URI = "https://github.com/immunogen-dev/immunogen";
+/** `tool.driver.informationUri` — the project's home page. */
+const DRIVER_INFORMATION_URI = "https://github.com/Mocinjay/immunogen";
 
 /** Number of spaces used for `JSON.stringify`'s pretty-print indentation. */
 const JSON_INDENT_SPACES = 2;
@@ -170,6 +171,31 @@ function buildRules(findings: readonly Finding[]): {
 }
 
 /**
+ * A finding's `file` as a SARIF artifact location. Live-URL findings carry an
+ * absolute URL (already a valid URI); repo paths are percent-encoded per
+ * segment — a raw space, `#`, `%` or `?` in a filename would otherwise make
+ * an invalid or misresolved URI — and anchored to `%SRCROOT%`.
+ */
+function artifactLocationFor(file: string): SarifArtifactLocation {
+  if (/^https?:\/\//i.test(file)) {
+    return { uri: file };
+  }
+  return { uri: file.split("/").map(encodeURIComponent).join("/"), uriBaseId: "%SRCROOT%" };
+}
+
+/** Maps a pipeline `Diagnostic` to a SARIF tool-execution notification. */
+function buildNotification(diagnostic: Diagnostic): SarifNotification {
+  return {
+    level: diagnostic.level === "warn" ? "warning" : "note",
+    message: { text: diagnostic.message },
+    descriptor: { id: diagnostic.code },
+    ...(diagnostic.file === undefined
+      ? {}
+      : { locations: [{ physicalLocation: { artifactLocation: artifactLocationFor(diagnostic.file), region: { startLine: 1 } } }] }),
+  };
+}
+
+/**
  * Maps a single `Finding` to a `SarifLocation`. Respects
  * `exactOptionalPropertyTypes` — `endLine` is only present on the region
  * object when the finding actually has one; it is never explicitly set to
@@ -178,7 +204,7 @@ function buildRules(findings: readonly Finding[]): {
 function buildLocation(finding: Finding): SarifLocation {
   return {
     physicalLocation: {
-      artifactLocation: { uri: finding.file },
+      artifactLocation: artifactLocationFor(finding.file),
       region:
         finding.endLine !== undefined
           ? { startLine: finding.line, endLine: finding.endLine }
@@ -226,14 +252,24 @@ function buildRun(result: ScanResult): SarifRun {
     tool: {
       driver: {
         name: DRIVER_NAME,
+        version: VERSION,
+        semanticVersion: VERSION,
         informationUri: DRIVER_INFORMATION_URI,
         rules,
       },
     },
+    invocations: [
+      {
+        executionSuccessful: true,
+        ...(result.diagnostics.length > 0 ? { toolExecutionNotifications: result.diagnostics.map(buildNotification) } : {}),
+      },
+    ],
     results: result.findings.map((finding) => buildResult(finding, ruleIndexByRuleId)),
     properties: {
       grade: result.score.grade,
       gradeLabel: result.score.gradeLabel,
+      score: result.score.score,
+      scanIncomplete: result.scanIncomplete,
     },
   };
 }
@@ -246,6 +282,6 @@ export const sarifReporter: Reporter = {
       runs: [buildRun(result)],
     };
 
-    return JSON.stringify(log, null, JSON_INDENT_SPACES);
+    return `${JSON.stringify(log, null, JSON_INDENT_SPACES)}\n`;
   },
 };

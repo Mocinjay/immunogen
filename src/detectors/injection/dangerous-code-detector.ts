@@ -53,9 +53,7 @@ import { collectRequestTaintedNames, isRequestControlled } from "./request-input
 
 import type { Category, Detector, DetectorContext, Finding } from "../../core/types.js";
 import type { CallExpression, Expression, NewExpression, Node } from "@babel/types";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Prisma's explicitly-unsafe raw query APIs: any non-literal SQL string is injectable. */
 const RAW_UNSAFE_METHODS = new Set(["$queryRawUnsafe", "$executeRawUnsafe", "queryRawUnsafe", "executeRawUnsafe"]);
@@ -194,16 +192,6 @@ function outboundUrlArgument(call: CallExpression): Node | undefined {
   return first;
 }
 
-/** True when `filePath` falls inside a test/fixture/mock/example directory, or is a test/story file. */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".spec.") || basename.includes(".stories.");
-}
-
 /** The called function's own name: `foo` for `foo()`, `bar` for `x.y.bar()`. */
 function calleeName(call: CallExpression | NewExpression): string | undefined {
   const callee = call.callee;
@@ -314,13 +302,14 @@ export const dangerousCodeDetector: Detector = {
   config: {
     name: "dangerous-code",
     category: "injection",
-    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs}"],
+    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,mts,cts}"],
+    usesAst: true,
   },
 
   // Not declared `async`: synchronous AST work wrapped in Promise.resolve().
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      if (isAllowlistedPath(ctx.filePath) || !isBabelFile(ctx.ast)) {
+      if (isTestOrFixturePath(ctx.filePath) || !isBabelFile(ctx.ast)) {
         return Promise.resolve([]);
       }
 

@@ -12,22 +12,21 @@
  *      `opts.authorize === true`, mirroring how a pentest requires signed
  *      authorization before any probe traffic is sent.
  *
- *   2. SSRF guard — refuses to resolve any target whose *hostname* names a
- *      loopback/private/link-local/metadata-service address, so a caller
- *      cannot point this tool at their own internal network (`localhost`,
- *      `10.0.0.0/8`, the AWS/GCP metadata IP `169.254.169.254`, etc.) and
- *      have it dutifully fetch internal-only content. `opts.allowPrivate`
- *      is an explicit escape hatch for local dev/test scenarios.
+ *   2. SSRF pre-flight — refuses a target whose hostname is a private name
+ *      or a non-public IP literal (loopback, RFC 1918, CGNAT, link-local incl.
+ *      `169.254.169.254`, IPv6 ULA/link-local, IPv4-mapped forms, ...).
+ *      `opts.allowPrivate` is an explicit escape hatch for local dev/test.
+ *      This is only the first, synchronous layer: `assertPublicUrl`
+ *      (host-guard.ts) resolves DNS and re-checks before EVERY request,
+ *      including each redirect hop, so a public name pointing at a private
+ *      address or a redirect into the internal network is refused too.
  *
- * Both functions are pure and synchronous — no network I/O happens in this
- * module at all (that is Task 3's `fetch-target.ts`). This keeps the whole
- * module trivially unit-testable and keeps the consent/SSRF decision fully
- * deterministic and independent of network conditions.
- *
- * Pass 1 scope note: this module is NOT wired into `resolveInput`, `scan()`,
- * or the CLI yet — it exists standalone so Pass 2 can wire it into the
- * pipeline without touching its internals.
+ * Both functions are pure and synchronous — no network I/O happens here.
  */
+
+import { isIP } from "node:net";
+
+import { isBlockedAddress, isPrivateName } from "./host-guard.js";
 
 /** Options accepted by `resolveUrlTarget`. A subset of `ScanOptions` (src/core/types.ts) the URL branch reads. */
 export interface ResolveUrlTargetOptions {
@@ -83,100 +82,15 @@ export function normalizeUrl(input: string): string {
   return parsed.toString();
 }
 
-/** True when `host` is exactly `localhost` or ends with the `.local` mDNS TLD (case-insensitive). */
-function isLoopbackHostname(host: string): boolean {
-  const lower = host.toLowerCase();
-  return lower === "localhost" || lower.endsWith(".local");
-}
-
 /**
- * True when `host` is the literal IPv6 loopback address, written either
- * bracketed (as `URL.host` yields, e.g. `[::1]`) or unbracketed (as
- * `URL.hostname` yields, e.g. `::1`). Per the task spec, only the literal
- * `::1` loopback form is checked — no full IPv6 private-range parsing.
- */
-function isIpv6Loopback(host: string): boolean {
-  return host === "::1" || host === "[::1]";
-}
-
-/**
- * Parses `host` as a dotted-quad IPv4 literal, returning its four octets,
- * or `undefined` if `host` is not a syntactically valid IPv4 literal
- * (e.g. it is a hostname like `example.com`). Deliberately simple/strict:
- * exactly four dot-separated segments, each a base-10 integer 0-255 with no
- * leading-zero ambiguity concerns beyond what `Number` already rejects here
- * (this resolver only needs to classify address *ranges*, not fully
- * validate arbitrary IPv4 textual forms).
- */
-function parseIpv4(host: string): [number, number, number, number] | undefined {
-  const segments = host.split(".");
-  if (segments.length !== 4) {
-    return undefined;
-  }
-
-  const octets: number[] = [];
-  for (const segment of segments) {
-    if (!/^\d{1,3}$/.test(segment)) {
-      return undefined;
-    }
-    const value = Number(segment);
-    if (value > 255) {
-      return undefined;
-    }
-    octets.push(value);
-  }
-
-  const [a, b, c, d] = octets;
-  if (a === undefined || b === undefined || c === undefined || d === undefined) {
-    return undefined;
-  }
-  return [a, b, c, d];
-}
-
-/**
- * True when `host` is an IPv4 literal falling in any blocked range: the
- * `127.0.0.0/8` loopback block, `10.0.0.0/8`, `172.16.0.0/12`,
- * `192.168.0.0/16` (RFC 1918 private ranges), `169.254.0.0/16` (link-local,
- * which also covers the `169.254.169.254` cloud-metadata address), or the
- * unspecified address `0.0.0.0`.
- */
-function isBlockedIpv4(host: string): boolean {
-  const octets = parseIpv4(host);
-  if (octets === undefined) {
-    return false;
-  }
-  const [a, b] = octets;
-
-  if (host === "0.0.0.0") {
-    return true;
-  }
-  if (a === 127) {
-    return true;
-  }
-  if (a === 10) {
-    return true;
-  }
-  if (a === 172 && b >= 16 && b <= 31) {
-    return true;
-  }
-  if (a === 192 && b === 168) {
-    return true;
-  }
-  if (a === 169 && b === 254) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * True when `hostname` (as returned by `URL.hostname` — lowercased, no
- * port, IPv6 literals unbracketed) names a loopback, private, link-local,
- * or cloud-metadata address that a live-URL screen must never probe absent
- * `opts.allowPrivate`.
+ * True when `hostname` (as `URL.hostname` yields it — IPv6 bracketed) is a
+ * private name or a non-public IP literal. This is the synchronous,
+ * pre-flight half of the SSRF guard; `assertPublicUrl` (host-guard.ts) also
+ * resolves DNS and runs before every request, including redirect hops.
  */
 function isPrivateOrLoopbackHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase();
-  return isLoopbackHostname(lower) || isIpv6Loopback(lower) || isBlockedIpv4(lower);
+  const host = hostname.replace(/^\[|\]$/g, "");
+  return isPrivateName(host) || (isIP(host) !== 0 && isBlockedAddress(host));
 }
 
 /**

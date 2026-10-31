@@ -181,19 +181,27 @@ function parseDirectDependencies(content: string): ParsedDependency[] {
   };
 
   const result: ParsedDependency[] = [];
-  for (const [name, rawValue] of Object.entries(merged)) {
+  for (const [declaredName, rawValue] of Object.entries(merged)) {
     if (typeof rawValue !== "string") {
       continue;
     }
-    if (isUncomparableSpecifier(rawValue)) {
+    // `"alias": "npm:real-package@^1.2.3"` installs real-package.
+    const alias = parseNpmAlias(rawValue);
+    const name = alias?.name ?? declaredName;
+    const specifier = alias?.range ?? rawValue;
+    if (isUncomparableSpecifier(specifier)) {
+      continue;
+    }
+    const queryVersion = cleanVersionSpecifier(specifier);
+    if (queryVersion === undefined) {
       continue;
     }
     result.push({
       ecosystem: "npm",
       name,
       rawVersion: rawValue,
-      queryVersion: cleanVersionSpecifier(rawValue),
-      line: findDependencyLine(content, name),
+      queryVersion,
+      line: findDependencyLine(content, declaredName),
     });
   }
   return result;
@@ -280,16 +288,46 @@ function parseOtherEcosystemDependencies(filePath: string, content: string): Par
   return result;
 }
 
-/** Strips a single leading range operator the same way osv-fallback.ts does, for use against the OSV path too. */
-function cleanVersionSpecifier(rawVersion: string): string {
-  const operators = [">=", "<=", "^", "~", "=", ">", "<", "v"];
+/** Splits an `npm:<name>@<range>` alias specifier (scoped names included). */
+function parseNpmAlias(rawVersion: string): { name: string; range: string } | undefined {
   const trimmed = rawVersion.trim();
-  for (const operator of operators) {
-    if (trimmed.startsWith(operator)) {
-      return trimmed.slice(operator.length);
-    }
+  if (!trimmed.startsWith("npm:")) {
+    return undefined;
   }
-  return trimmed;
+  const spec = trimmed.slice("npm:".length);
+  const at = spec.indexOf("@", 1);
+  return at === -1 ? { name: spec, range: "*" } : { name: spec.slice(0, at), range: spec.slice(at + 1) };
+}
+
+/**
+ * The version a range is checked at: the first concrete version it names
+ * (its lower bound — `^1.2.3`, `>=1.2.3 <2`, `1.2.x`, `~1.2` give `1.2.3` /
+ * `1.2.0`), padded to three components. Without a lockfile this is the best
+ * available approximation of what is installed. Returns undefined for
+ * specifiers with no registry version: URLs and `scheme:` specifiers
+ * (`github:`, `git+https:`), `owner/repo` shorthands (a semver range never
+ * contains `/`), and dist-tags (`next`, `beta`). Parsed with plain string
+ * operations — the input is untrusted repo content, so no backtracking regex.
+ */
+function cleanVersionSpecifier(rawVersion: string): string | undefined {
+  const trimmed = rawVersion.trim();
+  if (/^[a-z][a-z+]*:/i.test(trimmed) || trimmed.includes("/")) {
+    return undefined;
+  }
+  const start = trimmed.search(/\d/);
+  if (start === -1) {
+    return undefined;
+  }
+  const token = trimmed.slice(start).split(/[\s|,<>=^~]/, 1)[0] ?? "";
+  const withoutBuild = token.split("+", 1)[0] ?? "";
+  const dash = withoutBuild.indexOf("-");
+  const core = dash === -1 ? withoutBuild : withoutBuild.slice(0, dash);
+  const prerelease = dash === -1 ? "" : withoutBuild.slice(dash);
+  const parts = core.split(".").slice(0, 3).map((part) => (/^\d+$/.test(part) ? part : "0"));
+  while (parts.length < 3) {
+    parts.push("0");
+  }
+  return `${parts.join(".")}${prerelease}`;
 }
 
 /** Finds the 1-indexed line in `content` where `dependencyName` is first declared as a JSON key (best-effort; falls back to line 1). */

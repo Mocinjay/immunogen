@@ -63,6 +63,7 @@ function makeFakeAdapter(response: string): ProviderAdapter & { calls: string[] 
   const calls: string[] = [];
   return {
     name: "anthropic",
+    model: "test-model",
     calls,
     generate(prompt: string): Promise<string> {
       calls.push(prompt);

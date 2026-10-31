@@ -32,9 +32,7 @@
  * (see plan 05-01 task 2 action).
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding from this detector (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
+import { isInTestDirectory } from "../shared/test-paths.js";
 
 /**
  * Template-suffix basenames that carry no real secrets by convention and
@@ -48,12 +46,6 @@ const TEMPLATE_BASENAMES = new Set([
   ".env.dist",
   ".env.local.example",
 ]);
-
-/** True when `filePath` falls inside a test/fixture/mock/example directory. */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  return segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment));
-}
 
 /**
  * Returns the basename of a repo-relative path (the text after the final
@@ -83,7 +75,7 @@ export const committedEnvDetector: Detector = {
   // sync-detector convention documented in entropy-detector.ts.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isInTestDirectory(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

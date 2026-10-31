@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, afterEach } from "vitest";
 
-import { isGitRepoUrl, resolveInput } from "./input-resolver.js";
+import { chargeZipBudget, InputRejectedError, isGitRepoUrl, resolveInput } from "./input-resolver.js";
 import { writeZipFile } from "../../../tests/helpers/make-zip.js";
 
 const cleanupPaths: string[] = [];
@@ -221,5 +221,34 @@ describe("isGitRepoUrl", () => {
     "./local/dir",
   ])("does NOT treat %s as a repository URL", (url) => {
     expect(isGitRepoUrl(url)).toBe(false);
+  });
+});
+
+describe("resolveInput — hostile input limits", () => {
+  it("refuses a git input that would reach git as a command-line option", async () => {
+    await expect(resolveInput("--upload-pack=touch /tmp/pwned.git")).rejects.toBeInstanceOf(InputRejectedError);
+  });
+
+  it("stops a ZIP before an entry would push it past the uncompressed-size cap (zip bomb)", () => {
+    const budget = { entries: 0, uncompressedBytes: 0 };
+
+    chargeZipBudget(budget, 512 * 1024 * 1024, "a.zip");
+    expect(() => {
+      chargeZipBudget(budget, 600 * 1024 * 1024, "a.zip");
+    }).toThrow(/zip bomb/);
+  });
+
+  it("stops a ZIP with an excessive entry count", () => {
+    const budget = { entries: 100_000, uncompressedBytes: 0 };
+
+    expect(() => {
+      chargeZipBudget(budget, 1, "a.zip");
+    }).toThrow(InputRejectedError);
+  });
+
+  it("removes its temp dir and reports a clean error when a clone fails", async () => {
+    const missingRepo = join(await makeScratchDir("immunogen-test-git-"), "missing.git");
+
+    await expect(resolveInput(missingRepo)).rejects.toThrow(/^git clone failed for /);
   });
 });

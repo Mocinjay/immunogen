@@ -37,6 +37,7 @@ import { isBabelFile, traverseAst } from "../ast/ast-utils.js";
 
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
 import type { CallExpression, JSXAttribute, ObjectProperty } from "@babel/types";
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** The React XSS-sink attribute name. */
 const SINK_ATTRIBUTE = "dangerouslySetInnerHTML";
@@ -46,23 +47,6 @@ const HTML_PROPERTY = "__html";
 
 /** Sanitizer method name (the `.sanitize` of `DOMPurify.sanitize`). */
 const SANITIZE_METHOD = "sanitize";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory, or
- * its basename marks it as a test/story file. Mirrors entropy-detector.ts's
- * `isAllowlistedPath` style.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
 
 /**
  * True when `call` is a sanitizer call: either a member call whose method is
@@ -143,7 +127,8 @@ export const xssDetector: Detector = {
     category: "injection",
     // JSX lives in tsx/jsx; ts/js/mjs/cjs included for React.createElement and
     // transpiled forms that still carry the attribute.
-    globs: ["**/*.{tsx,jsx,ts,js,mjs,cjs}"],
+    globs: ["**/*.{tsx,jsx,ts,js,mjs,cjs,mts,cts}"],
+    usesAst: true,
   },
 
   // Not declared `async`: synchronous AST work wrapped in Promise.resolve()
@@ -151,7 +136,7 @@ export const xssDetector: Detector = {
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
       // 1. FP ALLOWLIST — never self-flag test/fixture/mock/example sources.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

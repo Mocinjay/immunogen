@@ -23,9 +23,17 @@
  * `scripts` array) so one broken asset can't abort the whole fetch.
  */
 
-/** Injectable IO boundary — defaults to the global `fetch` (Node >=22 built-in via undici). Mirrors osv-client.ts's fetch-injection precedent (there via module-boundary mock; here via an explicit parameter since this function's signature already takes an options bag). */
+import { USER_AGENT } from "../version.js";
+
+/** Injectable IO boundary — defaults to the global `fetch` (Node >=22 built-in via undici). */
 export interface FetchDeps {
   fetch: typeof fetch;
+  /**
+   * SSRF policy, awaited before EVERY request (main document, each redirect
+   * hop, each script). Throws to refuse a URL. `scanUrl` wires in
+   * `assertPublicUrl` (host-guard.ts); omitted, nothing is checked.
+   */
+  assertAllowed?: (url: URL) => Promise<void>;
 }
 
 /** Options accepted by `fetchTarget`. All optional with sane, documented defaults. */
@@ -36,7 +44,7 @@ export interface FetchTargetOptions {
   maxBodyBytes?: number;
   /** Maximum number of same-origin `<script src>` assets followed. Default 10. */
   maxScripts?: number;
-  /** Maximum number of redirects `fetch` itself is allowed to follow for the main document request. Default 5. */
+  /** Maximum redirect hops followed for the main document, each one re-checked by `deps.assertAllowed`. Default 5. */
   maxRedirects?: number;
 }
 
@@ -73,8 +81,8 @@ const DEFAULT_MAX_SCRIPTS = 10;
 /** Default redirect cap — see `FetchTargetOptions.maxRedirects`. */
 const DEFAULT_MAX_REDIRECTS = 5;
 
-/** Descriptive User-Agent sent on every request this module makes — identifies the tool and links back to its source, per good-citizen scanning practice. */
-const USER_AGENT = "immunogen/0.1 (+https://github.com/Mocinjay/immunogen)";
+/** HTTP statuses that carry a `Location` to follow. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /**
  * Matches a `<script ... src="...">` (or `src='...'`) tag, case-insensitive,
@@ -140,7 +148,7 @@ function collectSameOriginScriptUrls(html: string, baseUrl: string, maxScripts: 
  * full content buffered in memory before truncation — the read loop exits
  * as soon as the byte cap is reached.
  */
-async function readBoundedBody(response: Response, maxBytes: number): Promise<string> {
+export async function readBoundedBody(response: Response, maxBytes: number): Promise<string> {
   if (response.body === null) {
     return "";
   }
@@ -231,11 +239,15 @@ async function fetchScript(
   deps: FetchDeps,
 ): Promise<FetchedScript | undefined> {
   try {
+    await deps.assertAllowed?.(new URL(scriptUrl));
     const response = await deps.fetch(scriptUrl, {
       headers: { "user-agent": USER_AGENT },
       signal: AbortSignal.timeout(timeoutMs),
+      // A redirecting script is skipped (non-2xx), never followed unchecked.
+      redirect: "manual",
     });
     if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
       return undefined;
     }
     const body = await readBoundedBody(response, maxBodyBytes);
@@ -246,15 +258,49 @@ async function fetchScript(
 }
 
 /**
+ * Fetches `url`, following up to `maxRedirects` redirects BY HAND so every
+ * hop's target passes `deps.assertAllowed` before it is requested — `fetch`'s
+ * own `redirect: "follow"` would happily follow `302 -> 169.254.169.254`.
+ * Returns the final response and its URL. Throws when a hop is refused or the
+ * hop limit is exceeded.
+ */
+async function fetchFollowingRedirects(
+  url: string,
+  timeoutMs: number,
+  maxRedirects: number,
+  deps: FetchDeps,
+): Promise<{ response: Response; finalUrl: string }> {
+  let current = new URL(url);
+  for (let hop = 0; ; hop += 1) {
+    await deps.assertAllowed?.(current);
+    // The first request uses the caller's URL string verbatim; hops use the resolved Location.
+    const response = await deps.fetch(hop === 0 ? url : current.toString(), {
+      headers: { "user-agent": USER_AGENT },
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: "manual",
+    });
+    const location = response.headers.get("location");
+    if (!REDIRECT_STATUSES.has(response.status) || location === null) {
+      const reported = response.url.length > 0 ? response.url : current.toString();
+      return { response, finalUrl: reported };
+    }
+    await response.body?.cancel().catch(() => undefined);
+    if (hop >= maxRedirects) {
+      throw new Error(`Too many redirects (more than ${String(maxRedirects)}) starting from ${url}`);
+    }
+    current = new URL(location, current);
+  }
+}
+
+/**
  * Fetches `url` (the main document) plus its same-origin `<script src>`
  * assets, all under the bounds documented on `FetchTargetOptions`. Returns
  * a partial `FetchedTarget` (correct `status`/`headers`/`body`, empty
  * `scripts`) rather than throwing when the main response is non-2xx — a
  * live-URL screen learning "this returned a 403/500" is itself a valid,
  * reportable outcome. Network failures on the MAIN request (DNS failure,
- * connection refused, timeout/abort) DO still throw — there is no
- * meaningful partial result when the main document could not be fetched at
- * all; the caller (Pass 2's pipeline wiring) is expected to catch this.
+ * connection refused, timeout/abort), a refused redirect hop, or too many
+ * redirects DO throw — there is no meaningful partial result then.
  */
 export async function fetchTarget(
   url: string,
@@ -266,16 +312,11 @@ export async function fetchTarget(
   const maxScripts = opts.maxScripts ?? DEFAULT_MAX_SCRIPTS;
   const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 
-  const response = await deps.fetch(url, {
-    headers: { "user-agent": USER_AGENT },
-    signal: AbortSignal.timeout(timeoutMs),
-    redirect: maxRedirects > 0 ? "follow" : "manual",
-  });
+  const { response, finalUrl } = await fetchFollowingRedirects(url, timeoutMs, maxRedirects, deps);
 
   const headers = lowercaseHeaders(response.headers);
   const cookies = extractSetCookies(response.headers);
   const body = await readBoundedBody(response, maxBodyBytes);
-  const finalUrl = response.url.length > 0 ? response.url : url;
 
   const scripts: FetchedScript[] = [];
   if (response.ok) {

@@ -31,6 +31,8 @@ export interface ProbeResult {
   status: number;
   /** A bounded snippet of the probe response body, when one was read — used to raise/lower confidence (e.g. does a 200 for `/.env` actually look like an env file?). */
   bodySnippet?: string;
+  /** The response `content-type`, when sent — an HTML page at `/.env` is a catch-all route, not a leak. */
+  contentType?: string;
 }
 
 /**

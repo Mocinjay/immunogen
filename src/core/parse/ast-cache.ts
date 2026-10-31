@@ -1,41 +1,45 @@
 /**
- * ASTCache — parse-once-share-many AST builder for the ingestion layer.
+ * Source parser for the AST-based detectors.
  *
- * `buildAstCache(fileSet)` parses every `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs`
- * file in the walker's `Map<relativePath, rawText>` output (see
- * src/core/ingest/file-walker.ts) with `@babel/parser` exactly once, and
- * returns a `Map<relativePath, AST>` plus any non-fatal `Diagnostic[]`
- * warnings. This realizes ARCHITECTURE.md Pattern 1 ("Parse Once, Share
- * Many") — every detector added from Phase 5 onward reads `ctx.ast` from
- * this cache and never calls a parser itself (ARCHITECTURE.md Anti-Pattern
- * 1: parsing inside detectors multiplies parse cost by detector count).
+ * `parseSource(relPath, content)` parses ONE JS/TS file with `@babel/parser`
+ * and returns its `File` AST, or a `PARSE_WARN` diagnostic when the file
+ * cannot be parsed. The detector registry calls it lazily, once per file, only
+ * when at least one AST-consuming detector (`DetectorConfig.usesAst`) applies
+ * to that file, and drops the tree as soon as that file's detectors finish.
  *
- * Load-bearing robustness contract (ROADMAP criterion 5; PITFALLS Pitfall
- * 3): a parse failure on a malformed or exotic-syntax file must never
- * crash the scan or silently vanish the file from the cache without a
- * trace — a dangerous finding in that file would then never be reported.
- * Every parse is wrapped in try/catch; a thrown error becomes a single
- * `PARSE_WARN` Diagnostic naming the file, and the file is simply absent
- * from the cache (no entry, no rethrow).
+ * Why not a whole-repo cache: a Babel AST is ~100x the size of its source
+ * (10k small files / 14 MB of TypeScript measured at 1.5 GB of heap), so
+ * holding every tree for the scan's lifetime runs any mid-size repo out of
+ * memory. No detector needs another file's AST — cross-file detectors read
+ * `fileSet` text — so there is nothing to share across files.
  *
- * Cache value type: the public return types the cache value as `unknown`
- * to match `ScanContext.astCache` (src/core/types.ts) exactly. The
- * "correct" type would be `ParseResult<File>` from `@babel/parser` /
- * `@babel/types`, but that pulls a new dependency this phase does not
- * need — at runtime the value IS a real Babel `File` AST node; Phase 5
- * detectors narrow it (via `@babel/types` type guards) when they consume
- * it from the cache.
+ * Parser plugins are chosen per extension. A single `typescript` + `jsx` set
+ * for every file breaks real code: in `.ts` files the JSX plugin turns
+ * `<T>value` type assertions into unterminated JSX, and without a decorators
+ * plugin every NestJS / Angular / TypeORM class fails to parse. Both throw
+ * even under `errorRecovery`, which silently hid those files from every AST
+ * detector.
  *
- * AST-only (ENG-05): @babel/parser only builds a syntax tree from text; it
- * never executes the source. This module never imports child_process,
- * never evals, and never require()s/Function()s scanned content.
+ * AST-only: @babel/parser builds a syntax tree from text; it never executes
+ * the source.
  */
 import { parse } from "@babel/parser";
 
+import type { ParserPlugin } from "@babel/parser";
+
 import type { Diagnostic } from "../types.js";
 
-/** Extensions this cache parses. Anything else is skipped (no entry, no diagnostic). */
-const PARSEABLE_EXTENSIONS = new Set(["js", "jsx", "ts", "tsx", "mjs", "cjs"]);
+/** Plugin set per parseable extension (lowercase, no leading dot). */
+const PLUGINS_BY_EXTENSION: ReadonlyMap<string, ParserPlugin[]> = new Map<string, ParserPlugin[]>([
+  ["ts", ["typescript", "decorators-legacy"]],
+  ["mts", ["typescript", "decorators-legacy"]],
+  ["cts", ["typescript", "decorators-legacy"]],
+  ["tsx", ["typescript", "jsx", "decorators-legacy"]],
+  ["js", ["jsx", "decorators-legacy"]],
+  ["jsx", ["jsx", "decorators-legacy"]],
+  ["mjs", ["jsx", "decorators-legacy"]],
+  ["cjs", ["jsx", "decorators-legacy"]],
+]);
 
 /** Returns the lowercase extension (no leading dot) of `relPath`, or `""` if none. */
 function extensionOf(relPath: string): string {
@@ -47,52 +51,69 @@ function extensionOf(relPath: string): string {
   return relPath.slice(lastDot + 1).toLowerCase();
 }
 
-/** True when `relPath`'s extension is one this cache parses. */
-function isParseable(relPath: string): boolean {
-  return PARSEABLE_EXTENSIONS.has(extensionOf(relPath));
+/** True when `relPath`'s extension is one this module parses. */
+export function isParseable(relPath: string): boolean {
+  return PLUGINS_BY_EXTENSION.has(extensionOf(relPath));
+}
+
+/** Outcome of parsing one file: an AST, a diagnostic, or neither (not a JS/TS file). */
+export interface ParseOutcome {
+  ast?: unknown;
+  diagnostic?: Diagnostic;
 }
 
 /**
- * Parses every parseable file in `fileSet` exactly once with
- * `@babel/parser` (`plugins: ["typescript", "jsx"]`, `errorRecovery:
- * true` — a single plugin set handles `.js`/`.jsx`/`.ts`/`.tsx` in one
- * pass per STACK.md). Successes are keyed by their `fileSet` relative
- * path in the returned `astCache`. A parse that still throws despite
- * `errorRecovery` produces one `PARSE_WARN` Diagnostic naming the file
- * and is otherwise skipped — `buildAstCache` itself never throws.
- *
- * Non-parseable paths (`.json`, `.md`, `.env`, etc.) are skipped
- * entirely: no cache entry, no diagnostic.
+ * Parses one file. Never throws: a non-JS/TS path yields `{}`, a file that
+ * still fails despite `errorRecovery` yields a `PARSE_WARN` diagnostic naming
+ * it, so the gap in AST coverage is reported instead of silent.
  */
-export function buildAstCache(fileSet: Map<string, string>): {
+export function parseSource(relPath: string, content: string): ParseOutcome {
+  const plugins = PLUGINS_BY_EXTENSION.get(extensionOf(relPath));
+  if (plugins === undefined) {
+    return {};
+  }
+  try {
+    const ast = parse(content, {
+      sourceType: "module",
+      plugins,
+      errorRecovery: true,
+      allowReturnOutsideFunction: true,
+      allowAwaitOutsideFunction: true,
+      allowImportExportEverywhere: true,
+    });
+    return { ast };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      diagnostic: {
+        level: "warn",
+        code: "PARSE_WARN",
+        message: `failed to parse ${relPath}: ${message}`,
+        file: relPath,
+      },
+    };
+  }
+}
+
+/**
+ * Parses every parseable file in a small `fileSet` and returns the trees by
+ * path. A convenience for unit tests and one-off tooling — the scan pipeline
+ * itself never builds a whole-repo cache (see the module comment).
+ */
+export function buildAstCache(fileSet: ReadonlyMap<string, string>): {
   astCache: Map<string, unknown>;
   diagnostics: Diagnostic[];
 } {
   const astCache = new Map<string, unknown>();
   const diagnostics: Diagnostic[] = [];
-
   for (const [relPath, content] of fileSet) {
-    if (!isParseable(relPath)) {
-      continue;
-    }
-
-    try {
-      const ast = parse(content, {
-        sourceType: "module",
-        plugins: ["typescript", "jsx"],
-        errorRecovery: true,
-      });
+    const { ast, diagnostic } = parseSource(relPath, content);
+    if (ast !== undefined) {
       astCache.set(relPath, ast);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      diagnostics.push({
-        level: "warn",
-        code: "PARSE_WARN",
-        message: `failed to parse ${relPath}: ${message}`,
-        file: relPath,
-      });
+    }
+    if (diagnostic !== undefined) {
+      diagnostics.push(diagnostic);
     }
   }
-
   return { astCache, diagnostics };
 }

@@ -31,9 +31,8 @@
  *
  * STACK GATE (ctx.stackHints.hasSupabase, src/core/ingest/stack-detector.ts):
  * checked FIRST, mirrors src/detectors/payment/stripe-detector.ts's
- * hasStripe gate. The gate lives inside detect() itself (not the registry)
- * per this plan's contract; config.requiresStack is declarative metadata
- * for the registry-wiring plan (05-08).
+ * hasStripe gate. The registry enforces config.requiresStack ("supabase");
+ * the in-code gate repeats it for direct callers of detect().
  *
  * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` also
  * opens with the same path-segment check against `__tests__`, `fixtures`,
@@ -51,23 +50,7 @@
  * rejection.
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /**
  * Matches a Supabase anon-client table query: `supabase.from(...)`
@@ -152,7 +135,7 @@ export const supabaseDetector: Detector = {
 
       // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

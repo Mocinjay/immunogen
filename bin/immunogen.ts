@@ -34,23 +34,18 @@
  * every installed `immunogen` invocation silently print nothing and exit 0.
  */
 import { realpathSync } from "node:fs";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-import { Command } from "commander";
+import { Command, Option } from "commander";
 
 import { scan } from "../src/index.js";
 import { getReporter } from "../src/reporters/index.js";
+import { VERSION } from "../src/version.js";
 
 import type { ScanOptions } from "../src/index.js";
 
-/**
- * The package version, read from package.json at runtime. Both the source
- * entry (bin/immunogen.ts) and the built entry (dist/immunogen.js) sit one
- * directory below the package root, so the same relative path resolves in
- * dev, in tests, and in an installed npm package.
- */
-const { version: VERSION } = createRequire(import.meta.url)("../package.json") as { version: string };
+/** Output formats `--format` accepts; anything else is a usage error, not a silent fallback. */
+const FORMATS = ["terminal", "json", "sarif"] as const;
 
 /**
  * Runs one CLI scan action: calls `scan(path, { format, noLlm, authorize,
@@ -142,11 +137,7 @@ if (isEntryScript()) {
       "path to the repository to scan (default: current directory), or a live https:// URL to screen (requires --authorize)",
       ".",
     )
-    .option(
-      "--format <format>",
-      "output format: terminal, json, or sarif",
-      "terminal",
-    )
+    .addOption(new Option("--format <format>", "output format").choices(FORMATS).default("terminal"))
     .option(
       "--no-llm",
       "disable LLM fix-prompt enrichment (offline is the default)",
@@ -171,7 +162,7 @@ if (isEntryScript()) {
       async (
         path: string,
         options: {
-          format: string;
+          format: (typeof FORMATS)[number];
           llm: boolean;
           ignore: boolean;
           offline?: boolean;
@@ -180,7 +171,7 @@ if (isEntryScript()) {
         },
       ) => {
         process.exitCode = await runCli(path, {
-          format: options.format as "terminal" | "json" | "sarif",
+          format: options.format,
           noLlm: options.llm === false,
           ...(options.offline === true ? { offline: true } : {}),
           ...(options.ignore === false ? { noIgnore: true } : {}),

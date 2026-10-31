@@ -45,6 +45,6 @@ function toSerializableView(result: ScanResult): Record<string, unknown> {
 
 export const jsonReporter: Reporter = {
   render(result: ScanResult): string {
-    return JSON.stringify(toSerializableView(result), null, JSON_INDENT_SPACES);
+    return `${JSON.stringify(toSerializableView(result), null, JSON_INDENT_SPACES)}\n`;
   },
 };

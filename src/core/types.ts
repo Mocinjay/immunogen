@@ -114,10 +114,20 @@ export interface DetectorConfig {
   category: Category;
   /** micromatch/fast-glob patterns the walker pre-filters on. */
   globs: string[];
-  /** Only activate when StackHints includes these frameworks. */
+  /**
+   * Run only when `StackHints.frameworks` contains at least one of these.
+   * Enforced by the registry, so a gated detector is never even invoked on
+   * an unrelated stack.
+   */
   requiresStack?: string[];
-  /** true for the OSV dep check; skipped in strict offline mode. */
+  /** true for the OSV dep check, which honors `DetectorContext.offline`. */
   requiresNetwork?: boolean;
+  /**
+   * true when `detect()` reads `ctx.ast`. The registry parses a file only
+   * when at least one applicable detector sets this, and frees the tree as
+   * soon as that file's detectors finish.
+   */
+  usesAst?: boolean;
 }
 
 /**
@@ -148,9 +158,9 @@ export interface DetectorContext {
   /** Full file text. */
   content: string;
   /**
-   * Present for .js/.jsx/.ts/.tsx when ASTCache parsed OK; `undefined`
-   * otherwise. Typed `unknown` here — Phase 3 narrows this to the real AST
-   * node type once @babel/parser is wired in.
+   * The file's Babel `File` AST — present only for detectors that declare
+   * `config.usesAst` and only when the file parsed. Typed `unknown`; AST
+   * detectors narrow it with `isBabelFile` (src/detectors/ast/ast-utils.ts).
    */
   ast?: unknown;
   stackHints: StackHints;
@@ -249,20 +259,16 @@ export interface Diagnostic {
 
 /**
  * Internal pipeline state for a single scan. Created per `scan()` call and
- * garbage-collected when that call returns — this is the non-reentrancy
- * guard from ARCHITECTURE.md Anti-Pattern 4 (no module-level/process-level
- * mutable state in detectors; all per-scan state lives here instead).
+ * garbage-collected when that call returns — all per-scan state lives here,
+ * never in module-level variables. ASTs are deliberately NOT held here: the
+ * registry parses each file on demand and frees the tree afterwards (see
+ * src/core/parse/ast-cache.ts for why).
  */
 export interface ScanContext {
   /** Resolved absolute path. */
   rootPath: string;
   /** relative path -> raw text. */
   fileSet: Map<string, string>;
-  /**
-   * relative path -> parsed AST (JS/TS only). Typed `unknown` here; Phase 3
-   * narrows this once @babel/parser is wired in.
-   */
-  astCache: Map<string, unknown>;
   stackHints: StackHints;
   options: ScanOptions;
   diagnostics: Diagnostic[];
@@ -304,10 +310,17 @@ export interface ScanResult {
   /** Whether the LLM stage ran (always false offline). */
   llmEnriched: boolean;
   /**
-   * True when a network-dependent detector degraded (e.g. OSV unreachable)
-   * — surfaces a partial scan explicitly rather than silently passing.
+   * True when coverage was reduced — a network-dependent detector degraded
+   * (OSV unreachable / `--offline`), the walk hit a total-repo cap, or a URL
+   * probe failed — so a partial scan is never mistaken for a clean one.
    */
   scanIncomplete: boolean;
+  /**
+   * Every non-fatal pipeline warning: unparseable files, files skipped for
+   * size, truncated walks, LLM misconfiguration or failures. Rendered by
+   * every reporter so degraded coverage is visible, not silent.
+   */
+  diagnostics: Diagnostic[];
   /**
    * Forward-compatible SARIF slot. Phase 6 narrows this to the SARIF `Log`
    * type from the DefinitelyTyped SARIF type package once the SARIF

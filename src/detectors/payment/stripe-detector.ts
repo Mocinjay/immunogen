@@ -42,23 +42,7 @@
  * malformed/empty `ctx.content` can never propagate a rejection.
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /**
  * True when `filePath` (lowercased) looks like a Stripe webhook route:
@@ -195,17 +179,17 @@ export const stripeDetector: Detector = {
   // the body is plain synchronous work wrapped in `Promise.resolve()`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // STACK GATE FIRST (per this plan's contract): a repo with no stripe
-      // dependency never runs the rest of the scan. requiresStack on
-      // config is declarative metadata for the registry; this in-code gate
-      // is the actual enforcement until the registry wiring plan (05-08).
+      // STACK GATE FIRST: a repo with no stripe dependency never runs the
+      // rest of the scan. The registry enforces config.requiresStack
+      // ("stripe" is in StackHints.frameworks); this repeats it for direct
+      // callers of detect().
       if (!ctx.stackHints.hasStripe) {
         return Promise.resolve([]);
       }
 
       // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

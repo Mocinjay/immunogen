@@ -6,6 +6,55 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Scanning a mid-size repository no longer runs out of memory: files are
+  parsed one at a time and their syntax trees freed, instead of every tree
+  being held for the whole scan (10,000 files: crash at 2 GB heap before,
+  ~400 MB now).
+- TypeScript files with decorators (NestJS, Angular, TypeORM) or `<T>value`
+  casts, and `.mts` / `.cts` files, are now parsed; they were silently
+  skipped by every AST-based rule.
+- Live-URL screening: the SSRF guard now resolves DNS, covers IPv6 / IPv4-
+  mapped / CGNAT / reserved ranges, and re-checks every redirect hop
+  (redirects are followed by hand, with a real hop limit). Exposed-file
+  probes no longer follow redirects or read unbounded bodies, and an SPA
+  catch-all page is no longer reported as an exposed `.env` / `.git` /
+  `config.json`. Public Firebase / Maps keys in served bundles are no longer
+  reported; Gemini keys are, as CRITICAL.
+- LLM fix prompts: the Anthropic adapter used a retired model, so every
+  call failed silently. It now defaults to `claude-haiku-5-5`; set
+  `IMMUNOGEN_MODEL` to override (required for Ollama and other
+  OpenAI-compatible servers). Calls run at most four at a time, and failures
+  or misconfiguration are reported instead of swallowed.
+- ZIP inputs are capped (100,000 entries, 1 GB uncompressed) before
+  anything is written; files over the per-file size cap are no longer read
+  into memory first; git clones never prompt for credentials and time out
+  after five minutes.
+- Terminal output strips control characters from file names, matched text
+  and LLM output, so a crafted repository cannot inject terminal escape
+  sequences. All formats end with a newline; an unknown `--format` is an
+  error instead of a silent fallback.
+- npm range specifiers are reduced to a concrete version before the OSV
+  lookup; `npm:` aliases resolve to the real package; URL / GitHub / tag
+  specifiers are skipped.
+- One `DEP-OFFLINE` notice per scan instead of one per manifest; exact
+  duplicate findings are dropped; output order no longer depends on the
+  host locale.
+- SARIF: correct project URL, `driver.version`, percent-encoded artifact
+  URIs anchored to `%SRCROOT%`.
+- The Docker image includes `git`, so it can scan repository URLs.
+
+### Changed
+
+- `ScanResult` gains `diagnostics`, rendered by every reporter (terminal
+  warnings block, JSON field, SARIF tool-execution notifications).
+- Secrets and client-exposure rules also scan `.vue`, `.svelte`, `.astro`,
+  `.html`, and (secrets) more config and source formats.
+- Test, fixture, mock, example and story code is recognized by one shared
+  rule set across all detectors (`.spec.` files and `tests/` / `testdata/`
+  directories were previously honored by only some of them).
+
 ## [0.1.0] - 2026-10-31
 
 First public release.

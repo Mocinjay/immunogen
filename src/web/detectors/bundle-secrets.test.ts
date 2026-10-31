@@ -102,3 +102,31 @@ describe("bundleSecretsDetector — WEB-SEC (clean)", () => {
     expect(bundleSecretsDetector.detect(makeCtx(makeTarget()))).toEqual([]);
   });
 });
+
+describe("bundleSecretsDetector — Google API keys", () => {
+  const googleKey = `AIza${"S".repeat(35)}`;
+  const target = (body: string) => ({
+    target: { url: "https://example.com/", status: 200, headers: {}, body: "", scripts: [{ url: "https://example.com/app.js", body }], cookies: [] },
+    probes: [],
+  });
+
+  it("does not report a Firebase web config key (public by design)", () => {
+    const body = `const firebaseConfig = { apiKey: "${googleKey}", authDomain: "x.firebaseapp.com" };`;
+
+    expect(bundleSecretsDetector.detect(target(body))).toEqual([]);
+  });
+
+  it("does not report a bare Google key with no Gemini context", () => {
+    expect(bundleSecretsDetector.detect(target(`const k = "${googleKey}";`))).toEqual([]);
+  });
+
+  it("reports a Gemini key shipped to the browser as CRITICAL, naming the provider", () => {
+    const body = `import { GoogleGenerativeAI } from "@google/generative-ai"; const genAI = new GoogleGenerativeAI("${googleKey}");`;
+
+    const findings = bundleSecretsDetector.detect(target(body));
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.severity).toBe("CRITICAL");
+    expect(findings[0]?.message).toContain("Gemini");
+  });
+});

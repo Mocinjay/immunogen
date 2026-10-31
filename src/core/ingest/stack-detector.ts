@@ -265,6 +265,9 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
   if (isPrisma) {
     frameworks.add("prisma");
   }
+  if (hasStripe) {
+    frameworks.add("stripe");
+  }
 
   const hasEnvFiles = hasEnvFile(fileSet);
 

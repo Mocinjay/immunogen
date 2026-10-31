@@ -49,9 +49,7 @@
  * inside a try/catch returning `[]` on any failure.
  */
 import type { Category, Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples", "tests", "testdata"]);
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Static text that opens a SQL statement. */
 const SQL_START_RE = /^\s*(?:select|insert|update|delete|with|replace|merge|upsert|create|drop|alter)\b/i;
@@ -94,16 +92,6 @@ const RULE_COPY: Record<RuleId, { category: Category; message: string; remediati
       "Verify every token with its signing key (PyJWT: jwt.decode(token, key, algorithms=[...]); golang-jwt: jwt.Parse/ParseWithClaims with a key function) before trusting any claim.",
   },
 };
-
-/** True when `filePath` falls inside a test/fixture directory or is a Python/Go test file. */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return /^test_.*\.py$|_test\.py$|_test\.go$|^conftest\.py$/.test(basename);
-}
 
 /**
  * Python: a query call whose first argument is a string literal; captures
@@ -350,7 +338,7 @@ export const pyGoCodeDetector: Detector = {
   // Not declared `async`: synchronous text work wrapped in Promise.resolve().
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
       const lines = ctx.content.split("\n");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildAstCache } from "./ast-cache.js";
+import { buildAstCache, isParseable, parseSource } from "./ast-cache.js";
 import { makeFileSet } from "../../../tests/helpers/make-file-set-ast.js";
 
 describe("buildAstCache — valid TS/TSX/JSX parse success", () => {
@@ -81,5 +81,41 @@ describe("buildAstCache — non-JS/TS files are skipped entirely", () => {
     expect(astCache.has(".env")).toBe(false);
     expect(astCache.size).toBe(0);
     expect(diagnostics.length).toBe(0);
+  });
+});
+
+describe("parseSource — per-extension parser plugins", () => {
+  it("parses decorators in .ts files (NestJS / Angular / TypeORM)", () => {
+    const { ast, diagnostic } = parseSource(
+      "src/users.controller.ts",
+      "@Controller('users')\nexport class UsersController {\n  @Get()\n  list() { return []; }\n}\n",
+    );
+
+    expect(diagnostic).toBeUndefined();
+    expect(ast).toBeTruthy();
+  });
+
+  it("parses angle-bracket type assertions in .ts files (no JSX ambiguity)", () => {
+    const { ast, diagnostic } = parseSource("src/cast.ts", "const value = <string>input;\nexport default value;\n");
+
+    expect(diagnostic).toBeUndefined();
+    expect(ast).toBeTruthy();
+  });
+
+  it("still parses JSX in .tsx and .jsx files", () => {
+    expect(parseSource("a.tsx", "export const A = () => <div>{1}</div>;").ast).toBeTruthy();
+    expect(parseSource("a.jsx", "export const A = () => <div>{1}</div>;").ast).toBeTruthy();
+  });
+
+  it("parses .mts / .cts and CommonJS top-level return", () => {
+    expect(parseSource("a.mts", "export const x: number = 1;").ast).toBeTruthy();
+    expect(parseSource("a.cts", "export const x: number = 1;").ast).toBeTruthy();
+    expect(parseSource("a.cjs", "if (process.env.X) return;\nmodule.exports = {};").ast).toBeTruthy();
+  });
+
+  it("returns neither an AST nor a diagnostic for a non-JS/TS path", () => {
+    expect(parseSource("README.md", "# hi")).toEqual({});
+    expect(isParseable("README.md")).toBe(false);
+    expect(isParseable("src/a.TS")).toBe(true);
   });
 });

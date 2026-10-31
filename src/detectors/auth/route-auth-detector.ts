@@ -60,12 +60,10 @@ import { isAuthCall, NON_SESSION_AUTH_RE, PUBLIC_BY_NATURE_SEGMENTS } from "./au
 
 import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
 import type { ExportDefaultDeclaration, ExportNamedDeclaration, File } from "@babel/types";
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** HTTP-method export names that mark a Next.js App Router route handler. */
 const HTTP_METHOD_NAMES = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
 
 /** Route-path segment marking a deliberately public endpoint (FEATURES.md CAT-3 FP note). */
 const PUBLIC_SEGMENT = "public";
@@ -85,20 +83,6 @@ const ENFORCING_MIDDLEWARE_RE =
 const MIDDLEWARE_BASENAMES = new Set(["middleware.ts", "middleware.js", "proxy.ts", "proxy.js"]);
 
 type EntryKind = "route" | "pages-api" | "server-action";
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
 
 /** True when `filePath`'s basename is a Next.js App Router route handler (`route.<ext>`) under an `app/` directory. */
 function isRouteFile(filePath: string): boolean {
@@ -260,6 +244,7 @@ export const routeAuthDetector: Detector = {
     category: "auth",
     requiresStack: ["nextjs"],
     globs: ["**/*.{ts,tsx,js,jsx,mjs}"],
+    usesAst: true,
   },
 
   // Not declared `async`: the body is synchronous AST work wrapped in
@@ -267,15 +252,15 @@ export const routeAuthDetector: Detector = {
   // reserved for detectors that actually await a network/disk call).
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // 1. STACK GATE — AUTH-01 only applies to Next.js apps (ENG-04). Also
-      //    declared via config.requiresStack, but enforced in code because the
-      //    registry does not yet gate on requiresStack (closed by 05-08).
+      // 1. STACK GATE — AUTH-01 only applies to Next.js apps (ENG-04). The
+      //    registry enforces config.requiresStack; this repeats it for direct
+      //    callers of detect().
       if (!ctx.stackHints.frameworks.has("nextjs")) {
         return Promise.resolve([]);
       }
 
       // 2. FP ALLOWLIST + entry-point guard (cheap text check before the AST).
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
       const routeKind: EntryKind | undefined = isRouteFile(ctx.filePath)

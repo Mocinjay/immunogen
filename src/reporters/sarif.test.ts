@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { sarifReporter } from "./sarif.js";
 
+import type { SarifLog } from "./sarif-types.js";
+
 import type { Finding, ScanResult } from "../core/types.js";
 
 /** Matches any ANSI CSI escape sequence — used to prove output is colorless. */
@@ -114,6 +116,7 @@ function makeScanResult(overrides: Partial<ScanResult> = {}): ScanResult {
     },
     llmEnriched: false,
     scanIncomplete: false,
+    diagnostics: [],
     ...overrides,
   };
 }
@@ -417,5 +420,45 @@ describe("sarifReporter.render — Test 7: pure JSON, no mixed-in prose or color
     const output = sarifReporter.render(result).trim();
     expect(output.startsWith("{")).toBe(true);
     expect(output.endsWith("}")).toBe(true);
+  });
+});
+
+describe("sarifReporter — artifact URIs, tool identity, and notifications", () => {
+  it("percent-encodes repo paths and anchors them to %SRCROOT%, leaving live-URL findings absolute", () => {
+    const log = JSON.parse(
+      sarifReporter.render(
+        makeScanResult({
+          findings: [
+            { ...CRITICAL_FINDING, file: "src/my file#1.ts" },
+            { ...CRITICAL_FINDING, ruleId: "WEB-EXPOSED", file: "https://example.com/.env" },
+          ],
+        }),
+      ),
+    ) as SarifLog;
+
+    const locations = log.runs[0]?.results.map((result) => result.locations[0]?.physicalLocation.artifactLocation);
+    expect(locations).toEqual([
+      { uri: "src/my%20file%231.ts", uriBaseId: "%SRCROOT%" },
+      { uri: "https://example.com/.env" },
+    ]);
+  });
+
+  it("identifies the real project and version", () => {
+    const driver = (JSON.parse(sarifReporter.render(makeScanResult())) as SarifLog).runs[0]?.tool.driver;
+
+    expect(driver?.informationUri).toBe("https://github.com/Mocinjay/immunogen");
+    expect(driver?.version).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it("reports diagnostics as tool execution notifications", () => {
+    const log = JSON.parse(
+      sarifReporter.render(
+        makeScanResult({ diagnostics: [{ level: "warn", code: "PARSE_WARN", message: "failed to parse a.ts", file: "a.ts" }] }),
+      ),
+    ) as SarifLog;
+
+    expect(log.runs[0]?.invocations?.[0]?.toolExecutionNotifications).toEqual([
+      expect.objectContaining({ level: "warning", descriptor: { id: "PARSE_WARN" }, message: { text: "failed to parse a.ts" } }),
+    ]);
   });
 });

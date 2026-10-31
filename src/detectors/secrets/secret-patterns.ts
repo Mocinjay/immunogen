@@ -142,6 +142,18 @@ export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
 ];
 
 /**
+ * Text near a Google `AIza...` key that marks it as public-by-design client
+ * config: a Firebase web config object (`authDomain`, `messagingSenderId`,
+ * `storageBucket`, `firebaseConfig`), a Maps / Places browser key, or a
+ * reCAPTCHA / YouTube embed.
+ */
+export const GOOGLE_PUBLIC_CONTEXT_RE =
+  /authDomain|messagingSenderId|storageBucket|firebase|maps\.googleapis\.com|maps_?api_?key|mapsApiKey|googleMapsApiKey|places|recaptcha|youtube/i;
+
+/** Text near a Google key that marks it as a Gemini / Generative Language API key — a paid, server-side secret. */
+export const GOOGLE_GENAI_CONTEXT_RE = /gemini|generativeai|genai|generativelanguage|vertex|palm|GoogleGenerativeAI/i;
+
+/**
  * Shannon entropy of `value` in bits per character: sum over each distinct
  * character c of -p(c) * log2(p(c)), where p(c) is c's frequency in value.
  * Custom implementation per CLAUDE.md's stack guidance ("custom Shannon

@@ -40,9 +40,8 @@
  * package.json, e.g. a mobile app or a backend-only repo). Checked FIRST,
  * before any other logic — mirrors
  * src/detectors/payment/stripe-detector.ts's hasStripe gate. The gate lives
- * inside detect() itself (not the registry) per this plan's contract;
- * config.requiresStack is declarative metadata for the registry-wiring plan
- * (05-08).
+ * inside detect() itself rather than in config.requiresStack, because it is
+ * deliberately broader than "Firebase dependency detected".
  *
  * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` also
  * opens with the same path-segment check against `__tests__`, `fixtures`,
@@ -58,23 +57,7 @@
  * malformed/empty `ctx.content` can never propagate a rejection.
  */
 import type { Category, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /**
  * Matches an `allow` directive whose condition is literally `if true`,
@@ -123,8 +106,10 @@ export const firebaseRulesDetector: Detector = {
   config: {
     name: "firebase-rules",
     category: "storage",
+    // No requiresStack: firestore.rules / storage.rules / database.rules.json
+    // are Firebase by name and are checked even without a Firebase dependency
+    // (see the STACK GATE note above); the in-code gate handles *.rules.
     globs: ["**/firestore.rules", "**/storage.rules", "**/database.rules.json", "**/*.rules"],
-    requiresStack: ["firebase"],
   },
 
   // Not declared `async` — no network/disk wait in this text-only detector;
@@ -140,7 +125,7 @@ export const firebaseRulesDetector: Detector = {
 
       // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

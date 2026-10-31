@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * `any` on `mock.calls[0]?.[0]` member access.
  */
 interface FakeChatCompletionsCreateArgs {
+  model?: string;
   max_tokens: number;
   messages: Array<{ role: string; content: string }>;
 }
@@ -119,21 +120,28 @@ describe("OpenAIAdapter", () => {
     expect(requestOptions?.timeout ?? 0).toBeGreaterThan(0);
   });
 
-  it("generate() degrades to '' when the stubbed SDK throws (graceful degradation, T-07-04)", async () => {
+  it("generate() rejects when the stubbed SDK rejects, so the enricher can report the failure", async () => {
     chatCompletionsCreateMock.mockRejectedValue(new Error("network unavailable"));
     const adapter = new OpenAIAdapter("x");
 
-    const result = await adapter.generate("prompt");
-
-    expect(result).toBe("");
+    await expect(adapter.generate("prompt")).rejects.toThrow("network unavailable");
   });
 
-  it("generate() degrades to '' when the stubbed SDK throws synchronously", async () => {
+  it("generate() rejects (never throws synchronously) when the stubbed SDK throws synchronously", async () => {
     chatCompletionsCreateMock.mockImplementation(() => {
       throw new Error("synchronous failure");
     });
     const adapter = new OpenAIAdapter("x");
 
-    await expect(adapter.generate("prompt")).resolves.toBe("");
+    await expect(adapter.generate("prompt")).rejects.toThrow("synchronous failure");
+  });
+
+  it("uses the model passed to the constructor", async () => {
+    chatCompletionsCreateMock.mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const adapter = new OpenAIAdapter("x", undefined, "custom-model");
+
+    await adapter.generate("prompt");
+
+    expect(chatCompletionsCreateMock.mock.calls[0]?.[0]).toMatchObject({ model: "custom-model" });
   });
 });

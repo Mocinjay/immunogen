@@ -77,6 +77,7 @@ function makeScanResult(overrides: Partial<ScanResult> = {}): ScanResult {
     },
     llmEnriched: false,
     scanIncomplete: false,
+    diagnostics: [],
     ...overrides,
   };
 }
@@ -262,5 +263,58 @@ describe("getReporter — format selection", () => {
   it("returns terminalReporter for undefined (default)", async () => {
     const { getReporter } = await import("./index.js");
     expect(getReporter(undefined)).toBe(terminalReporter);
+  });
+});
+
+describe("terminalReporter — untrusted text cannot drive the terminal", () => {
+  it("strips escape sequences and folds newlines in file names, messages, and matched text", () => {
+    const hostile: Finding = {
+      ...SAMPLE_FINDING,
+      file: "src/\u001b[2Jevil\nFAKE LINE.ts",
+      message: "bad \u001b]8;;https://attacker.example\u0007link\u001b]8;;\u0007",
+      matchedText: "sk_l\u009b31m****",
+    };
+
+    const output = terminalReporter.render(makeScanResult({ findings: [hostile] }));
+
+    expect(output).not.toContain("\u001b[2J");
+    expect(output).not.toContain("\u001b]8;;");
+    expect(output).not.toContain("\u0007");
+    expect(output).not.toContain("\u009b");
+    expect(output).toContain("src/[2Jevil FAKE LINE.ts");
+  });
+
+  it("keeps line breaks in an LLM fix prompt but strips its control characters", () => {
+    const output = terminalReporter.render(
+      makeScanResult({ findings: [{ ...SAMPLE_FINDING, fixPrompt: "step 1\nstep 2\u001b[A" }] }),
+    );
+
+    expect(output).toContain("step 1\nstep 2[A");
+  });
+});
+
+describe("terminalReporter — degraded coverage is visible", () => {
+  it("prints an incomplete-scan banner and a grouped warnings block", () => {
+    const output = terminalReporter.render(
+      makeScanResult({
+        findings: [],
+        scanIncomplete: true,
+        diagnostics: [
+          { level: "warn", code: "PARSE_WARN", message: "failed to parse a.ts", file: "a.ts" },
+          { level: "warn", code: "PARSE_WARN", message: "failed to parse b.ts", file: "b.ts" },
+          { level: "warn", code: "SCAN_TRUNCATED", message: "cap exceeded" },
+        ],
+      }),
+    );
+
+    expect(output).toContain("Scan incomplete");
+    expect(output).toContain("Warnings (3):");
+    expect(output).toContain("PARSE_WARN");
+    expect(output).toContain("failed to parse b.ts");
+    expect(output).toContain("SCAN_TRUNCATED");
+  });
+
+  it("ends with a newline so the shell prompt starts on its own line", () => {
+    expect(terminalReporter.render(makeScanResult()).endsWith("\n")).toBe(true);
   });
 });

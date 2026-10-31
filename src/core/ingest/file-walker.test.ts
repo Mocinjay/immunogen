@@ -221,6 +221,21 @@ describe("walkFiles — size cap and binary skip", () => {
 
     expect(result.has("small.txt")).toBe(false);
   });
+
+  it("reports oversized files in an info-level FILES_SKIPPED diagnostic instead of dropping them silently", async () => {
+    const tree = await makeRepoTree({
+      "big.ts": "x".repeat(200),
+      "ok.ts": "x",
+    });
+    trees.push(tree);
+
+    const { fileSet, diagnostics } = await walkFiles(tree.root, { maxFileSizeBytes: 100 });
+
+    expect(fileSet.has("ok.ts")).toBe(true);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({ level: "info", code: "FILES_SKIPPED", message: expect.stringContaining("big.ts") as string }),
+    ]);
+  });
 });
 
 describe("walkFiles — total-repo cap (belt-and-suspenders alongside the per-file cap)", () => {

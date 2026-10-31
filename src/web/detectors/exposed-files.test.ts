@@ -95,3 +95,31 @@ describe("exposedFilesDetector — WEB-EXPOSED (clean)", () => {
     expect(exposedFilesDetector.detect(makeCtx([]))).toEqual([]);
   });
 });
+
+describe("exposedFilesDetector — catch-all routes are not exposures", () => {
+  const target = { url: "https://example.com/", status: 200, headers: {}, body: "", scripts: [], cookies: [] };
+
+  it("ignores a 200 HTML app shell served for /.env, /.git/HEAD and /config.json", () => {
+    const shell = "<!DOCTYPE html><html><head><title>App</title></head><body><div id=root></div></body></html>";
+    const findings = exposedFilesDetector.detect({
+      target,
+      probes: [
+        { path: "/.env", status: 200, bodySnippet: shell },
+        { path: "/.git/HEAD", status: 200, bodySnippet: shell, contentType: "text/html; charset=utf-8" },
+        { path: "/config.json", status: 200, bodySnippet: "{}", contentType: "text/html" },
+      ],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("ignores a non-JSON /config.json body", () => {
+    expect(exposedFilesDetector.detect({ target, probes: [{ path: "/config.json", status: 200, bodySnippet: "OK" }] })).toEqual([]);
+  });
+
+  it("joins the probe path onto a target URL with a trailing slash without doubling it", () => {
+    const [finding] = exposedFilesDetector.detect({ target, probes: [{ path: "/.env", status: 200, bodySnippet: "A=1" }] });
+
+    expect(finding?.file).toBe("https://example.com/.env");
+  });
+});

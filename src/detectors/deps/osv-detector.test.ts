@@ -401,3 +401,32 @@ describe("osvDetector — lockfiles", () => {
     ]);
   });
 });
+
+describe("osvDetector — npm specifiers are normalized before they reach OSV", () => {
+  it("queries the lower bound of ranges, resolves npm: aliases, and skips non-registry specifiers", async () => {
+    queryOsvBatchMock.mockImplementation((queries) => Promise.resolve(queries.map(() => ({}))));
+    const content = JSON.stringify({
+      dependencies: {
+        a: "^1.2.3",
+        b: ">=2.0.0 <3.0.0",
+        c: "1.x",
+        d: "~4",
+        e: "npm:@scope/real@^5.1.0",
+        f: "github:owner/repo",
+        g: "owner/repo#main",
+        h: "https://example.com/pkg.tgz",
+        i: "next",
+      },
+    });
+
+    await osvDetector.detect(makeContext(content));
+
+    expect(queryOsvBatchMock.mock.calls[0]?.[0]).toEqual([
+      { name: "a", version: "1.2.3", ecosystem: "npm" },
+      { name: "b", version: "2.0.0", ecosystem: "npm" },
+      { name: "c", version: "1.0.0", ecosystem: "npm" },
+      { name: "d", version: "4.0.0", ecosystem: "npm" },
+      { name: "@scope/real", version: "5.1.0", ecosystem: "npm" },
+    ]);
+  });
+});

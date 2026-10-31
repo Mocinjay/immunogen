@@ -8,6 +8,9 @@
 # reflects the verdict — 1 when blocked, 0 when pass):
 #   docker run --rm -v "$(pwd):/app" immunogen:latest /app
 #
+# Or clone and scan a public repository (needs network):
+#   docker run --rm immunogen:latest https://github.com/owner/repo
+#
 # The deterministic scan needs no network at runtime — the only network
 # access is OSV.dev's live dependency-vulnerability lookup, which itself
 # has an offline fallback (see src/index.ts's DEP-OFFLINE sentinel), so the
@@ -39,6 +42,10 @@ RUN pnpm prune --prod
 
 # ---- Runtime stage --------------------------------------------------------
 FROM node:22-alpine AS runtime
+
+# git is required to scan a repository URL (the git input mode shells out to
+# it via simple-git); the base image does not ship it.
+RUN apk add --no-cache git
 
 # Non-root user: the built-in `node` user/group ships with the official
 # node:*-alpine image (uid/gid 1000) — no need to addgroup/adduser (T-08-09).

@@ -31,6 +31,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Hermetic DNS: every test hostname resolves to a public documentation-free
+// address, so the SSRF guard runs for real without touching the network.
+vi.mock("../../src/web/dns-resolve.js", () => ({
+  resolveHostAddresses: (hostname: string) =>
+    Promise.resolve(hostname.endsWith(".internal-test") ? ["10.0.0.5"] : ["93.184.216.34"]),
+}));
+
 import { scan } from "../../src/index.js";
 
 /** Builds a fake `Response`, mirroring fetch-target.test.ts's own helper. */

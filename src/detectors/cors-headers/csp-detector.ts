@@ -15,10 +15,9 @@
  * STACK GATE (T-05-03-01 — see plan threat register): a missing or
  * incorrect "nextjs" stack hint must silently disable this detector rather
  * than over-report on non-Next.js repos. The gate runs first in detect(),
- * checking `ctx.stackHints.frameworks.has("nextjs")` directly — per the
- * plan's action spec, the registry does not yet honor
- * `DetectorConfig.requiresStack` declaratively, so the gate must also live
- * in code, not just in config.
+ * checking `ctx.stackHints.frameworks.has("nextjs")` directly. The registry
+ * also enforces `DetectorConfig.requiresStack`; the in-code gate keeps direct
+ * callers of detect() equally safe.
  *
  * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()`
  * checks a path-segment guard against `__tests__`, `fixtures`, `mocks`,
@@ -37,23 +36,7 @@
  * malformed/empty `ctx.content` can never propagate a rejection.
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Case-insensitive substring check for the literal header name `Content-Security-Policy`. */
 const CSP_MARKER_RE = /content-security-policy/i;
@@ -72,16 +55,15 @@ export const cspDetector: Detector = {
   // the body is plain synchronous work wrapped in `Promise.resolve()`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // STACK GATE FIRST (plan action spec): the registry does not yet
-      // honor requiresStack, so a missing/incorrect "nextjs" hint must be
-      // checked here or this detector would over-fire on non-Next repos.
+      // STACK GATE FIRST: mirrors config.requiresStack (enforced by the
+      // registry) for direct callers of detect().
       if (!ctx.stackHints.frameworks.has("nextjs")) {
         return Promise.resolve([]);
       }
 
       // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

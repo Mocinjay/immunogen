@@ -7,6 +7,9 @@
  * fixture directories directly rather than a temp-dir helper, since these
  * fixtures are committed, not generated per-test.
  */
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { scan } from "./index.js";
@@ -94,5 +97,21 @@ describe("scan — offline option", () => {
     expect(result.findings.some((finding) => finding.ruleId === "DEP-OFFLINE")).toBe(true);
     expect(result.findings.some((finding) => finding.message.includes("GHSA-test-next-"))).toBe(false);
     expect(result.scanIncomplete).toBe(true);
+  });
+});
+
+describe("scan — diagnostics reach the ScanResult", () => {
+  it("reports an unparseable source file as a PARSE_WARN diagnostic instead of dropping it silently", async () => {
+    const root = await mkdtemp(join(tmpdir(), "immunogen-diag-"));
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- test-owned temp dir
+      await writeFile(join(root, "broken.ts"), "export const = <<< broken(((");
+
+      const result = await scan(root, { offline: true, noLlm: true });
+
+      expect(result.diagnostics).toEqual([expect.objectContaining({ code: "PARSE_WARN", file: "broken.ts" })]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

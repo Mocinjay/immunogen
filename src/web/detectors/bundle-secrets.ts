@@ -42,7 +42,11 @@
  *
  * No-throw contract (mirrors src/core/types.ts `Detector.detect`).
  */
-import { PROVIDER_KEY_PATTERNS } from "../../detectors/secrets/secret-patterns.js";
+import {
+  GOOGLE_GENAI_CONTEXT_RE,
+  GOOGLE_PUBLIC_CONTEXT_RE,
+  PROVIDER_KEY_PATTERNS,
+} from "../../detectors/secrets/secret-patterns.js";
 import { Redactor } from "../../llm/redactor.js";
 
 import type { Finding, Severity } from "../../core/types.js";
@@ -63,6 +67,31 @@ const SEVERITY_BY_PATTERN_RULE_ID: Record<string, Severity> = {
   "SEC-02": "CRITICAL", // AWS AKIA...
   "SEC-03": "HIGH", // OpenAI sk-...
 };
+
+/** Human-readable provider name per shared ruleId (SEC-09 entries carry their own `provider`). */
+const PROVIDER_BY_RULE_ID: Record<string, string> = {
+  "SEC-01": "Stripe live secret key",
+  "SEC-02": "AWS access key ID",
+  "SEC-03": "OpenAI API key",
+  "SEC-04": "Supabase secret key",
+  "SEC-07": "Anthropic API key",
+  "SEC-08": "private key",
+};
+
+/** Characters of surrounding bundle text examined to classify a Google `AIza...` key. */
+const GOOGLE_CONTEXT_CHARS = 600;
+
+/**
+ * Google API keys in a browser bundle are almost always public-by-design
+ * (Firebase web config, Maps, reCAPTCHA) and restricted by referrer, so one is
+ * reported only when the surrounding code names Gemini / the Generative
+ * Language API — a paid key that must never ship to the client — and nothing
+ * marks it as public client config.
+ */
+function isReportableGoogleKey(body: string, index: number, length: number): boolean {
+  const context = body.slice(Math.max(0, index - GOOGLE_CONTEXT_CHARS), index + length + GOOGLE_CONTEXT_CHARS);
+  return GOOGLE_GENAI_CONTEXT_RE.test(context) && !GOOGLE_PUBLIC_CONTEXT_RE.test(context);
+}
 
 /** Extracts every inline `<script>` block's body text from `html`, in document order. */
 function extractInlineScriptBodies(html: string): string[] {
@@ -97,11 +126,16 @@ function scanBodyForSecrets(fileLabel: string, body: string): Finding[] {
   const findings: Finding[] = [];
 
   for (const pattern of PROVIDER_KEY_PATTERNS) {
+    const isGoogle = pattern.provider === "Google";
     for (const match of body.matchAll(pattern.regex)) {
       const matchedRaw = match[0];
-      const index = match.index ?? 0;
-      const severity = SEVERITY_BY_PATTERN_RULE_ID[pattern.ruleId] ?? "HIGH";
+      const index = match.index;
+      if (isGoogle && !isReportableGoogleKey(body, index, matchedRaw.length)) {
+        continue;
+      }
+      const severity = isGoogle ? "CRITICAL" : (SEVERITY_BY_PATTERN_RULE_ID[pattern.ruleId] ?? "HIGH");
       const redactedMatch = Redactor.redactSnippet(matchedRaw);
+      const provider = isGoogle ? "Google Gemini API key" : (pattern.provider ?? PROVIDER_BY_RULE_ID[pattern.ruleId] ?? "provider key");
 
       findings.push({
         ruleId: "WEB-SEC",
@@ -111,7 +145,7 @@ function scanBodyForSecrets(fileLabel: string, body: string): Finding[] {
         line: lineNumberAt(body, index),
         severity,
         confidence: "HIGH",
-        message: `A live-looking provider key (${pattern.ruleId} shape) is served to the browser in this bundle.`,
+        message: `A live-looking ${provider} is served to the browser in this bundle.`,
         remediation:
           "Remove this key from any client-reachable bundle immediately and rotate it — a key served to the browser is exposed to every visitor, not just anyone with repo access.",
         matchedText: redactedMatch,

@@ -16,10 +16,12 @@
  *      by `options.urlTimeoutMs`/`options.maxScripts`.
  *   3. Exposed-file probes (`EXPOSED_FILE_PROBE_PATHS` plus one `.map` probe
  *      per fetched script) via `deps.fetch`, same timeout/UA as the main
- *      fetch. Each probe is individually try/caught — a single failed probe
- *      (network error, timeout) never aborts the others or the scan; it is
- *      simply omitted from `ctx.probes`, and `scanIncomplete` reflects the
- *      degradation (see below).
+ *      fetch, never following redirects, byte-capped. Each probe is
+ *      individually try/caught — a failed probe is omitted from
+ *      `ctx.probes` and reported as a `PROBE_FAILED` diagnostic.
+ *
+ * SSRF: `assertPublicUrl` (host-guard.ts) runs before every request this
+ * pipeline makes, including each redirect hop of the main document.
  *   4. Build the `WebContext` and run `WEB_DETECTORS` over it via
  *      `runWebDetectors`.
  *   5. `computeScore(findings)` (reused as-is, no logic changes) + assemble
@@ -47,16 +49,18 @@
  * response (2xx or not) — a scan that could not even attempt every probe has
  * strictly less coverage than one that did.
  */
-import { fetchTarget } from "./fetch-target.js";
+import { fetchTarget, readBoundedBody } from "./fetch-target.js";
 import { runWebDetectors } from "./detectors/registry.js";
+import { assertPublicUrl } from "./host-guard.js";
 import { resolveUrlTarget } from "./url-resolver.js";
 
 import { computeScore } from "../core/scoring.js";
+import { USER_AGENT } from "../version.js";
 
 import type { FetchDeps, FetchedTarget } from "./fetch-target.js";
 import type { ProbeResult, WebContext } from "./types.js";
 
-import type { ScanOptions, ScanResult } from "../core/types.js";
+import type { Diagnostic, ScanOptions, ScanResult } from "../core/types.js";
 
 /**
  * Fixed set of well-known sensitive paths probed against the target's
@@ -74,8 +78,8 @@ const EXPOSED_FILE_PROBE_PATHS: readonly string[] = [
   "/.well-known/security.txt",
 ];
 
-/** Bounded snippet length read from a probe response body — enough for the exposed-files detector's corroboration heuristics without hoarding a large body in memory. */
-const PROBE_BODY_SNIPPET_MAX_CHARS = 2048;
+/** Bytes read from a probe response body — enough for the exposed-files detector's corroboration heuristics, never the whole file. */
+const PROBE_BODY_SNIPPET_MAX_BYTES = 2048;
 
 /**
  * Derives same-origin `*.js.map` probe paths from `target.scripts`' own
@@ -103,10 +107,11 @@ function deriveSourceMapProbePaths(target: FetchedTarget, baseUrl: URL): string[
 
 /**
  * Probes a single origin-relative `path` against `baseUrl`, bounded by the
- * same timeout/User-Agent as the main fetch. Returns `undefined` (rather
- * than a `ProbeResult`) on ANY failure (network error, timeout/abort) — the
- * caller treats a missing probe result as a partial-coverage signal
- * (`scanIncomplete`), never as a thrown error that would abort the scan.
+ * same timeout/User-Agent as the main fetch. Redirects are NOT followed: a
+ * `/.env -> 302 / -> 200 index.html` chain means "not exposed", and following
+ * it would both misreport that and bypass the SSRF guard. The body read is
+ * byte-capped. Returns `undefined` on any failure (network error, timeout,
+ * refused host) — the caller treats that as reduced coverage.
  */
 async function probePath(
   baseUrl: URL,
@@ -115,24 +120,33 @@ async function probePath(
   deps: FetchDeps,
 ): Promise<ProbeResult | undefined> {
   try {
-    const probeUrl = new URL(path, baseUrl).toString();
-    const response = await deps.fetch(probeUrl, {
-      headers: { "user-agent": "immunogen/0.1 (+https://github.com/Mocinjay/immunogen)" },
+    const probeUrl = new URL(path, baseUrl);
+    await deps.assertAllowed?.(probeUrl);
+    const response = await deps.fetch(probeUrl.toString(), {
+      headers: { "user-agent": USER_AGENT },
       signal: AbortSignal.timeout(timeoutMs),
+      redirect: "manual",
     });
 
+    const contentType = response.headers.get("content-type") ?? undefined;
     let bodySnippet: string | undefined;
     if (response.status === 200) {
       try {
-        const fullText = await response.text();
-        bodySnippet = fullText.slice(0, PROBE_BODY_SNIPPET_MAX_CHARS);
+        bodySnippet = await readBoundedBody(response, PROBE_BODY_SNIPPET_MAX_BYTES);
       } catch {
         // A body-read failure still yields a valid ProbeResult (status is
         // known); it just carries no corroborating bodySnippet.
       }
+    } else {
+      await response.body?.cancel().catch(() => undefined);
     }
 
-    return { path, status: response.status, ...(bodySnippet !== undefined ? { bodySnippet } : {}) };
+    return {
+      path,
+      status: response.status,
+      ...(bodySnippet !== undefined ? { bodySnippet } : {}),
+      ...(contentType !== undefined ? { contentType } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -152,23 +166,23 @@ async function runExposedFileProbes(
   target: FetchedTarget,
   timeoutMs: number,
   deps: FetchDeps,
-): Promise<{ probes: ProbeResult[]; failedProbeCount: number }> {
+): Promise<{ probes: ProbeResult[]; failedPaths: string[] }> {
   const baseUrl = new URL(target.url);
   const allPaths = [...EXPOSED_FILE_PROBE_PATHS, ...deriveSourceMapProbePaths(target, baseUrl)];
 
   const probes: ProbeResult[] = [];
-  let failedProbeCount = 0;
+  const failedPaths: string[] = [];
 
   for (const path of allPaths) {
     const result = await probePath(baseUrl, path, timeoutMs, deps);
     if (result === undefined) {
-      failedProbeCount += 1;
+      failedPaths.push(path);
     } else {
       probes.push(result);
     }
   }
 
-  return { probes, failedProbeCount };
+  return { probes, failedPaths };
 }
 
 /** True when `status` falls in the 2xx range. */
@@ -186,12 +200,18 @@ function isSuccessStatus(status: number): boolean {
 export async function scanUrl(
   input: string,
   options: ScanOptions,
-  deps: { fetch?: typeof fetch } = {},
+  deps: { fetch?: typeof fetch; assertAllowed?: (url: URL) => Promise<void> } = {},
 ): Promise<ScanResult> {
   const scannedAt = new Date().toISOString();
-  const fetchDeps: FetchDeps = { fetch: deps.fetch ?? fetch };
+  const guardOptions = options.allowPrivate === true ? { allowPrivate: true } : {};
+  const fetchDeps: FetchDeps = {
+    fetch: deps.fetch ?? fetch,
+    // Every request — main document, redirect hops, scripts, probes — is
+    // re-checked against the resolved addresses of its host.
+    assertAllowed: deps.assertAllowed ?? ((url: URL) => assertPublicUrl(url, guardOptions)),
+  };
 
-  // Consent gate + SSRF guard — thrown errors propagate unmodified.
+  // Consent gate + synchronous SSRF pre-flight — thrown errors propagate unmodified.
   const resolved = resolveUrlTarget(input, {
     ...(options.authorize !== undefined ? { authorize: options.authorize } : {}),
     ...(options.allowPrivate !== undefined ? { allowPrivate: options.allowPrivate } : {}),
@@ -207,13 +227,28 @@ export async function scanUrl(
   );
 
   const probeTimeoutMs = options.urlTimeoutMs ?? 10_000;
-  const { probes, failedProbeCount } = await runExposedFileProbes(target, probeTimeoutMs, fetchDeps);
+  const { probes, failedPaths } = await runExposedFileProbes(target, probeTimeoutMs, fetchDeps);
 
   const ctx: WebContext = { target, probes };
   const findings = runWebDetectors(ctx);
   const score = computeScore(findings);
 
-  const scanIncomplete = !isSuccessStatus(target.status) || failedProbeCount > 0;
+  const diagnostics: Diagnostic[] = [];
+  if (!isSuccessStatus(target.status)) {
+    diagnostics.push({
+      level: "warn",
+      code: "URL_STATUS",
+      message: `The page returned HTTP ${String(target.status)}, so header and bundle checks did not see a live, healthy page.`,
+    });
+  }
+  if (failedPaths.length > 0) {
+    diagnostics.push({
+      level: "warn",
+      code: "PROBE_FAILED",
+      message: `${String(failedPaths.length)} exposed-file probe(s) could not be completed (network error, timeout, or refused host): ${failedPaths.join(", ")}.`,
+    });
+  }
+  const scanIncomplete = diagnostics.length > 0;
 
   return {
     target: input,
@@ -233,5 +268,6 @@ export async function scanUrl(
     // Deterministic-only URL mode — see this module's header comment.
     llmEnriched: false,
     scanIncomplete,
+    diagnostics,
   };
 }

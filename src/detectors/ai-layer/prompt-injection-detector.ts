@@ -45,26 +45,10 @@
  * runs inside try/catch returning `[]` on any failure.
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Maximum length of a `matchedText` snippet — bounds output even for a pathologically long line (threat T-06-01-03). */
 const MATCHED_TEXT_MAX_LENGTH = 120;
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/storage/firebase-rules-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
 
 /**
  * Truncates `line` (already trimmed) to `MATCHED_TEXT_MAX_LENGTH` characters,
@@ -143,7 +127,7 @@ export const promptInjectionDetector: Detector = {
     try {
       // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

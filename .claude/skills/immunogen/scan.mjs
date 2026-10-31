@@ -92,15 +92,17 @@ function renderFindingLine(finding) {
   return `- **[${finding.severity}] ${finding.ruleId}** ${finding.file}:${finding.line} — ${finding.message} (confidence: ${finding.confidence})`;
 }
 
+/** Diagnostics listed in the markdown report before the rest are summarized as a count. */
+const MAX_LISTED_DIAGNOSTICS = 10;
+
 /**
  * Formats a `ScanResult` into a markdown report: a headline line leading
  * with the A-F health grade + status word (e.g. `**Grade: F — Critical**
  * (Ship Score 18/100 — blocked)`), followed by the existing band/verdict/
  * critical/high-count lines unchanged; a ranked findings list (findings
  * arrive pre-sorted by severity from `runDetectors()` — see src/index.ts,
- * this function does not re-sort); and a trailing note when
- * `scanIncomplete` is true (the OSV-offline fallback fired, per
- * src/index.ts's DEP-OFFLINE sentinel).
+ * this function does not re-sort); a note when `scanIncomplete` is true; and
+ * the pipeline warnings (`result.diagnostics`).
  */
 function formatMarkdown(result) {
   const { score } = result;
@@ -126,8 +128,19 @@ function formatMarkdown(result) {
   if (result.scanIncomplete) {
     lines.push(
       "",
-      "> **Note:** this scan is incomplete — the offline dependency-vulnerability list was used because OSV.dev was unreachable. Re-run with network access for a complete dependency check.",
+      "> **Note:** this scan is incomplete — coverage was reduced (see warnings below), so the score may be optimistic.",
     );
+  }
+
+  const diagnostics = result.diagnostics ?? [];
+  if (diagnostics.length > 0) {
+    lines.push("", `### Warnings (${diagnostics.length})`, "");
+    for (const diagnostic of diagnostics.slice(0, MAX_LISTED_DIAGNOSTICS)) {
+      lines.push(`- \`${diagnostic.code}\` ${diagnostic.message}`);
+    }
+    if (diagnostics.length > MAX_LISTED_DIAGNOSTICS) {
+      lines.push(`- ... and ${diagnostics.length - MAX_LISTED_DIAGNOSTICS} more`);
+    }
   }
 
   return lines.join("\n");

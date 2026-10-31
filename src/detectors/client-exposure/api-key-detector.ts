@@ -58,6 +58,7 @@
  * referencing `process.env`/`import.meta.env`, not its resolved value).
  */
 import type { Confidence, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Env-var prefixes that frameworks inline into the client bundle (browser JS or mobile app binary). */
 const CLIENT_PREFIXES = ["NEXT_PUBLIC_", "VITE_", "EXPO_PUBLIC_", "REACT_APP_", "NUXT_PUBLIC_", "GATSBY_"];
@@ -106,27 +107,10 @@ const BUNDLE_02_RULE_ID = "BUNDLE-02";
 /** An LLM SDK client opted into running in the browser with the API key. */
 const DANGEROUSLY_ALLOW_BROWSER_RE = /\bdangerouslyAllowBrowser\s*:\s*true\b/;
 
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
 const RULE_ID = "BUNDLE-01";
 const SEVERITY: Severity = "CRITICAL";
 const CONFIDENCE: Confidence = "HIGH";
 const DETECTOR_NAME = "client-exposure";
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
 
 /**
  * Splits a matched `NEXT_PUBLIC_<NAME>`/`VITE_<NAME>` identifier into its
@@ -162,7 +146,8 @@ export const clientExposureDetector: Detector = {
   config: {
     name: "client-exposure",
     category: "client-exposure",
-    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs}", "**/.env*"],
+    // .vue/.svelte/.astro components read import.meta.env.VITE_* / PUBLIC_* directly.
+    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,mts,cts,vue,svelte,astro}", "**/.env*"],
   },
 
   // Not declared `async` — this is a text-only, synchronous regex pass; the
@@ -171,7 +156,7 @@ export const clientExposureDetector: Detector = {
     try {
       // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

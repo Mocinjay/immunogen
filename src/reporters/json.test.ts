@@ -45,6 +45,7 @@ function makeScanResult(overrides: Partial<ScanResult> = {}): ScanResult {
     },
     llmEnriched: false,
     scanIncomplete: false,
+    diagnostics: [],
     ...overrides,
   };
 }

@@ -67,26 +67,10 @@
 import { findDeceptiveUnicode, findHiddenContent } from "./unicode.js";
 
 import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Maximum length of a `matchedText` snippet — bounds output even for a pathologically long field value. */
 const MATCHED_TEXT_MAX_LENGTH = 120;
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/storage/firebase-rules-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
 
 /** A single collected metadata string plus which field it came from, used for line-resolution + message wording. */
 interface MetadataString {
@@ -254,7 +238,7 @@ export const mcpPoisoningDetector: Detector = {
     try {
       // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

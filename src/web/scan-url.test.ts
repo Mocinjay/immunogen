@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
+// Hermetic DNS: every test hostname resolves to a public documentation-free
+// address, so the SSRF guard runs for real without touching the network.
+vi.mock("./dns-resolve.js", () => ({
+  resolveHostAddresses: (hostname: string) =>
+    Promise.resolve(hostname.endsWith(".internal-test") ? ["10.0.0.5"] : ["93.184.216.34"]),
+}));
+
 import { scanUrl } from "./scan-url.js";
 
 import type { FetchDeps } from "./fetch-target.js";
@@ -108,5 +115,26 @@ describe("scanUrl — consent gate / SSRF propagation", () => {
 
     await expect(scanUrl("https://example.com", {}, deps)).rejects.toThrow();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("scanUrl — probes do not follow redirects", () => {
+  it("reports no exposure when /.env redirects to the home page", async () => {
+    const deps = makeDeps((url, init) => {
+      const urlStr = url.toString();
+      expect(init?.redirect).toBe("manual");
+      if (urlStr === "https://example.com/") {
+        return makeResponse("<html></html>", { url: urlStr });
+      }
+      if (urlStr === "https://example.com/.env") {
+        return makeResponse("", { status: 302, headers: { location: "/" }, url: urlStr });
+      }
+      return makeResponse("not found", { status: 404, url: urlStr });
+    });
+
+    const result = await scanUrl("https://example.com/", { authorize: true }, deps);
+
+    expect(result.findings.filter((finding) => finding.ruleId === "WEB-EXPOSED")).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
   });
 });

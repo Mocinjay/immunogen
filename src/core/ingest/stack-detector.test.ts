@@ -202,7 +202,7 @@ describe("detectStack — Python and Go", () => {
       ]),
     );
 
-    expect([...hints.frameworks].sort()).toEqual(["fastapi", "firebase", "python", "supabase"]);
+    expect([...hints.frameworks].sort()).toEqual(["fastapi", "firebase", "python", "stripe", "supabase"]);
     expect(hints.hasStripe).toBe(true);
     expect(hints.hasSupabase).toBe(true);
     expect(hints.hasFirebase).toBe(true);
@@ -213,7 +213,7 @@ describe("detectStack — Python and Go", () => {
       new Map([["go.mod", "module x\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.0\n\tgithub.com/stripe/stripe-go/v76 v76.0.0\n)\n"]]),
     );
 
-    expect([...hints.frameworks].sort()).toEqual(["gin", "go"]);
+    expect([...hints.frameworks].sort()).toEqual(["gin", "go", "stripe"]);
     expect(hints.hasStripe).toBe(true);
   });
 });

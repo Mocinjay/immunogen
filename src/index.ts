@@ -33,6 +33,7 @@
  */
 
 export type {
+  Diagnostic,
   Finding,
   ScanOptions,
   ScanResult,
@@ -45,12 +46,13 @@ import { computeScore } from "./core/scoring.js";
 import { runDetectors } from "./detectors/registry.js";
 import { NoopAdapter } from "./llm/adapters/index.js";
 import { enrichFindings } from "./llm/enricher.js";
-import { selectAdapter } from "./llm/provider.js";
+import { providerConfigDiagnostic, selectAdapter } from "./llm/provider.js";
 import { isGitRepoUrl } from "./core/ingest/input-resolver.js";
 import { isUrl } from "./web/url-resolver.js";
 import { scanUrl } from "./web/scan-url.js";
 
 import type { ScanOptions, ScanResult } from "./core/types.js";
+import type { ProviderAdapter } from "./llm/provider.js";
 
 /**
  * Scan a local path, git URL, or ZIP for launch-blocking issues and return a
@@ -107,24 +109,40 @@ export async function scan(
   const ctx = await ingest(path, options);
   const findings = await runDetectors(ctx);
   const score = computeScore(findings);
-  const scanIncomplete =
-    findings.some((finding) => finding.ruleId === "DEP-OFFLINE") ||
-    ctx.diagnostics.some((diagnostic) => diagnostic.code === "SCAN_TRUNCATED");
+  const depsOffline = findings.some((finding) => finding.ruleId === "DEP-OFFLINE");
+  const scanIncomplete = depsOffline || ctx.diagnostics.some((diagnostic) => diagnostic.code === "SCAN_TRUNCATED");
 
-  // --no-llm forces NoopAdapter regardless of env (overrides selectAdapter),
-  // satisfying criterion 4. Otherwise selectAdapter(process.env) is the sole
-  // provider decision point (LLM-01) — Noop unless a provider+key are both
-  // configured (T-07-06 offline default).
-  const adapter = options?.noLlm === true ? new NoopAdapter() : selectAdapter(process.env);
-  const { findings: enrichedFindings, enriched } = await enrichFindings(findings, adapter);
+  // --no-llm forces NoopAdapter regardless of env. Otherwise
+  // selectAdapter(process.env) is the sole provider decision point — Noop
+  // unless a provider and its key are both configured (offline default).
+  const diagnostics = [...ctx.diagnostics];
+  if (depsOffline) {
+    diagnostics.push({
+      level: "warn",
+      code: "DEPS_OFFLINE",
+      message:
+        "Dependencies were checked against the small bundled offline advisory list only (OSV.dev was not queried or was unreachable).",
+    });
+  }
+  let adapter: ProviderAdapter = new NoopAdapter();
+  if (options?.noLlm !== true) {
+    adapter = selectAdapter(process.env);
+    const configWarning = providerConfigDiagnostic(process.env);
+    if (configWarning !== undefined) {
+      diagnostics.push(configWarning);
+    }
+  }
+  const enrichment = await enrichFindings(findings, adapter);
+  diagnostics.push(...enrichment.diagnostics);
 
   return {
     target: path,
     scannedAt,
     stackHints: ctx.stackHints,
-    findings: enrichedFindings,
+    findings: enrichment.findings,
     score,
-    llmEnriched: enriched,
+    llmEnriched: enrichment.enriched,
     scanIncomplete,
+    diagnostics,
   };
 }
