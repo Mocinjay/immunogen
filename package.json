@@ -73,7 +73,7 @@
     "extract-zip": "2.0.1",
     "fast-glob": "3.3.3",
     "ignore": "7.0.5",
-    "openai": "6.44.0",
+    "openai": "7.45.1",
     "picocolors": "1.1.1",
     "simple-git": "3.36.0"
   },
