@@ -1,5 +1,11 @@
 /**
- * stripeDetector — CAT-4 (Payment) detector, PAY-01.
+ * stripeDetector — CAT-4 (Payment) detector, PAY-01 and PAY-02.
+ *
+ * PAY-02 (HIGH/MEDIUM): in any file that imports the Stripe server SDK, a
+ * charge amount (`amount:` / `unit_amount:`) read straight from the request
+ * (`req.body`, `body`, `input`, `payload`, `formData.get(...)`,
+ * `searchParams.get(...)`) — the buyer sets their own price. Prices belong
+ * on the server (a Stripe Price id or a server-side catalog lookup).
  *
  * Stripe's own docs mandate that every webhook handler verify the request
  * signature via `stripe.webhooks.constructEvent` (or its async sibling
@@ -94,11 +100,93 @@ const STRIPE_IMPORT_RE = /(?:import\s+.*from\s+["']stripe["']|require\(\s*["']st
 /** Matches `constructEvent` or `constructEventAsync` anywhere in content — presence means signature verification IS performed. */
 const CONSTRUCT_EVENT_RE = /constructEvent(?:Async)?/;
 
+/** A Stripe charge amount assigned straight from client-controlled request data. */
+const CLIENT_AMOUNT_RE =
+  /\b(?:unit_amount|amount)\s*:\s*(?:Number\(|parseInt\(|parseFloat\(|Math\.round\()?\s*(?:req\.body|request\.body|body|input|payload|formData\.get\(|searchParams\.get\()/;
+
+/** Python / Go: the file uses the Stripe SDK. */
+const PY_GO_STRIPE_IMPORT_RE = /^\s*import\s[^\n]*\bstripe\b|^\s*from\s+stripe\b|"github\.com\/stripe\/stripe-go/m;
+
+/** Python / Go: webhook signature verification. */
+const PY_GO_CONSTRUCT_EVENT_RE = /\bWebhook\.construct_event\(|\bwebhook\.ConstructEvent(?:WithOptions)?\(/;
+
+/** Python / Go: a route registration whose path names a webhook. */
+const PY_GO_WEBHOOK_ROUTE_RE = /(?:^\s*@\w+\.(?:post|route|api_route)\(|\.(?:POST|Post|HandleFunc|Handle)\()\s*["'][^"']*webhook[^"']*["']/i;
+
+/** Python / Go: a Stripe amount taken from request data. */
+const PY_GO_CLIENT_AMOUNT_RE =
+  /\b(?:unit_amount|amount)\s*=\s*(?:int\(|float\(|round\()?\s*(?:request\.|body\b|payload\b)|["'](?:unit_amount|amount)["']\s*:\s*(?:int\(|float\()?\s*(?:request\.|body\b|payload\b)|\b(?:UnitAmount|Amount):\s*stripe\.Int64\(\s*(?:int64\()?\s*(?:req|body|input|payload|params)\./;
+
+/** PAY-01 / PAY-02 for a Python or Go file that uses the Stripe SDK. */
+function pythonGoFindings(ctx: DetectorContext, lines: string[]): Finding[] {
+  if (!PY_GO_STRIPE_IMPORT_RE.test(ctx.content)) {
+    return [];
+  }
+  const findings: Finding[] = [];
+  const verifiesSignature = PY_GO_CONSTRUCT_EVENT_RE.test(ctx.content);
+  for (const [index, line] of lines.entries()) {
+    if (!verifiesSignature && PY_GO_WEBHOOK_ROUTE_RE.test(line)) {
+      findings.push({
+        ruleId: "PAY-01",
+        category: "payment",
+        detectorName: "stripe-webhook",
+        file: ctx.filePath,
+        line: index + 1,
+        severity: "CRITICAL",
+        confidence: "HIGH",
+        message: "Stripe webhook handler does not verify the signature (missing construct_event / webhook.ConstructEvent).",
+        remediation:
+          "Verify the raw request body with stripe.Webhook.construct_event (Python) or webhook.ConstructEvent (Go) using the endpoint's signing secret before trusting the event.",
+      });
+    }
+    if (PY_GO_CLIENT_AMOUNT_RE.test(line)) {
+      findings.push({
+        ruleId: "PAY-02",
+        category: "payment",
+        detectorName: "stripe-webhook",
+        file: ctx.filePath,
+        line: index + 1,
+        severity: "HIGH",
+        confidence: "MEDIUM",
+        message: "Stripe charge amount is taken from the request — a buyer can pay any price they choose.",
+        remediation:
+          "Look the price up on the server (a Stripe Price id from your catalog, or a server-side product table keyed by the item id) and never accept an amount from the client.",
+        matchedText: line.trim().slice(0, 120),
+      });
+    }
+  }
+  return findings;
+}
+
+/** Builds the PAY-02 findings for every client-controlled amount line in a Stripe-importing file. */
+function clientAmountFindings(ctx: DetectorContext, lines: string[]): Finding[] {
+  const findings: Finding[] = [];
+  for (const [index, line] of lines.entries()) {
+    if (!CLIENT_AMOUNT_RE.test(line)) {
+      continue;
+    }
+    findings.push({
+      ruleId: "PAY-02",
+      category: "payment",
+      detectorName: "stripe-webhook",
+      file: ctx.filePath,
+      line: index + 1, // 1-indexed per src/core/types.ts Finding.line
+      severity: "HIGH",
+      confidence: "MEDIUM",
+      message: "Stripe charge amount is taken from the request — a buyer can pay any price they choose.",
+      remediation:
+        "Look the price up on the server (a Stripe Price id from your catalog, or a server-side product table keyed by the item id) and never accept an amount from the client.",
+      matchedText: line.trim().slice(0, 120),
+    });
+  }
+  return findings;
+}
+
 export const stripeDetector: Detector = {
   config: {
     name: "stripe-webhook",
     category: "payment",
-    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs}"],
+    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,py,go}"],
     requiresStack: ["stripe"],
     requiresNetwork: false,
   },
@@ -121,17 +209,13 @@ export const stripeDetector: Detector = {
         return Promise.resolve([]);
       }
 
-      // PATH MATCH (signal a): only webhook/stripe route files are eligible.
-      // Both signals (path-match AND missing-constructEvent) are required —
-      // a stripe import on a non-route file must never fire (FP mitigation
-      // per FEATURES.md CAT-4).
-      if (!isWebhookOrStripeRoute(ctx.filePath)) {
-        return Promise.resolve([]);
+      const lines = ctx.content.split("\n");
+      if (/\.(?:py|go)$/.test(ctx.filePath)) {
+        return Promise.resolve(pythonGoFindings(ctx, lines));
       }
 
       // IMPORT SIGNAL: confirm the file actually imports/requires stripe.
       // Capture the first match's line for the Finding's reported line.
-      const lines = ctx.content.split("\n");
       let stripeImportLine: number | undefined;
       for (const [index, line] of lines.entries()) {
         if (STRIPE_IMPORT_RE.test(line)) {
@@ -141,15 +225,27 @@ export const stripeDetector: Detector = {
       }
 
       if (stripeImportLine === undefined) {
-        // No stripe import on this route file — nothing to verify here.
+        // No stripe import in this file — nothing to check here.
         return Promise.resolve([]);
+      }
+
+      // PAY-02 applies to every Stripe-importing file (checkout routes,
+      // server actions, Express handlers).
+      const amountFindings = clientAmountFindings(ctx, lines);
+
+      // PATH MATCH (signal a): only webhook/stripe route files are eligible
+      // for PAY-01. Both signals (path-match AND missing-constructEvent) are
+      // required — a stripe import on a non-route file must never fire
+      // PAY-01 (FP mitigation per FEATURES.md CAT-4).
+      if (!isWebhookOrStripeRoute(ctx.filePath)) {
+        return Promise.resolve(amountFindings);
       }
 
       // MISSING-VERIFY SIGNAL (signal b): constructEvent/constructEventAsync
       // present anywhere in content means the handler DOES verify the
       // signature — zero findings, this is the clean case.
       if (CONSTRUCT_EVENT_RE.test(ctx.content)) {
-        return Promise.resolve([]);
+        return Promise.resolve(amountFindings);
       }
 
       const finding: Finding = {
@@ -165,7 +261,7 @@ export const stripeDetector: Detector = {
           "Verify the raw request body with stripe.webhooks.constructEvent using the endpoint's signing secret before trusting the event.",
       };
 
-      return Promise.resolve([finding]);
+      return Promise.resolve([finding, ...amountFindings]);
     } catch {
       // No-throw contract (src/core/types.ts Detector.detect): a malformed
       // or unexpected ctx.content must resolve to [], never reject.

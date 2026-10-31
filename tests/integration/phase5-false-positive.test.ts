@@ -20,11 +20,11 @@
  *      path-segment allowlist suppresses them (criterion 4).
  *
  * NETWORK SAFETY: `osvDetector` (src/detectors/deps/osv-detector.ts) calls
- * `queryOsvBatch` (./osv-client.js) unconditionally for every scanned
- * package.json dependency — `ScanOptions.offline` is NOT read anywhere in
- * the detector or in DetectorContext, so this test mocks `queryOsvBatch` at
- * the module boundary (the SAME pattern `src/detectors/deps/osv-detector.test.ts`
- * and `tests/integration/phase5-coverage.test.ts` already use) to guarantee
+ * `queryOsvBatch` (./osv-client.js) for every scanned package.json
+ * dependency unless `scan()` is given `{ offline: true }`, so this test
+ * mocks `queryOsvBatch` at the module boundary (the SAME pattern
+ * `src/detectors/deps/osv-detector.test.ts` and
+ * `tests/integration/phase5-coverage.test.ts` already use) to guarantee
  * neither case ever makes a real network call, regardless of whether the
  * `offline` option is passed to `scan()`.
  */

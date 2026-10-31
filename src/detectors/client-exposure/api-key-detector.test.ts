@@ -165,3 +165,55 @@ describe("clientExposureDetector — config", () => {
     expect(clientExposureDetector.config.globs.some((glob) => glob.includes(".env"))).toBe(true);
   });
 });
+
+describe("clientExposureDetector — more client prefixes and public-by-design keys", () => {
+  async function ruleIds(content: string): Promise<string[]> {
+    const findings = await clientExposureDetector.detect(makeContext(content));
+    return findings.map((finding) => finding.ruleId);
+  }
+
+  it("flags secret-named vars behind Expo, CRA, Nuxt, and Gatsby client prefixes", async () => {
+    expect(await ruleIds("const k = process.env.EXPO_PUBLIC_OPENAI_API_KEY;")).toEqual(["BUNDLE-01"]);
+    expect(await ruleIds("const k = process.env.REACT_APP_STRIPE_SECRET_KEY;")).toEqual(["BUNDLE-01"]);
+    expect(await ruleIds("const k = config.NUXT_PUBLIC_ANTHROPIC_API_KEY;")).toEqual(["BUNDLE-01"]);
+    expect(await ruleIds("const k = process.env.GATSBY_GITHUB_TOKEN;")).toEqual(["BUNDLE-01"]);
+  });
+
+  it("does NOT flag keys that are public by design", async () => {
+    for (const name of [
+      "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+      "VITE_SUPABASE_ANON_KEY",
+      "EXPO_PUBLIC_SUPABASE_ANON_KEY",
+      "NEXT_PUBLIC_FIREBASE_API_KEY",
+      "NEXT_PUBLIC_RECAPTCHA_SITE_KEY",
+      "NEXT_PUBLIC_TURNSTILE_SITE_KEY",
+      "NEXT_PUBLIC_VAPID_PUBLIC_KEY",
+      "NEXT_PUBLIC_GOOGLE_MAPS_API_KEY",
+      "NEXT_PUBLIC_MAPBOX_TOKEN",
+      "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+      "EXPO_PUBLIC_REVENUECAT_IOS_KEY",
+    ]) {
+      expect(await ruleIds(`const k = process.env.${name};`), name).toEqual([]);
+    }
+  });
+
+  it("still flags a public-looking name that also says SECRET / PRIVATE / SERVICE_ROLE / ADMIN", async () => {
+    expect(await ruleIds("process.env.NEXT_PUBLIC_FIREBASE_PRIVATE_KEY")).toEqual(["BUNDLE-01"]);
+    expect(await ruleIds("process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY")).toEqual(["BUNDLE-01"]);
+    expect(await ruleIds("process.env.VITE_FIREBASE_ADMIN_KEY")).toEqual(["BUNDLE-01"]);
+  });
+
+  it("does NOT flag non-secret names that merely contain ADMIN or PRIVATE", async () => {
+    expect(await ruleIds("process.env.NEXT_PUBLIC_ADMIN_EMAIL")).toEqual([]);
+    expect(await ruleIds("process.env.NEXT_PUBLIC_PRIVATE_BETA_ENABLED")).toEqual([]);
+  });
+
+  it("flags an LLM SDK client constructed with dangerouslyAllowBrowser: true as BUNDLE-02", async () => {
+    const findings = await clientExposureDetector.detect(
+      makeContext("const client = new OpenAI({ apiKey: userKey, dangerouslyAllowBrowser: true });"),
+    );
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "BUNDLE-02", severity: "HIGH", line: 1 });
+  });
+});

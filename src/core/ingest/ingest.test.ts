@@ -181,10 +181,11 @@ describe("ingest — end-to-end: a single call on a realistic local fixture tree
     expect(ctx.rootPath).toBe(resolve(root));
 
     // (2) fileSet has the expected source files plus the always-preserved
-    // .env (despite .gitignore) and .mcp.json, and excludes node_modules/.
+    // .mcp.json, drops the gitignored (untracked, so never committed) .env,
+    // and excludes node_modules/.
     expect(ctx.fileSet.has("app/page.tsx")).toBe(true);
     expect(ctx.fileSet.has("src/lib/util.ts")).toBe(true);
-    expect(ctx.fileSet.has(".env")).toBe(true);
+    expect(ctx.fileSet.has(".env")).toBe(false);
     expect(ctx.fileSet.has(".mcp.json")).toBe(true);
     const hasNodeModulesKey = [...ctx.fileSet.keys()].some((key) => key.startsWith("node_modules/"));
     expect(hasNodeModulesKey).toBe(false);

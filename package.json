@@ -2,6 +2,29 @@
   "name": "immunogen",
   "version": "0.1.0",
   "description": "Scans AI-built (\"vibe-coded\") web apps for launch-blocking problems coding agents quietly ship, and emits a 0-100 Ship Score.",
+  "keywords": [
+    "security",
+    "scanner",
+    "static-analysis",
+    "secrets",
+    "sast",
+    "sarif",
+    "supabase",
+    "stripe",
+    "nextjs",
+    "mcp",
+    "ai",
+    "vibe-coding",
+    "cli"
+  ],
+  "homepage": "https://github.com/Mocinjay/immunogen#readme",
+  "bugs": {
+    "url": "https://github.com/Mocinjay/immunogen/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mocinjay/immunogen.git"
+  },
   "type": "module",
   "license": "MIT",
   "publishConfig": {
@@ -29,15 +52,16 @@
     "LICENSE",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsup",
-    "prepack": "pnpm run build",
-    "prepublishOnly": "pnpm run build",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run --passWithNoTests",
+    "test:dist": "node tests/dist/dual-import.test.mjs && node tests/dist/dual-import.test.cjs && node tests/dist/skill-parity.test.mjs && node tests/dist/cli-symlink.test.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

@@ -5,13 +5,24 @@
  * the `Map<relativePath, rawText>` a detector should see: ScanContext.fileSet
  * (see src/core/types.ts). It hard-excludes universal noise directories
  * (`node_modules/`, `.next/`, `dist/`, `build/`, `.git/`, ...), applies
- * `.gitignore` via the `ignore` package, skips binaries and over-cap files —
- * BUT always preserves the high-signal security files (`.env*`, `.mcp.json`,
- * `.cursor/mcp.json`, `.cursor/rules`, `.cursor/rules/**`, `.claude/**`) even
- * when `.gitignore` would exclude them, because the secrets and AI-layer
- * detectors need them. See .planning/research/ARCHITECTURE.md ("File Walker
- * Rules") and .planning/research/PITFALLS.md (Pitfall 2, Pitfall 11) for the
- * rationale behind each rule below.
+ * every `.gitignore` in the tree (root and nested, each scoped to its own
+ * directory) via the `ignore` package, skips binaries and over-cap files —
+ * BUT always preserves the AI-layer files (`.mcp.json`, `.cursor/mcp.json`,
+ * `.cursor/rules`, `.cursor/rules/**`, `.claude/**`) even when `.gitignore`
+ * would exclude them, because a local agent still loads them.
+ *
+ * Environment files (`.env*`) follow the question that actually matters for
+ * a leak — is this file committed? Inside a git work tree, a TRACKED env
+ * file is always kept (a `.env` committed once and gitignored later is still
+ * in the repo), while an untracked one is kept only when `.gitignore` does
+ * not exclude it (it would be committed by the next `git add .`). Outside a
+ * git work tree, `.gitignore` is the only signal. A gitignored, untracked
+ * `.env.local` holding real keys is the correct local setup and is never
+ * scanned. Tracked paths come from `readTrackedFiles` (git-index.ts), which
+ * parses `.git/index` directly instead of running git. See
+ * .planning/research/ARCHITECTURE.md ("File Walker Rules") and
+ * .planning/research/PITFALLS.md (Pitfall 2, Pitfall 11) for the rationale
+ * behind each rule below.
  *
  * Total-repo bounds (belt-and-suspenders alongside the per-file size cap):
  * once either `maxTotalBytes` or `maxTotalFiles` is exceeded, the walker
@@ -29,10 +40,32 @@ import ignore from "ignore";
 import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 
+import { readTrackedFiles } from "./git-index.js";
+
 import type { Diagnostic, ScanOptions } from "../types.js";
 
 /** Default per-file size cap, in bytes (overridable via ScanOptions). */
 const DEFAULT_MAX_FILE_SIZE_BYTES = 512 * 1024;
+
+/**
+ * Per-file cap for package-manager lockfiles. A real app's
+ * package-lock.json / pnpm-lock.yaml routinely exceeds the default cap, and
+ * it is the only record of the exact (and transitive) versions installed,
+ * which the dependency check reads.
+ */
+const LOCKFILE_MAX_FILE_SIZE_BYTES = 16 * 1024 * 1024;
+
+/** Lockfile basenames that get LOCKFILE_MAX_FILE_SIZE_BYTES. */
+const LOCKFILE_BASENAMES = new Set([
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "poetry.lock",
+  "uv.lock",
+  "Pipfile.lock",
+]);
 
 /** Default total-repo byte cap across all read files (overridable via ScanOptions.maxTotalBytes). */
 const DEFAULT_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
@@ -117,41 +150,73 @@ const ALWAYS_PRESERVE_EXACT = new Set([
 const ALWAYS_PRESERVE_PREFIXES = [".cursor/rules/", ".claude/"];
 
 /**
- * The criterion-3 nuance: `.env`, `.env.*`, `.mcp.json`, `.cursor/mcp.json`,
- * `.cursor/rules` (both the legacy single file and the modern per-file
- * `.mdc` directory form), `.cursorrules`, and anything under `.claude/` are
- * high-signal security files for this scanner (secrets + AI-layer
- * detection) and must survive even when a developer's `.gitignore` excludes
- * them — a gitignored `.env` is exactly the kind of file the secrets
- * detector exists to catch.
+ * `.mcp.json`, `.cursor/mcp.json`, `.cursor/rules` (both the legacy single
+ * file and the modern per-file `.mdc` directory form), `.cursorrules`, and
+ * anything under `.claude/` are high-signal AI-layer files and must survive
+ * even when a developer's `.gitignore` excludes them — a local agent loads
+ * them whether or not they are committed. (Env files are NOT on this list:
+ * see the module doc comment.)
  */
 function isAlwaysPreserved(relPath: string): boolean {
   if (ALWAYS_PRESERVE_EXACT.has(relPath)) {
     return true;
   }
-  if (ALWAYS_PRESERVE_PREFIXES.some((prefix) => relPath.startsWith(prefix))) {
-    return true;
-  }
-  const basename = relPath.slice(relPath.lastIndexOf("/") + 1);
-  return basename === ".env" || basename.startsWith(".env.");
+  return ALWAYS_PRESERVE_PREFIXES.some((prefix) => relPath.startsWith(prefix));
+}
+
+/** A `.gitignore` matcher scoped to the directory that holds it (`""` for the root). */
+interface ScopedGitignore {
+  dir: string;
+  matcher: ignore.Ignore;
 }
 
 /**
- * Loads `.gitignore` at `rootDir` if present and returns a populated
- * `ignore()` instance. Returns an empty (no-op) instance when no
- * `.gitignore` exists — every `.ignores()` call then returns false.
+ * Loads every `.gitignore` among `candidates` (root and nested), each as a
+ * matcher scoped to its own directory, matching git's own semantics where
+ * `app/.gitignore` patterns apply relative to `app/`. Unreadable files are
+ * skipped.
  */
-async function loadGitignore(rootDir: string): Promise<ignore.Ignore> {
-  const matcher = ignore();
-  try {
-    const gitignorePath = join(rootDir, ".gitignore");
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- walker reads caller-supplied repo paths by design
-    const contents = await readFile(gitignorePath, "utf8");
-    matcher.add(contents);
-  } catch {
-    // No .gitignore at rootDir (or unreadable) — proceed with no gitignore rules.
+async function loadGitignores(rootDir: string, candidates: string[]): Promise<ScopedGitignore[]> {
+  const scoped: ScopedGitignore[] = [];
+  for (const relPath of candidates) {
+    if (relPath !== ".gitignore" && !relPath.endsWith("/.gitignore")) {
+      continue;
+    }
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- walker reads caller-supplied repo paths by design
+      const contents = await readFile(join(rootDir, relPath), "utf8");
+      const dir = relPath === ".gitignore" ? "" : relPath.slice(0, -"/.gitignore".length);
+      scoped.push({ dir, matcher: ignore().add(contents) });
+    } catch {
+      // Unreadable .gitignore — proceed without its rules.
+    }
   }
-  return matcher;
+  return scoped;
+}
+
+/**
+ * Loads the root `.immunogenignore` (gitignore syntax) — paths the repo's
+ * owner has excluded from scanning, e.g. vendored code or a seed-data dump.
+ * Returns `undefined` when absent.
+ */
+async function loadScanIgnore(rootDir: string): Promise<ignore.Ignore | undefined> {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- walker reads caller-supplied repo paths by design
+    const contents = await readFile(join(rootDir, ".immunogenignore"), "utf8");
+    return ignore().add(contents);
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when any `.gitignore` scoped to an ancestor directory of `relPath` ignores it. */
+function isGitignored(gitignores: ScopedGitignore[], relPath: string): boolean {
+  return gitignores.some(({ dir, matcher }) => {
+    if (dir === "") {
+      return matcher.ignores(relPath);
+    }
+    return relPath.startsWith(`${dir}/`) && matcher.ignores(relPath.slice(dir.length + 1));
+  });
 }
 
 /**
@@ -209,8 +274,6 @@ export async function walkFiles(
   const diagnostics: Diagnostic[] = [];
   let totalBytesRead = 0;
 
-  const gitignoreMatcher = await loadGitignore(rootDir);
-
   const candidates = await fg("**/*", {
     cwd: rootDir,
     dot: true,
@@ -219,6 +282,9 @@ export async function walkFiles(
     absolute: false,
     ignore: HARD_EXCLUDE_GLOBS,
   });
+  const gitignores = await loadGitignores(rootDir, candidates);
+  const trackedFiles = await readTrackedFiles(rootDir);
+  const scanIgnore = options?.noIgnore === true ? undefined : await loadScanIgnore(rootDir);
 
   for (const relPath of candidates) {
     if (totalBytesRead >= maxTotalBytes || fileSet.size >= maxTotalFiles) {
@@ -231,9 +297,14 @@ export async function walkFiles(
       break;
     }
 
-    const preserved = isAlwaysPreserved(relPath);
+    if (scanIgnore?.ignores(relPath) === true) {
+      continue;
+    }
 
-    if (!preserved && gitignoreMatcher.ignores(relPath)) {
+    const preserved = isAlwaysPreserved(relPath);
+    const committed = trackedFiles?.has(relPath) === true;
+
+    if (!preserved && !committed && isGitignored(gitignores, relPath)) {
       continue;
     }
 
@@ -245,7 +316,11 @@ export async function walkFiles(
     }
 
     const absPath = join(rootDir, relPath);
-    const content = await readIfEligible(absPath, maxFileSizeBytes);
+    const isLockfile = LOCKFILE_BASENAMES.has(relPath.slice(relPath.lastIndexOf("/") + 1));
+    const content = await readIfEligible(
+      absPath,
+      isLockfile ? Math.max(maxFileSizeBytes, LOCKFILE_MAX_FILE_SIZE_BYTES) : maxFileSizeBytes,
+    );
     if (content === undefined) {
       continue;
     }

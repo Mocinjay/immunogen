@@ -64,6 +64,8 @@ export const SUPABASE_ENV_NAME_RE = /SUPABASE_SERVICE_ROLE_KEY/g;
 /** A single fixed-format provider-key pattern (Stripe/AWS/OpenAI shapes). */
 export interface ProviderKeyPattern {
   ruleId: string;
+  /** Disambiguates entries that share a ruleId (SEC-09 covers several providers). */
+  provider?: string;
   /**
    * MUST carry the global flag. Iterated via `String.prototype.matchAll`
    * (not a manual `.exec()` loop) — `matchAll` creates its own internal
@@ -75,15 +77,31 @@ export interface ProviderKeyPattern {
 
 /**
  * Provider-key regex table — rigid, low-FP key formats (Stripe `sk_live_`,
- * AWS `AKIA...`, OpenAI `sk-...`) per FEATURES.md CAT-1's "V1 PICK". This is
- * the shared source `entropy-detector.ts`'s Pass A and `redactor.ts`'s
- * fixed-format pass both read from — the ruleId is only meaningful to the
- * detector side; the redactor ignores it and matches on `regex` alone.
+ * AWS `AKIA...`, OpenAI `sk-...`, Supabase `sb_secret_...`, Anthropic
+ * `sk-ant-...`) per FEATURES.md CAT-1's "V1 PICK". This is the shared source
+ * `entropy-detector.ts`'s Pass A and `redactor.ts`'s fixed-format pass both
+ * read from — the ruleId is only meaningful to the detector side; the
+ * redactor ignores it and matches on `regex` alone.
+ *
+ * SEC-03 covers both the legacy 48-char OpenAI shape and the project /
+ * service-account / admin keys (`sk-proj-`, `sk-svcacct-`, `sk-admin-`)
+ * OpenAI has issued by default since 2024 — the legacy shape alone misses
+ * every key a new OpenAI account creates today.
+ *
+ * SEC-08 is any PEM private key block (a committed Firebase/GCP service
+ * account JSON, a TLS or SSH key). SEC-09 covers other prefixed tokens AI
+ * apps commonly hardcode, one entry per provider: GitHub, Slack, Stripe
+ * webhook signing secrets, SendGrid, Groq, xAI, Hugging Face, Replicate, npm,
+ * Resend, and Google API keys (`AIza...`). Every SEC-09 prefix is distinctive
+ * enough to need no keyword anchor; the Google entry is the one exception the
+ * detector gates on context, since Firebase web/mobile config and Maps
+ * browser keys use the same shape and are public by design (the redactor
+ * still redacts every match).
  */
 export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
   {
     ruleId: "SEC-01",
-    regex: /sk_live_[\w-]+/g,
+    regex: /[sr]k_live_[\w-]+/g,
   },
   {
     ruleId: "SEC-02",
@@ -91,8 +109,36 @@ export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
   },
   {
     ruleId: "SEC-03",
-    regex: /sk-[A-Za-z0-9]{48}/g,
+    regex: /sk-(?:proj|svcacct|admin)-[\w-]{40,}|sk-[A-Za-z0-9]{48}/g,
   },
+  {
+    ruleId: "SEC-04",
+    regex: /sb_secret_[\w-]{16,}/g,
+  },
+  {
+    ruleId: "SEC-07",
+    regex: /sk-ant-(?:api|admin)\d{2}-[\w-]{20,}/g,
+  },
+  {
+    ruleId: "SEC-08",
+    regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----/g,
+  },
+  { ruleId: "SEC-09", provider: "GitHub", regex: /\b(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_\w{60,})/g },
+  { ruleId: "SEC-09", provider: "Slack", regex: /\bxox[abposr]-[A-Za-z0-9-]{10,}/g },
+  {
+    ruleId: "SEC-09",
+    provider: "Slack webhook",
+    regex: /https:\/\/hooks\.slack\.com\/services\/T\w+\/B\w+\/\w+/g,
+  },
+  { ruleId: "SEC-09", provider: "Stripe webhook signing", regex: /\bwhsec_[A-Za-z0-9]{24,}/g },
+  { ruleId: "SEC-09", provider: "SendGrid", regex: /\bSG\.[\w-]{22}\.[\w-]{43}/g },
+  { ruleId: "SEC-09", provider: "Groq", regex: /\bgsk_[A-Za-z0-9]{48,}/g },
+  { ruleId: "SEC-09", provider: "xAI", regex: /\bxai-[A-Za-z0-9]{70,}/g },
+  { ruleId: "SEC-09", provider: "Hugging Face", regex: /\bhf_[A-Za-z0-9]{34,}/g },
+  { ruleId: "SEC-09", provider: "Replicate", regex: /\br8_[A-Za-z0-9]{37,}/g },
+  { ruleId: "SEC-09", provider: "npm", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { ruleId: "SEC-09", provider: "Resend", regex: /\bre_[A-Za-z0-9]{8}_(?=[a-z0-9]*[A-Z0-9])[A-Za-z0-9]{24}\b/g },
+  { ruleId: "SEC-09", provider: "Google", regex: /\bAIza[0-9A-Za-z_-]{35}/g },
 ];
 
 /**

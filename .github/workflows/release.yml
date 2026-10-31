@@ -1,0 +1,92 @@
+name: Release
+
+# Cuts a GitHub Release (with the installable npm tarball attached) when a
+# version tag is pushed:
+#
+#   1. bump "version" in package.json and add a CHANGELOG.md entry
+#   2. git tag v<version> && git push origin v<version>
+#
+# The tarball is attached twice: as immunogen-<version>.tgz and as
+# immunogen.tgz, so .../releases/latest/download/immunogen.tgz always installs
+# the newest release. If an npm automation token is stored as the NPM_TOKEN
+# repository secret, the same tarball is also published to npm.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # npm provenance attestation
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Check tag matches package.json version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${version}" >&2
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Dist smoke tests
+        run: pnpm run test:dist
+
+      - name: Pack
+        run: |
+          pnpm pack
+          cp "immunogen-${VERSION}.tgz" immunogen.tgz
+
+      - name: Create GitHub Release
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "immunogen-${VERSION}.tgz" immunogen.tgz --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "immunogen-${VERSION}.tgz" immunogen.tgz \
+              --title "${GITHUB_REF_NAME}" --generate-notes
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish to npm
+        if: env.NPM_TOKEN != ''
+        run: npm publish "immunogen-${VERSION}.tgz" --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}

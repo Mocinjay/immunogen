@@ -4,9 +4,9 @@ import { legalDetector } from "./legal-detector.js";
 
 import type { DetectorContext, StackHints } from "../../core/types.js";
 
-/** Minimal StackHints fixture — legalDetector reads ctx.fileSet only, never ctx.stackHints. */
+/** StackHints for a Next.js app — legalDetector only runs for user-facing app stacks. */
 const STACK_HINTS: StackHints = {
-  frameworks: new Set(),
+  frameworks: new Set(["nextjs"]),
   hasSupabase: false,
   hasFirebase: false,
   hasStripe: false,
@@ -93,8 +93,21 @@ describe("legalDetector — config", () => {
     expect(legalDetector.config.category).toBe("legal");
   });
 
-  it("declares globs anchored on package.json only (the fires-once anchor)", () => {
-    expect(legalDetector.config.globs).toEqual(["package.json"]);
+  it("declares globs anchored on root manifests only (the fires-once anchor)", () => {
+    expect(legalDetector.config.globs).toEqual(["package.json", "pyproject.toml", "requirements.txt", "go.mod"]);
+  });
+
+  it("fires once, on the highest-priority manifest present, for a mixed-language repo", async () => {
+    const fileSet = new Map([
+      ["package.json", "{}"],
+      ["requirements.txt", "fastapi==0.110.0"],
+    ]);
+    const stackHints = { ...STACK_HINTS, frameworks: new Set(["fastapi"]) };
+    const onPackage = await legalDetector.detect({ filePath: "package.json", content: "{}", stackHints, fileSet });
+    const onRequirements = await legalDetector.detect({ filePath: "requirements.txt", content: "", stackHints, fileSet });
+
+    expect(onPackage).toHaveLength(1);
+    expect(onRequirements).toEqual([]);
   });
 });
 
@@ -126,5 +139,13 @@ describe("legalDetector — no-throw contract", () => {
     };
 
     await expect(legalDetector.detect(ctx)).resolves.toBeDefined();
+  });
+});
+
+describe("legalDetector — app gate", () => {
+  it("does NOT fire for a library/CLI repo with no app stack", async () => {
+    const ctx = { ...makeContext(["package.json", "src/index.ts"]), stackHints: { ...STACK_HINTS, frameworks: new Set<string>() } };
+
+    expect(await legalDetector.detect(ctx)).toEqual([]);
   });
 });

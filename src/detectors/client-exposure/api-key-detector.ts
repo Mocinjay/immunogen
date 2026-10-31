@@ -1,11 +1,19 @@
 /**
  * clientExposureDetector — text-only CAT-2 (Client-Bundle Key Exposure)
- * detector, BUNDLE-01: a `NEXT_PUBLIC_`/`VITE_` prefix on an env var whose
- * NAME (the portion after the prefix) contains a secret-family keyword
- * (SECRET/KEY/TOKEN/PASSWORD/SERVICE_ROLE).
+ * detector.
  *
- * Both Next.js and Vite document these prefixes as an explicit "inline this
- * value into the client bundle" instruction (see
+ * BUNDLE-01: a client-inlined env prefix — `NEXT_PUBLIC_` (Next.js),
+ * `VITE_` (Vite), `EXPO_PUBLIC_` (Expo / React Native), `REACT_APP_`
+ * (Create React App), `NUXT_PUBLIC_` (Nuxt), `GATSBY_` (Gatsby) — on an env
+ * var whose NAME (the portion after the prefix) contains a secret-family
+ * keyword (SECRET/KEY/TOKEN/PASSWORD/SERVICE_ROLE).
+ *
+ * BUNDLE-02: an LLM SDK client constructed with `dangerouslyAllowBrowser:
+ * true` (OpenAI / Anthropic SDKs) — the SDKs' own opt-in for shipping the
+ * API key to every visitor's browser.
+ *
+ * Every one of these frameworks documents its prefix as an explicit "inline
+ * this value into the client bundle" instruction (see
  * .planning/research/PITFALLS.md Pitfall 1 / FEATURES.md CAT-2): the prefix
  * itself is not the bug — pairing it with a secret-named variable is. A
  * secret-named env var behind the prefix gets baked verbatim into the
@@ -21,10 +29,16 @@
  *      here for clarity since the plan calls it out explicitly.
  *
  * CRITICAL FP exclusion (PITFALLS.md Pitfall 1 / FEATURES.md "False Positive
- * Management Strategy" CAT-2 row): Stripe's own documented public key is
- * named `..._PUBLISHABLE_KEY`. That name contains the substring "KEY" and
- * would otherwise match the secret-keyword filter — an explicit
- * PUBLISHABLE exclusion prevents this headline false positive.
+ * Management Strategy" CAT-2 row): many keys are public BY DESIGN and are
+ * documented to be shipped to the client — Stripe's `..._PUBLISHABLE_KEY`,
+ * Supabase's `..._ANON_KEY`, the Firebase web config's `..._FIREBASE_API_KEY`,
+ * reCAPTCHA/Turnstile site keys, analytics write keys (PostHog, Segment,
+ * Amplitude, Mixpanel), Maps/Mapbox browser tokens. Those names contain
+ * "KEY"/"TOKEN" and would otherwise match the secret-keyword filter — the
+ * `PUBLIC_BY_DESIGN_MARKERS` exclusion prevents these headline false
+ * positives, but never for a name that also says SECRET / SERVICE_ROLE /
+ * immunogen-ignore BUNDLE-01 — the next line names the pattern as documentation
+ * PRIVATE / PASSWORD / ADMIN (`NEXT_PUBLIC_FIREBASE_PRIVATE_KEY` still fires).
  *
  * FP allowlist (PITFALLS.md Pitfall 1): `detect()` opens with the same
  * path-segment + basename check used across this codebase's other text
@@ -45,8 +59,11 @@
  */
 import type { Confidence, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
 
-/** Matches a bare `NEXT_PUBLIC_<NAME>` or `VITE_<NAME>` identifier anywhere on a line. */
-const PUBLIC_PREFIX_VAR_RE = /\b(?:NEXT_PUBLIC|VITE)_[A-Z0-9_]+\b/g;
+/** Env-var prefixes that frameworks inline into the client bundle (browser JS or mobile app binary). */
+const CLIENT_PREFIXES = ["NEXT_PUBLIC_", "VITE_", "EXPO_PUBLIC_", "REACT_APP_", "NUXT_PUBLIC_", "GATSBY_"];
+
+/** Matches a bare client-prefixed identifier (`NEXT_PUBLIC_<NAME>`, `EXPO_PUBLIC_<NAME>`, ...) anywhere on a line. */
+const PUBLIC_PREFIX_VAR_RE = /\b(?:NEXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP|NUXT_PUBLIC|GATSBY)_[A-Z0-9_]+\b/g;
 
 /**
  * Case-insensitive secret-family keywords (FEATURES.md CAT-2 BUNDLE-01 row).
@@ -56,12 +73,38 @@ const PUBLIC_PREFIX_VAR_RE = /\b(?:NEXT_PUBLIC|VITE)_[A-Z0-9_]+\b/g;
  */
 const SECRET_KEYWORDS = ["SECRET", "KEY", "TOKEN", "PASSWORD", "SERVICE_ROLE"];
 
+/** Name fragments that, alongside a secret keyword, are never public — overriding every public-by-design marker below. */
+const ALWAYS_SECRET_KEYWORDS = ["SECRET", "SERVICE_ROLE", "PRIVATE", "PASSWORD", "ADMIN"];
+
 /**
- * Documented public/non-secret token that, despite containing "KEY",
- * must NOT fire (Stripe's `..._PUBLISHABLE_KEY` convention — the headline
- * false positive called out in PITFALLS.md Pitfall 1).
+ * Name fragments of keys that are public by design — documented by their
+ * provider to be embedded in client code (Stripe's `..._PUBLISHABLE_KEY` is
+ * the headline false positive called out in PITFALLS.md Pitfall 1).
  */
-const PUBLISHABLE_EXCLUSION = "PUBLISHABLE";
+const PUBLIC_BY_DESIGN_MARKERS = [
+  "PUBLISHABLE",
+  "ANON_KEY",
+  "FIREBASE_",
+  "SITE_KEY",
+  "SITEKEY",
+  "PUBLIC_KEY",
+  "POSTHOG",
+  "SEGMENT_WRITE_KEY",
+  "AMPLITUDE",
+  "MIXPANEL",
+  "MAPS_API_KEY",
+  "MAPBOX",
+  "ALGOLIA_SEARCH",
+  "SEARCH_ONLY",
+  "PUSHER_KEY",
+  "PUSHER_APP_KEY",
+  "REVENUECAT",
+];
+
+const BUNDLE_02_RULE_ID = "BUNDLE-02";
+
+/** An LLM SDK client opted into running in the browser with the API key. */
+const DANGEROUSLY_ALLOW_BROWSER_RE = /\bdangerouslyAllowBrowser\s*:\s*true\b/;
 
 /** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
 const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
@@ -93,13 +136,8 @@ function isAllowlistedPath(filePath: string): boolean {
  * guarded defensively per the no-throw contract).
  */
 function splitPrefixAndSuffix(identifier: string): { suffix: string } | undefined {
-  if (identifier.startsWith("NEXT_PUBLIC_")) {
-    return { suffix: identifier.slice("NEXT_PUBLIC_".length) };
-  }
-  if (identifier.startsWith("VITE_")) {
-    return { suffix: identifier.slice("VITE_".length) };
-  }
-  return undefined;
+  const prefix = CLIENT_PREFIXES.find((candidate) => identifier.startsWith(candidate));
+  return prefix === undefined ? undefined : { suffix: identifier.slice(prefix.length) };
 }
 
 /**
@@ -111,10 +149,13 @@ function splitPrefixAndSuffix(identifier: string): { suffix: string } | undefine
  * itself is treated as the canonical (uppercase) form being checked.
  */
 function isSecretNamed(suffix: string): boolean {
-  if (suffix.includes(PUBLISHABLE_EXCLUSION)) {
+  if (!SECRET_KEYWORDS.some((keyword) => suffix.includes(keyword))) {
     return false;
   }
-  return SECRET_KEYWORDS.some((keyword) => suffix.includes(keyword));
+  if (ALWAYS_SECRET_KEYWORDS.some((keyword) => suffix.includes(keyword))) {
+    return true;
+  }
+  return !PUBLIC_BY_DESIGN_MARKERS.some((marker) => suffix.includes(marker));
 }
 
 export const clientExposureDetector: Detector = {
@@ -160,10 +201,28 @@ export const clientExposureDetector: Detector = {
             line: lineNumber,
             severity: SEVERITY,
             confidence: CONFIDENCE,
-            message: `Secret-named environment variable '${identifier}' is exposed to the client via its public prefix and will be inlined into the browser bundle.`,
+            message: `Secret-named environment variable '${identifier}' is exposed to the client via its public prefix and will be inlined into the client bundle (browser JS or mobile app binary).`,
             remediation:
-              "Rename this variable without the public prefix (drop NEXT_PUBLIC_/VITE_) so it stays server-only, move it to a server-only env var, and rotate the value — it has likely already shipped to the browser bundle.",
+              "Rename this variable without the public prefix (drop NEXT_PUBLIC_/VITE_/EXPO_PUBLIC_/REACT_APP_) so it stays server-only, call the provider from a server route or edge function instead, and rotate the value — it has likely already shipped to the client bundle.",
             matchedText: identifier,
+          });
+        }
+
+        if (DANGEROUSLY_ALLOW_BROWSER_RE.test(line)) {
+          findings.push({
+            ruleId: BUNDLE_02_RULE_ID,
+            category: "client-exposure",
+            detectorName: DETECTOR_NAME,
+            file: ctx.filePath,
+            line: lineNumber,
+            severity: "HIGH",
+            confidence: "MEDIUM",
+            message:
+              // immunogen-ignore BUNDLE-02 — this finding's own message text names the pattern
+              "LLM SDK client runs in the browser (dangerouslyAllowBrowser: true) — the API key it is given ships to every visitor, who can use it on your bill.",
+            remediation:
+              "Move the LLM call behind a server route (or edge function) that holds the key server-side and checks the caller's session; only keep this flag if every user supplies their own key.",
+            matchedText: "dangerouslyAllowBrowser",
           });
         }
       }

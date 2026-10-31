@@ -89,6 +89,14 @@ function isDebugRoutePath(filePath: string): boolean {
  */
 const ENV_RETURN_RE = /(?:\breturn\b[^;\n]*\bprocess\.env\b(?!\.\w))|(?:\b(?:Response|res)\.json\(\s*process\.env\s*\))/g;
 
+/** Python / Go: the whole environment printed or logged (`print(os.environ)`, `log.Println(os.Environ())`). */
+const PY_GO_ENV_DUMP_RE =
+  /\b(?:print|pprint|logging\.\w+|logger\.\w+|log\.\w+|fmt\.Print(?:ln|f)?)\(\s*os\.(?:environ\b(?![.[])|Environ\(\))/;
+
+/** Python / Go: the whole environment sent back as an HTTP response body. */
+const PY_GO_ENV_RESPONSE_RE =
+  /\b(?:jsonify|JSONResponse|JsonResponse|make_response)\(\s*os\.environ\b(?![.[])|\.Encode\(\s*os\.Environ\(\)|\.JSON\([^,\n]+,\s*os\.Environ\(\)/;
+
 /** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
 const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
 
@@ -181,11 +189,52 @@ function runDebugEndpointPass(ctx: DetectorContext, findings: Finding[]): void {
   });
 }
 
+/**
+ * CONFIG-01 / CONFIG-02 for Python and Go files: the whole environment
+ * (`os.environ` / `os.Environ()`) printed or logged, or returned as an HTTP
+ * response body (`jsonify(dict(os.environ))`, `c.JSON(200, os.Environ())`).
+ * Python and Go routes are not file-path based, so CONFIG-02 here keys on
+ * the response call itself rather than a debug route path.
+ */
+function runPythonGoPass(ctx: DetectorContext, findings: Finding[]): void {
+  for (const [index, rawLine] of ctx.content.split("\n").entries()) {
+    // `dict(os.environ)` copies the whole environment — same exposure as `os.environ`.
+    const line = rawLine.replace(/\bdict\(\s*/g, "");
+    if (PY_GO_ENV_RESPONSE_RE.test(line)) {
+      findings.push({
+        ruleId: CONFIG_02_RULE_ID,
+        category: "config",
+        detectorName: DETECTOR_NAME,
+        file: ctx.filePath,
+        line: index + 1,
+        severity: CONFIG_02_SEVERITY,
+        confidence: CONFIG_02_CONFIDENCE,
+        message: "An HTTP handler returns the whole environment (os.environ / os.Environ()) to the caller.",
+        remediation: "Remove this debug response before shipping — it leaks every secret in the environment to any caller.",
+        matchedText: rawLine.trim().slice(0, 120),
+      });
+    } else if (PY_GO_ENV_DUMP_RE.test(line)) {
+      findings.push({
+        ruleId: CONFIG_01_RULE_ID,
+        category: "config",
+        detectorName: DETECTOR_NAME,
+        file: ctx.filePath,
+        line: index + 1,
+        severity: CONFIG_01_SEVERITY,
+        confidence: CONFIG_01_CONFIDENCE,
+        message: "The full environment (os.environ / os.Environ()) is dumped to the logs.",
+        remediation:
+          "Remove this environment dump. Log only the specific non-secret value actually needed, never the whole environment.",
+      });
+    }
+  }
+}
+
 export const configDebugDetector: Detector = {
   config: {
     name: "config-debug",
     category: "config",
-    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs}"],
+    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,py,go}"],
   },
 
   // Not declared `async` — this is a text-only, synchronous regex pass; the
@@ -200,6 +249,10 @@ export const configDebugDetector: Detector = {
       }
 
       const findings: Finding[] = [];
+      if (/\.(?:py|go)$/.test(ctx.filePath)) {
+        runPythonGoPass(ctx, findings);
+        return Promise.resolve(findings);
+      }
       runConfigDumpPass(ctx, findings);
       runDebugEndpointPass(ctx, findings);
 

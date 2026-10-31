@@ -3,29 +3,36 @@
  *
  * Three passes over `ctx.content`, split into lines once:
  *
- *   Pass A (provider-key regex, SEC-01/02/03): rigid, low-FP key formats
- *   (Stripe `sk_live_`, AWS `AKIA...`, OpenAI `sk-...`) per FEATURES.md
- *   CAT-1's "V1 PICK". Each match is CRITICAL/HIGH confidence — the format
- *   itself is the provider's own naming convention, near-zero FP risk.
+ *   Pass A (provider-key regex, SEC-01/02/03/04/07): rigid, low-FP key
+ *   formats (Stripe `sk_live_`, AWS `AKIA...`, OpenAI `sk-...`/`sk-proj-...`,
+ *   Supabase `sb_secret_...`, Anthropic `sk-ant-...`) per FEATURES.md CAT-1's
+ *   "V1 PICK". Each match is CRITICAL/HIGH confidence — the format itself is
+ *   the provider's own naming convention, near-zero FP risk.
  *
  *   Pass A2 (Supabase service_role JWT, SEC-04 — plan 05-01): two
  *   independent signals, both CRITICAL/HIGH, both emitting ruleId "SEC-04":
  *   (a) decode the middle (payload) segment of any `eyJ...`-shaped JWT and
  *   flag when the decoded text contains `"role":"service_role"`; (b) flag a
- *   line referencing the `SUPABASE_SERVICE_ROLE_KEY` identifier outright,
- *   no JWT required, UNLESS the reference is a safe environment-variable
- *   *read* (`Deno.env.get(...)`, `process.env.X`, `process.env[...]`,
- *   `import.meta.env.X`) — that is the doc-recommended secure pattern for
- *   server-side code (e.g. a Supabase Edge Function), not a leak. This
+ *   `SUPABASE_SERVICE_ROLE_KEY` identifier only when it is ASSIGNED a
+ *   literal value (`KEY=value` in a .env file, `KEY: "value"`, `const KEY =
+ *   "value"`), no JWT required. A bare mention (a comment, docs, a type, a
+ *   safe environment-variable *read* such as `Deno.env.get(...)` or
+ *   `process.env.X`, or an assignment FROM another variable / a placeholder
+ *   like `your-service-role-key`) is not a leak and is never flagged. This
  *   branch runs ahead of Pass B and claims its own matched spans so a
  *   service_role JWT cannot ALSO double-fire SEC-06's keyword-anchored
  *   entropy pass on the same literal.
  *
  *   Pass B (keyword-anchored Shannon entropy, SEC-06): a quoted string
  *   literal >=40 chars with entropy >=4.0 is flagged ONLY when its own line
- *   also contains a secret/key/token/password-family keyword — this is the
- *   FEATURES.md "False Positive Management Strategy" CAT-1 row's documented
- *   keyword-anchor mitigation, preventing UUID/hash false positives. Capped
+ *   also contains a secret/key/token/password-family keyword as a whole
+ *   word or identifier part (`apiKey`, `API_KEY`, `access_token` — not
+ *   `keyboard`/`monkey`) — this is the FEATURES.md "False Positive
+ *   Management Strategy" CAT-1 row's documented keyword-anchor mitigation,
+ *   preventing UUID/hash false positives — AND the literal itself is shaped
+ *   like a credential (`isPlausibleSecretValue`): no whitespace (prose), no
+ *   `${...}` interpolation, not a Subresource-Integrity hash, not a plain
+ *   URL or package/path name, and it mixes letters with digits. Capped
  *   at MAX_ENTROPY_FINDINGS_PER_FILE per file: past that many matches in ONE
  *   file, the shape is far more likely a generated data/schema artifact
  *   (e.g. a code-graph JSON dump with a "key" field on every node) than
@@ -35,9 +42,11 @@
  *
  * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` opens
  * with a path-segment check against `__tests__`, `fixtures`, `mocks`,
- * `examples`, plus a `.test.`/`.stories.` basename check — matching paths
+ * `examples`, plus a `.test.`/`.stories.` basename check and a package
+ * manager lockfile check (`package-lock.json` & co. are full of integrity
+ * hashes and registry URLs, never hand-written secrets) — matching paths
  * short-circuit to `[]` before any pass runs, for every ruleId this file
- * emits (SEC-01..04, SEC-06 alike).
+ * emits (SEC-01..04, SEC-06, SEC-07 alike).
  *
  * ENG-05 (text-only invariant): this module reads `ctx.content` as a plain
  * string. It never reads `ctx.ast`, never imports a parser, and never
@@ -58,7 +67,6 @@
 import {
   decodesToServiceRole,
   ENTROPY_THRESHOLD,
-  hasAnchorKeyword,
   JWT_RE,
   MIN_ENTROPY_CANDIDATE_LENGTH,
   PROVIDER_KEY_PATTERNS,
@@ -99,12 +107,29 @@ interface ProviderPattern {
 }
 
 /** Looks up a PROVIDER_KEY_PATTERNS entry's regex by its shared ruleId; throws if the shared table ever drops an entry this detector depends on (fails loudly at module load, not silently at scan time). */
-function sharedRegex(ruleId: string): RegExp {
-  const found = PROVIDER_KEY_PATTERNS.find((pattern) => pattern.ruleId === ruleId);
+function sharedRegex(ruleId: string, provider?: string): RegExp {
+  const found = PROVIDER_KEY_PATTERNS.find((pattern) => pattern.ruleId === ruleId && pattern.provider === provider);
   if (found === undefined) {
     throw new Error(`secret-patterns.ts is missing the expected "${ruleId}" provider-key pattern`);
   }
   return found.regex;
+}
+
+/** One SEC-09 entry per provider in the shared table, each with its own message. */
+function thirdPartyTokenPatterns(): ProviderPattern[] {
+  // Google keys need context (see runGoogleKeyPass); every other SEC-09 shape is unambiguous.
+  return PROVIDER_KEY_PATTERNS.filter((pattern) => pattern.ruleId === "SEC-09" && pattern.provider !== "Google").map((pattern) => {
+    const provider = pattern.provider ?? "third-party";
+    const lowImpact = provider === "Slack webhook" || provider === "Stripe webhook signing";
+    return {
+      ruleId: "SEC-09",
+      regex: pattern.regex,
+      severity: lowImpact ? "HIGH" : "CRITICAL",
+      confidence: "HIGH",
+      message: `Hardcoded ${provider} ${provider.endsWith("webhook") ? "URL" : provider.endsWith("signing") ? "secret" : "token"} found in source.`,
+      remediation: `Revoke this ${provider} credential, rotate it, and load the replacement from an untracked environment variable instead of source.`,
+    };
+  });
 }
 
 /**
@@ -119,7 +144,7 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     regex: sharedRegex("SEC-01"),
     severity: "CRITICAL",
     confidence: "HIGH",
-    message: "Hardcoded Stripe live secret key (sk_live_) found in source.",
+    message: "Hardcoded Stripe live secret key (sk_live_/rk_live_) found in source.",
     remediation:
       "Remove this key from source control immediately, rotate it in the Stripe dashboard, and load it from an untracked environment variable (e.g. process.env.STRIPE_SECRET_KEY) instead.",
   },
@@ -141,7 +166,98 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     remediation:
       "Revoke this key in the OpenAI dashboard, rotate it, and load it from an untracked environment variable (e.g. process.env.OPENAI_API_KEY) instead.",
   },
+  {
+    ruleId: "SEC-04",
+    regex: sharedRegex("SEC-04"),
+    severity: "CRITICAL",
+    confidence: "HIGH",
+    message: "Hardcoded Supabase secret API key (sb_secret_...) found in source.",
+    remediation:
+      "Rotate this secret key in the Supabase dashboard immediately, remove it from source, and never expose it client-side — like a service_role key, it bypasses every Row Level Security policy.",
+  },
+  {
+    ruleId: "SEC-07",
+    regex: sharedRegex("SEC-07"),
+    severity: "CRITICAL",
+    confidence: "HIGH",
+    message: "Hardcoded Anthropic API key (sk-ant-...) found in source.",
+    remediation:
+      "Revoke this key in the Anthropic Console, rotate it, and load it from an untracked environment variable (e.g. process.env.ANTHROPIC_API_KEY) instead.",
+  },
+  {
+    ruleId: "SEC-08",
+    regex: sharedRegex("SEC-08"),
+    severity: "CRITICAL",
+    confidence: "HIGH",
+    message: "Private key (PEM block) committed in source — e.g. a service-account JSON, TLS, or SSH key.",
+    remediation:
+      "Delete the key from the repo and its git history, revoke it at the issuer (for a Firebase/GCP service account: IAM > Service accounts > Keys), and load the replacement from a secret manager or untracked env var.",
+  },
+  ...thirdPartyTokenPatterns(),
 ];
+
+/**
+ * Text near a Google `AIza...` key that marks it as public-by-design client
+ * config: a Firebase web config object (`authDomain`, `messagingSenderId`,
+ * `storageBucket`, `firebaseConfig`), a Maps / Places browser key, or a
+ * reCAPTCHA / YouTube embed.
+ */
+const GOOGLE_PUBLIC_CONTEXT_RE =
+  /authDomain|messagingSenderId|storageBucket|firebase|maps\.googleapis\.com|maps_?api_?key|mapsApiKey|googleMapsApiKey|places|recaptcha|youtube/i;
+
+/** Text near a Google key that marks it as a Gemini / Generative Language API key — a paid, server-side secret. */
+const GOOGLE_GENAI_CONTEXT_RE = /gemini|generativeai|genai|generativelanguage|vertex|palm|GoogleGenerativeAI/i;
+
+/** Basenames of Firebase mobile config files, whose `current_key` / `API_KEY` is public by design. */
+const FIREBASE_MOBILE_CONFIG_BASENAMES = new Set(["google-services.json", "GoogleService-Info.plist"]);
+
+/** Lines of context examined on each side of a Google key. */
+const GOOGLE_CONTEXT_LINES = 8;
+
+/**
+ * Google API keys (`AIza...`, SEC-09). The same key shape is used by
+ * Firebase web/mobile config and Maps browser keys, which are public by
+ * design and restricted in the Google Cloud console, so a key is only
+ * reported when nothing within GOOGLE_CONTEXT_LINES lines marks it as such
+ * client config (and never in google-services.json / GoogleService-Info.plist).
+ * CRITICAL when the surrounding code names Gemini / the Generative Language
+ * API (a paid server key), HIGH otherwise. Returns the claimed spans.
+ */
+function runGoogleKeyPass(
+  lines: string[],
+  index: number,
+  filePath: string,
+  detectorName: string,
+  findings: Finding[],
+): Array<[number, number]> {
+  const line = lines.at(index) ?? "";
+  const spans: Array<[number, number]> = [];
+  const basename = filePath.split("/").at(-1) ?? "";
+  for (const match of line.matchAll(sharedRegex("SEC-09", "Google"))) {
+    spans.push([match.index, match.index + match[0].length]);
+    const context = lines.slice(Math.max(0, index - GOOGLE_CONTEXT_LINES), index + GOOGLE_CONTEXT_LINES + 1).join("\n");
+    if (FIREBASE_MOBILE_CONFIG_BASENAMES.has(basename) || GOOGLE_PUBLIC_CONTEXT_RE.test(context)) {
+      continue;
+    }
+    const isGenAi = GOOGLE_GENAI_CONTEXT_RE.test(context);
+    findings.push({
+      ruleId: "SEC-09",
+      category: "secrets",
+      detectorName,
+      file: filePath,
+      line: index + 1,
+      severity: isGenAi ? "CRITICAL" : "HIGH",
+      confidence: isGenAi ? "HIGH" : "MEDIUM",
+      message: isGenAi
+        ? "Hardcoded Google Gemini API key found in source — anyone with it can run paid model calls on your account."
+        : "Hardcoded Google API key found in source (not Firebase or Maps client config) — if it is unrestricted, anyone can use it on your bill.",
+      remediation:
+        "Move the key to an untracked server-side environment variable, rotate it in the Google Cloud console, and restrict it to the APIs (and referrers/IPs) that need it.",
+      matchedText: maskSecret(match[0]),
+    });
+  }
+  return spans;
+}
 
 /** Ruleid assigned to every Supabase service_role signal (JWT decode OR env-name shortcut). */
 const SUPABASE_SERVICE_ROLE_RULE_ID = "SEC-04";
@@ -150,8 +266,27 @@ const SUPABASE_SERVICE_ROLE_RULE_ID = "SEC-04";
 const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
 
 /**
+ * Package-manager lockfiles: machine-generated, full of integrity hashes
+ * (`sha512-...`) and registry URLs whose package names routinely contain
+ * "key"/"token" — never a place a developer hand-writes a secret.
+ */
+const LOCKFILE_BASENAMES = new Set([
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "bun.lock",
+  "deno.lock",
+  "composer.lock",
+  "Gemfile.lock",
+  "Cargo.lock",
+  "poetry.lock",
+]);
+
+/**
  * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
+ * its basename marks it as a test or story file (`.test.` / `.stories.`),
+ * or it is a package-manager lockfile.
  * Mirrors the codebase's existing `.split("/")` segment-check style (see
  * src/core/ingest/stack-detector.ts `hasKeyWithPrefix`/`hasEnvFile`) rather
  * than pulling in micromatch.
@@ -162,7 +297,107 @@ function isAllowlistedPath(filePath: string): boolean {
     return true;
   }
   const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
+  return basename.includes(".test.") || basename.includes(".stories.") || LOCKFILE_BASENAMES.has(basename);
+}
+
+/**
+ * Secret-family words matched against whole identifier parts of a line
+ * (see `hasSecretKeyword`), plus the common all-lowercase compounds that
+ * do not split on a case/underscore boundary (`apikey`, `authtoken`).
+ */
+const SECRET_KEYWORD_TOKENS = new Set([
+  "secret",
+  "secrets",
+  "token",
+  "tokens",
+  "password",
+  "passwords",
+  "passwd",
+  "pwd",
+  "key",
+  "keys",
+  "apikey",
+  "accesskey",
+  "secretkey",
+  "privatekey",
+  "signingkey",
+  "masterkey",
+  "authkey",
+  "authtoken",
+  "accesstoken",
+  "refreshtoken",
+  "clientsecret",
+  "credential",
+  "credentials",
+]);
+
+/**
+ * Splits a line into lowercase identifier parts on every non-alphanumeric
+ * character, camelCase boundary, and letter/digit boundary — `apiKey`,
+ * `API_KEY`, `key0`, and `x-api-key` all yield a standalone `key` part,
+ * while `keyboard`, `monkey`, and `keyof` do not.
+ */
+function identifierParts(line: string): string[] {
+  return line
+    .split(/[^A-Za-z0-9]+/)
+    .flatMap((chunk) => chunk.split(/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])/))
+    .map((part) => part.toLowerCase());
+}
+
+/**
+ * Keyword anchor for Pass B: true when `line` contains a secret-family word
+ * as a whole identifier part (see `identifierParts`). Stricter than the
+ * shared substring-based `hasAnchorKeyword` the LLM redactor uses — over-
+ * redacting before a network call is safe, but over-REPORTING here is what
+ * drowns real findings in noise (`keyboardType`, `monkeyPatch`, `keyof`).
+ */
+function hasSecretKeyword(line: string): boolean {
+  return identifierParts(line).some((part) => SECRET_KEYWORD_TOKENS.has(part));
+}
+
+/** Subresource-Integrity hash (`sha512-...`), as found in lockfiles and `<script integrity>`. */
+const SRI_HASH_RE = /^sha(?:1|256|384|512)-/;
+
+/** A `scheme://` URL. */
+const URL_RE = /^[A-Za-z][\w+.-]*:\/\//;
+
+/** URL carrying inline `user:password@` credentials (e.g. a database connection string). */
+const URL_CREDENTIALS_RE = /:\/\/[^/\s:@]+:[^/\s@]+@/;
+
+/** URL carrying a secret-named query parameter with a non-trivial value (`?api_key=...`, `&token=...`). */
+const URL_SECRET_PARAM_RE = /[?&][\w-]*(?:key|token|secret|password|signature|sig)[\w-]*=[^&#\s]{16,}/i;
+
+/** All-lowercase characters of an npm package name, module path, or slug (paired with a separator check in `isSlug`). */
+const SLUG_CHARS_RE = /^@?[a-z0-9][a-z0-9./@_-]*$/;
+
+/** True for lowercase word segments joined by `-`/`/`/`.`/`@`/`_` — a package name, module path, or slug, not a credential. */
+function isSlug(value: string): boolean {
+  return SLUG_CHARS_RE.test(value) && /[-./@_]/.test(value.slice(1));
+}
+
+/**
+ * True when a high-entropy quoted literal is actually shaped like a
+ * credential. Real API keys/tokens are a single unbroken run of mixed
+ * letters and digits; every rejection below is a shape that clears the
+ * entropy bar on real repos without ever being a secret:
+ * - whitespace — prose, UI copy, error messages ("add a Graph API access token in Settings")
+ * - `${` — a template literal building a URL/string around a variable
+ * - an SRI integrity hash
+ * - a URL, unless it embeds credentials or a secret-named query parameter
+ * - a lowercase slug (package name, import path)
+ * - no digit, or no letter — a 40+ char random token without both is vanishingly rare
+ */
+function isPlausibleSecretValue(value: string): boolean {
+  if (/\s/.test(value) || value.includes("${") || SRI_HASH_RE.test(value)) {
+    return false;
+  }
+  if (URL_RE.test(value)) {
+    return URL_CREDENTIALS_RE.test(value) || URL_SECRET_PARAM_RE.test(value);
+  }
+  if (isSlug(value)) {
+    return false;
+  }
+  return /\d/.test(value) && /[A-Za-z]/.test(value);
 }
 
 /**
@@ -185,6 +420,48 @@ function isSafeEnvRead(line: string, matchStart: number): boolean {
 }
 
 /**
+ * Matches the text right after a `SUPABASE_SERVICE_ROLE_KEY` identifier
+ * when it is assigned a value: an optional closing quote (JSON/object key),
+ * `=` or `:`, an optional opening quote, then the value itself (group 1,
+ * stopping at whitespace, a quote, or a statement/argument separator).
+ */
+const ASSIGNED_VALUE_RE = /^['"`]?\s*[:=]\s*['"`]?([^\s'"`,;)]+)/;
+
+/** Minimum length of an assigned value for it to count as a real key rather than a stub. */
+const MIN_ASSIGNED_KEY_LENGTH = 20;
+
+/** Common placeholder values for an env var in docs / `.env.example` files. */
+const PLACEHOLDER_VALUE_RE = /^(?:your|my|<|\[|x{3,}|\.{3}|changeme|change-me|replace|example|placeholder|todo|insert|enter|redacted|dummy|test)/i;
+
+/**
+ * Returns the [start, end) span of the literal value assigned to the
+ * `SUPABASE_SERVICE_ROLE_KEY` identifier ending at `nameEnd` on `line`, or
+ * `undefined` when the identifier is not assigned a real literal — no
+ * assignment at all (a comment, docs, a type), an assignment FROM an
+ * expression (`process.env.X`, `Deno.env.get(...)`, `${{ secrets.X }}`,
+ * `z.string()`), a placeholder, or a value too short to be a key.
+ */
+function assignedLiteralSpan(line: string, nameEnd: number): [number, number] | undefined {
+  const rest = line.slice(nameEnd);
+  const match = rest.match(ASSIGNED_VALUE_RE);
+  const value = match?.[1];
+  if (match === null || value === undefined) {
+    return undefined;
+  }
+  if (
+    value.length < MIN_ASSIGNED_KEY_LENGTH ||
+    /^[$<{[]/.test(value) ||
+    value.includes("(") ||
+    /^(?:process\.env|Deno\.env|import\.meta|env\.)/.test(value) ||
+    PLACEHOLDER_VALUE_RE.test(value)
+  ) {
+    return undefined;
+  }
+  const valueStart = nameEnd + match[0].length - value.length;
+  return [valueStart, valueStart + value.length];
+}
+
+/**
  * Pass A2: Supabase service_role JWT (SEC-04). Two independent signals on
  * `line`, each pushing a Finding and claiming the matched span so Pass B
  * cannot also flag the same literal as generic high-entropy (SEC-06 dedup,
@@ -192,17 +469,19 @@ function isSafeEnvRead(line: string, matchStart: number): boolean {
  *
  * Signal (a): every JWT-shaped match on the line is base64url-decoded; only
  * matches whose payload decodes to `role: service_role` are flagged.
- * Signal (b): a bare `SUPABASE_SERVICE_ROLE_KEY` identifier reference is
- * flagged outright — this is a name-based signal, so it has no JWT body to
- * mask and reports the identifier match itself as `matchedText` — UNLESS the
- * reference is a safe env-read (`isSafeEnvRead`), in which case it is
- * skipped entirely (no finding, no claimed span).
+ * Signal (b): a `SUPABASE_SERVICE_ROLE_KEY` identifier ASSIGNED a literal
+ * value (`assignedLiteralSpan`) is flagged — this is a name-based signal,
+ * so it reports the identifier match itself as `matchedText`. A safe
+ * env-read (`isSafeEnvRead`), a bare mention, or an assignment whose value
+ * was already flagged by Pass A / signal (a) (`claimedSpans`) is skipped
+ * (no duplicate finding for the same leaked key).
  */
 function runSupabaseServiceRolePass(
   line: string,
   lineNumber: number,
   filePath: string,
   detectorName: string,
+  claimedSpans: Array<[number, number]>,
   findings: Finding[],
 ): Array<[number, number]> {
   const matchedSpans: Array<[number, number]> = [];
@@ -240,7 +519,17 @@ function runSupabaseServiceRolePass(
       continue;
     }
 
-    matchedSpans.push([start, start + matchedValue.length]);
+    const valueSpan = assignedLiteralSpan(line, start + matchedValue.length);
+    if (valueSpan === undefined) {
+      // A mention, not an assignment of a real value — not a leak.
+      continue;
+    }
+    if (overlapsAny(valueSpan[0], valueSpan[1], [...claimedSpans, ...matchedSpans])) {
+      // The assigned key itself was already reported (sb_secret_ / JWT).
+      continue;
+    }
+
+    matchedSpans.push([start, start + matchedValue.length], valueSpan);
 
     findings.push({
       ruleId: SUPABASE_SERVICE_ROLE_RULE_ID,
@@ -250,7 +539,7 @@ function runSupabaseServiceRolePass(
       line: lineNumber,
       severity: "CRITICAL",
       confidence: "HIGH",
-      message: "Reference to SUPABASE_SERVICE_ROLE_KEY found in source.",
+      message: "SUPABASE_SERVICE_ROLE_KEY is assigned a hardcoded value in source.",
       remediation:
         "Rotate this service_role key in the Supabase dashboard immediately, remove it from source, and never expose a service_role key client-side — it bypasses every Row Level Security policy.",
       matchedText: maskSecret(matchedValue),
@@ -339,7 +628,7 @@ function runEntropyPass(
     return;
   }
 
-  const lineHasAnchor = hasAnchorKeyword(line);
+  const lineHasAnchor = hasSecretKeyword(line);
   if (!lineHasAnchor) {
     // FP-management rule: a candidate with no anchoring keyword on its line
     // is never flagged, regardless of entropy.
@@ -367,6 +656,10 @@ function runEntropyPass(
     if (entropy < ENTROPY_THRESHOLD) {
       continue;
     }
+    if (!isPlausibleSecretValue(value)) {
+      // Clears the entropy bar but is prose, a URL, a hash, or a slug.
+      continue;
+    }
 
     findings.push({
       ruleId: "SEC-06",
@@ -389,7 +682,7 @@ export const secretsDetector: Detector = {
   config: {
     name: "secrets",
     category: "secrets",
-    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,json,env,txt,md}", "**/.env*"],
+    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,json,env,txt,md,py,go,yaml,yml,toml,ini,cfg,sh}", "**/.env*"],
   },
 
   // Not declared `async` — there is no network/disk wait in this text-only
@@ -418,8 +711,16 @@ export const secretsDetector: Detector = {
         const lineNumber = index + 1; // 1-indexed per src/core/types.ts Finding.line
 
         const providerSpans = runProviderPatterns(line, lineNumber, ctx.filePath, "secrets", findings);
-        const supabaseSpans = runSupabaseServiceRolePass(line, lineNumber, ctx.filePath, "secrets", findings);
-        const claimedSpans = [...providerSpans, ...supabaseSpans];
+        const supabaseSpans = runSupabaseServiceRolePass(
+          line,
+          lineNumber,
+          ctx.filePath,
+          "secrets",
+          providerSpans,
+          findings,
+        );
+        const googleSpans = runGoogleKeyPass(lines, index, ctx.filePath, "secrets", findings);
+        const claimedSpans = [...providerSpans, ...supabaseSpans, ...googleSpans];
         runEntropyPass(line, lineNumber, ctx.filePath, "secrets", claimedSpans, findings, entropyCount);
       }
 

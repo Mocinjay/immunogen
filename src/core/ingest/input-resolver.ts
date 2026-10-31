@@ -44,6 +44,18 @@ export interface ResolvedInput {
 
 const GIT_URL_PATTERN = /^(https?:\/\/|git@)/i;
 
+/** A repository URL on a well-known git host (`https://github.com/owner/repo`, optional `.git` / trailing slash). */
+const GIT_HOST_REPO_RE = /^https?:\/\/(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|codeberg\.org)\/[\w.-]+\/[\w.-]+\/?$/i;
+
+/**
+ * True when `input` is an http(s) URL that names a git repository to clone
+ * and scan — a repo page on a well-known git host, or any URL ending in
+ * `.git` — rather than a deployed website to screen live.
+ */
+export function isGitRepoUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input) && (GIT_HOST_REPO_RE.test(input) || /\.git\/?$/i.test(input));
+}
+
 /**
  * Classifies an input string into one of the three supported modes.
  * Order matters: a `.zip` suffix is checked first (an explicit, cheap

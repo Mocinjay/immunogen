@@ -4,12 +4,16 @@ immunogen screens AI-built repos for launch-blocking contaminants. Contributions
 
 ## Dev setup
 
+Requires Node.js 22+ and pnpm (`corepack enable` picks up the pinned version from `package.json`).
+
 ```sh
 pnpm i
 pnpm test
 ```
 
-Other useful scripts: `pnpm run typecheck`, `pnpm run lint`, `pnpm run build`.
+Other useful scripts: `pnpm run typecheck`, `pnpm run lint`, `pnpm run build`, and `pnpm run test:dist` (smoke-tests the built package and installed CLI; run after `build`). CI runs all of them on every push and pull request.
+
+Tests never touch the network: OSV.dev and LLM providers are stubbed at their module boundary, so the suite passes offline.
 
 ## Adding a detector
 
@@ -25,3 +29,13 @@ Every detector implements `Detector { config: DetectorConfig; detect(ctx: Detect
 ## Commits
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `test:`, etc.), scoped where helpful (e.g. `feat(detectors): add X`).
+
+## Releasing (maintainers)
+
+1. Bump `version` in `package.json` and move the `Unreleased` notes in `CHANGELOG.md` under the new version.
+2. Merge to `main`, then tag and push: `git tag v<version> && git push origin v<version>`.
+3. The `Release` workflow re-runs the checks, packs the npm tarball, and creates the GitHub Release with the tarball attached (`immunogen.tgz` always points at the latest release). If an `NPM_TOKEN` repository secret is set, it also publishes the same tarball to npm with provenance.
+
+## Security issues
+
+Report vulnerabilities in immunogen itself privately — see [SECURITY.md](./SECURITY.md).

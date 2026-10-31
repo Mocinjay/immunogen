@@ -35,6 +35,12 @@ export interface FallbackEntry {
   name: string;
   /** The fixed version — `name` versions strictly BELOW this are flagged. */
   vulnerableBelow: string;
+  /**
+   * Fixes published on older release lines (backports). A version on the
+   * same major.minor line as one of these, at or above it, is patched even
+   * though it sorts below `vulnerableBelow` (e.g. semver 5.7.2).
+   */
+  backportFixes?: readonly string[];
   /** Public advisory identifier (GHSA or CVE) for the representative vulnerability. */
   advisoryId: string;
   severity: Severity;
@@ -62,6 +68,7 @@ export const FALLBACK_VULNERABLE_NPM: readonly FallbackEntry[] = [
   {
     name: "minimist",
     vulnerableBelow: "1.2.6",
+    backportFixes: ["0.2.4"],
     advisoryId: "GHSA-xvch-5gv4-984h",
     severity: "CRITICAL",
     title: "Prototype pollution via constructor/proto keys",
@@ -83,6 +90,7 @@ export const FALLBACK_VULNERABLE_NPM: readonly FallbackEntry[] = [
   {
     name: "semver",
     vulnerableBelow: "7.5.2",
+    backportFixes: ["6.3.1", "5.7.2"],
     advisoryId: "GHSA-c2qf-rxjj-qqgw",
     severity: "HIGH",
     title: "Regular expression denial of service in range parsing",
@@ -90,6 +98,7 @@ export const FALLBACK_VULNERABLE_NPM: readonly FallbackEntry[] = [
   {
     name: "ws",
     vulnerableBelow: "8.17.1",
+    backportFixes: ["7.5.10", "6.2.3", "5.2.4"],
     advisoryId: "GHSA-3h5v-q93c-6h6q",
     severity: "HIGH",
     title: "Denial of service via excessive number of HTTP headers",
@@ -97,6 +106,7 @@ export const FALLBACK_VULNERABLE_NPM: readonly FallbackEntry[] = [
   {
     name: "qs",
     vulnerableBelow: "6.10.3",
+    backportFixes: ["6.9.7", "6.8.3", "6.7.3", "6.6.1", "6.5.3", "6.4.1", "6.3.3", "6.2.4"],
     advisoryId: "GHSA-hrpp-h998-j3pp",
     severity: "MEDIUM",
     title: "Prototype pollution via crafted query string",
@@ -104,6 +114,7 @@ export const FALLBACK_VULNERABLE_NPM: readonly FallbackEntry[] = [
   {
     name: "json5",
     vulnerableBelow: "2.2.2",
+    backportFixes: ["1.0.2"],
     advisoryId: "GHSA-9c47-m6qq-7p4h",
     severity: "HIGH",
     title: "Prototype pollution in JSON5.parse",
@@ -111,6 +122,7 @@ export const FALLBACK_VULNERABLE_NPM: readonly FallbackEntry[] = [
   {
     name: "ansi-regex",
     vulnerableBelow: "5.0.1",
+    backportFixes: ["4.1.1", "3.0.1"],
     advisoryId: "GHSA-93q8-gq69-wqmw",
     severity: "MEDIUM",
     title: "Regular expression denial of service",
@@ -223,6 +235,7 @@ export const FALLBACK_VULNERABLE_NPM: readonly FallbackEntry[] = [
   {
     name: "vite",
     vulnerableBelow: "5.0.13",
+    backportFixes: ["4.5.2", "3.2.8", "2.9.17"],
     advisoryId: "GHSA-9cwx-2883-4wfx",
     severity: "MEDIUM",
     title: "Arbitrary file read via dev server fs.deny bypass",
@@ -288,14 +301,28 @@ function compareVersionParts(a: [number, number, number], b: [number, number, nu
   return aPatch - bPatch;
 }
 
+/** True when `version` sits on the major.minor line of one of `backportFixes`, at or above that backported fix. */
+function isPatchedBackport(version: [number, number, number], backportFixes: readonly string[]): boolean {
+  const [major, minor] = version;
+  return backportFixes.some((fix) => {
+    const parsedFix = parseVersionParts(fix);
+    return (
+      parsedFix !== undefined &&
+      parsedFix[0] === major &&
+      parsedFix[1] === minor &&
+      compareVersionParts(version, parsedFix) >= 0
+    );
+  });
+}
+
 /**
  * Looks up `name`@`version` against the bundled `FALLBACK_VULNERABLE_NPM`
  * list. Returns the matching advisory fields when `version` parses to
  * exactly three numeric parts AND is strictly below that entry's
- * `vulnerableBelow` floor; returns `undefined` for an unlisted package, a
- * version at/above the fix, or any version string that cannot be parsed
- * (malformed, a true range, "latest", etc. — see module header). Never
- * throws.
+ * `vulnerableBelow` floor (and is not a patched backport release); returns
+ * `undefined` for an unlisted package, a version at/above the fix, or any
+ * version string that cannot be parsed (malformed, a true range, "latest",
+ * etc. — see module header). Never throws.
  */
 export function checkFallback(
   name: string,
@@ -321,6 +348,10 @@ export function checkFallback(
   }
 
   if (compareVersionParts(parsedVersion, parsedFloor) >= 0) {
+    return undefined;
+  }
+
+  if (isPatchedBackport(parsedVersion, entry.backportFixes ?? [])) {
     return undefined;
   }
 

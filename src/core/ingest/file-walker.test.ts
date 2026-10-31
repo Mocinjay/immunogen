@@ -1,3 +1,5 @@
+import { simpleGit } from "simple-git";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { walkFiles } from "./file-walker.js";
@@ -71,24 +73,95 @@ describe("walkFiles — .gitignore filtering", () => {
     expect(result.has("secret-notes.txt")).toBe(false);
   });
 
-  it("preserves .env even though .gitignore lists it (criterion-3 load-bearing case)", async () => {
+  it("drops a gitignored .env outside a git repo (local config, never committed)", async () => {
     const tree = await buildFixtureTree();
 
     const { fileSet: result } = await walkFiles(tree.root);
 
+    expect(result.has(".env")).toBe(false);
+  });
+
+  it("keeps a .env that .gitignore does not cover (it would be committed)", async () => {
+    const tree = await buildFixtureTree();
+
+    const { fileSet: result } = await walkFiles(tree.root);
+
+    expect(result.get(".env.local")).toBe("LOCAL_KEY=alsosecret");
+  });
+
+  it("honors glob and anchored .gitignore patterns for env files (.env*.local, /.env)", async () => {
+    const tree = await makeRepoTree({
+      ".gitignore": ".env*.local\n/.env\n",
+      ".env": "A=1",
+      ".env.local": "B=2",
+      ".env.production.local": "C=3",
+      ".env.production": "D=4",
+      "apps/web/.env": "E=5",
+    });
+    trees.push(tree);
+
+    const { fileSet: result } = await walkFiles(tree.root);
+
+    expect(result.has(".env")).toBe(false);
+    expect(result.has(".env.local")).toBe(false);
+    expect(result.has(".env.production.local")).toBe(false);
+    expect(result.has(".env.production")).toBe(true);
+    // `/.env` is anchored to the root, so a nested .env is still committable.
+    expect(result.has("apps/web/.env")).toBe(true);
+  });
+
+  it("applies a nested .gitignore relative to its own directory", async () => {
+    const tree = await makeRepoTree({
+      "app/.gitignore": ".env\nbuild-cache/\n",
+      "app/.env": "A=1",
+      "app/build-cache/x.js": "x",
+      "app/src/index.ts": "export {};",
+      "other/.env": "B=2",
+    });
+    trees.push(tree);
+
+    const { fileSet: result } = await walkFiles(tree.root);
+
+    expect(result.has("app/.env")).toBe(false);
+    expect(result.has("app/build-cache/x.js")).toBe(false);
+    expect(result.has("app/src/index.ts")).toBe(true);
+    expect(result.has("other/.env")).toBe(true);
+  });
+});
+
+describe("walkFiles — git-tracked env files", () => {
+  it("keeps a .env that git TRACKS even though .gitignore lists it (committed, then ignored)", async () => {
+    const tree = await makeRepoTree({ ".gitignore": ".env\n.env.local\n", ".env": "A=1", ".env.local": "B=2" });
+    trees.push(tree);
+    const git = simpleGit(tree.root);
+    await git.init();
+    await git.add(["-f", ".env"]);
+
+    const { fileSet: result } = await walkFiles(tree.root);
+
     expect(result.has(".env")).toBe(true);
-    expect(result.get(".env")).toBe("API_KEY=supersecret");
+    expect(result.has(".env.local")).toBe(false);
+  });
+
+  it("resolves tracked paths relative to a scanned subdirectory of the repo", async () => {
+    const tree = await makeRepoTree({ "app/.gitignore": ".env\n", "app/.env": "A=1", "app/index.ts": "export {};" });
+    trees.push(tree);
+    const git = simpleGit(tree.root);
+    await git.init();
+    await git.add(["-f", "app/.env"]);
+
+    const { fileSet: result } = await walkFiles(join(tree.root, "app"));
+
+    expect(result.has(".env")).toBe(true);
   });
 });
 
 describe("walkFiles — always-preserve allowlist", () => {
-  it("keeps .env, .env.local, .mcp.json, .cursor/rules, and .claude/skills/s.md", async () => {
+  it("keeps .mcp.json, .cursor/rules, and .claude/skills/s.md", async () => {
     const tree = await buildFixtureTree();
 
     const { fileSet: result } = await walkFiles(tree.root);
 
-    expect(result.has(".env")).toBe(true);
-    expect(result.has(".env.local")).toBe(true);
     expect(result.has(".mcp.json")).toBe(true);
     expect(result.has(".cursor/rules")).toBe(true);
     expect(result.has(".claude/skills/s.md")).toBe(true);
@@ -217,5 +290,38 @@ describe("walkFiles — output shape", () => {
     const { fileSet: result } = await walkFiles(tree.root);
 
     expect(result.size).toBe(0);
+  });
+});
+
+describe("walkFiles — .immunogenignore", () => {
+  it("excludes paths listed in a root .immunogenignore, unless noIgnore is set", async () => {
+    const tree = await makeRepoTree({
+      ".immunogenignore": "seed/\n*.generated.ts\n",
+      "seed/users.json": "[]",
+      "src/api.generated.ts": "export {};",
+      "src/index.ts": "export {};",
+    });
+    trees.push(tree);
+
+    const { fileSet: honored } = await walkFiles(tree.root);
+    const { fileSet: overridden } = await walkFiles(tree.root, { noIgnore: true });
+
+    expect([...honored.keys()].sort()).toEqual([".immunogenignore", "src/index.ts"]);
+    expect(overridden.has("seed/users.json")).toBe(true);
+    expect(overridden.has("src/api.generated.ts")).toBe(true);
+  });
+});
+
+describe("walkFiles — lockfile size cap", () => {
+  it("reads a lockfile larger than the default per-file cap, but not other large files", async () => {
+    const big = `{"lockfileVersion":3,"packages":{${'"node_modules/x":{"version":"1.0.0"},'.repeat(20_000)}"":{}}}`;
+    const tree = await makeRepoTree({ "package-lock.json": big, "data.json": big });
+    trees.push(tree);
+
+    const { fileSet: result } = await walkFiles(tree.root);
+
+    expect(big.length).toBeGreaterThan(512 * 1024);
+    expect(result.has("package-lock.json")).toBe(true);
+    expect(result.has("data.json")).toBe(false);
   });
 });

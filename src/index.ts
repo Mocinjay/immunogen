@@ -46,6 +46,7 @@ import { runDetectors } from "./detectors/registry.js";
 import { NoopAdapter } from "./llm/adapters/index.js";
 import { enrichFindings } from "./llm/enricher.js";
 import { selectAdapter } from "./llm/provider.js";
+import { isGitRepoUrl } from "./core/ingest/input-resolver.js";
 import { isUrl } from "./web/url-resolver.js";
 import { scanUrl } from "./web/scan-url.js";
 
@@ -82,7 +83,10 @@ import type { ScanOptions, ScanResult } from "./core/types.js";
  * the CLI layer only.
  *
  * URL routing (Pass 2): when `isUrl(path)` is true — i.e. `path` begins with
- * `http://` or `https://` — this function delegates entirely to
+ * `http://` or `https://` — and the URL does not name a git repository
+ * (`isGitRepoUrl`: a github.com / gitlab.com / bitbucket.org / codeberg.org
+ * repo URL, or any `.git` URL, which is cloned and scanned statically like a
+ * local directory), this function delegates entirely to
  * `scanUrl(path, options)` (src/web/scan-url.ts) instead of running the
  * static ingest/detect/score/enrich pipeline below. `scanUrl` returns the
  * same `ScanResult` shape but is a fully separate, deterministic pipeline
@@ -94,7 +98,7 @@ export async function scan(
   path: string,
   options?: ScanOptions,
 ): Promise<ScanResult> {
-  if (isUrl(path)) {
+  if (isUrl(path) && !isGitRepoUrl(path)) {
     return scanUrl(path, options ?? {});
   }
 

@@ -62,8 +62,14 @@ describe("runDetectors — fan-out and aggregation", () => {
       "legal",
       "firebase-rules",
       "supabase",
+      "supabase-rls",
       "route-auth",
+      "server-route-auth",
+      "py-go-route-auth",
       "xss",
+      "dangerous-code",
+      "py-go-code",
+      "rate-limit",
       "osv",
       "prompt-injection",
       "exfiltration",
@@ -200,5 +206,70 @@ describe("matchesGlob", () => {
 
   it("returns false when no glob in the list matches", () => {
     expect(matchesGlob("image.png", ["**/*.ts", "**/*.js"])).toBe(false);
+  });
+});
+
+describe("runDetectors — inline immunogen-ignore suppression", () => {
+  const flagEveryLine: Detector = {
+    config: { name: "every-line", category: "secrets", globs: ["**/*"] },
+    detect(ctx) {
+      return Promise.resolve(
+        ctx.content.split("\n").map((_, index) => ({
+          ruleId: index % 2 === 0 ? "SEC-06" : "AUTH-01",
+          category: "secrets" as const,
+          detectorName: "every-line",
+          file: ctx.filePath,
+          line: index + 1,
+          severity: "HIGH" as const,
+          confidence: "HIGH" as const,
+          message: "m",
+          remediation: "r",
+        })),
+      );
+    },
+  };
+
+  function makeScanContext(content: string, noIgnore = false): ScanContext {
+    return {
+      rootPath: "/repo",
+      fileSet: new Map([["src/a.ts", content]]),
+      astCache: new Map(),
+      stackHints: {
+        frameworks: new Set(),
+        hasSupabase: false,
+        hasFirebase: false,
+        hasStripe: false,
+        hasEnvFiles: false,
+        hasMcpJson: false,
+        hasClaudeSkills: false,
+        hasCursorRules: false,
+      },
+      options: noIgnore ? { noIgnore: true } : {},
+      diagnostics: [],
+    };
+  }
+
+  it("suppresses findings on the marker's own line and the line below it", async () => {
+    const content = ["a // immunogen-ignore", "b", "c", "d"].join("\n");
+
+    const findings = await runDetectors(makeScanContext(content), [flagEveryLine]);
+
+    expect(findings.map((finding) => finding.line).sort()).toEqual([3, 4]);
+  });
+
+  it("only suppresses the listed rule ids when ids are given", async () => {
+    const content = ["// immunogen-ignore AUTH-01", "x", "// immunogen-ignore SEC-06, AUTH-01", "y"].join("\n");
+
+    const findings = await runDetectors(makeScanContext(content), [flagEveryLine]);
+
+    // line 1 (SEC-06) is not listed on its own marker; line 2 (AUTH-01) is
+    // covered by the marker above; lines 3-4 are covered by both ids.
+    expect(findings.map((finding) => `${finding.ruleId}@${String(finding.line)}`)).toEqual(["SEC-06@1"]);
+  });
+
+  it("keeps everything with noIgnore", async () => {
+    const content = ["a // immunogen-ignore", "b"].join("\n");
+
+    expect(await runDetectors(makeScanContext(content, true), [flagEveryLine])).toHaveLength(2);
   });
 });

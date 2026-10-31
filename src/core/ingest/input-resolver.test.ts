@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, afterEach } from "vitest";
 
-import { resolveInput } from "./input-resolver.js";
+import { isGitRepoUrl, resolveInput } from "./input-resolver.js";
 import { writeZipFile } from "../../../tests/helpers/make-zip.js";
 
 const cleanupPaths: string[] = [];
@@ -198,5 +198,28 @@ describe("resolveInput — git URL classification", () => {
     const result = resolveInput("git@example.invalid:nonexistent/repo.git");
 
     await expect(result).rejects.toThrow();
+  });
+});
+
+describe("isGitRepoUrl", () => {
+  it.each([
+    "https://github.com/Mocinjay/immunogen",
+    "https://github.com/Mocinjay/immunogen.git",
+    "https://github.com/Mocinjay/immunogen/",
+    "https://gitlab.com/group/project",
+    "https://bitbucket.org/team/repo",
+    "https://git.example.com/team/repo.git",
+  ])("treats %s as a repository to clone", (url) => {
+    expect(isGitRepoUrl(url)).toBe(true);
+  });
+
+  it.each([
+    "https://myapp.com",
+    "https://github.com",
+    "https://github.com/Mocinjay",
+    "https://github.com/Mocinjay/immunogen/blob/main/README.md",
+    "./local/dir",
+  ])("does NOT treat %s as a repository URL", (url) => {
+    expect(isGitRepoUrl(url)).toBe(false);
   });
 });

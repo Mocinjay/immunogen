@@ -54,7 +54,7 @@ import { fileURLToPath } from "node:url";
  *    on-disk path, so this covers both).
  * 2. the bare specifier `immunogen` — the case where this skill folder was
  *    copied standalone and immunogen is installed as an ordinary package
- *    (`npm i immunogen` / a future npm publish), resolved via Node's normal
+ *    (`npm i <release tarball URL>` / a future npm publish), resolved via Node's normal
  *    module resolution from this file's location.
  *
  * If neither resolves, throws ONE clear, actionable error rather than
@@ -74,7 +74,8 @@ async function loadScan() {
     throw new Error(
       "immunogen: could not find a built or installed immunogen. " +
         "Run this skill from inside the immunogen repo after `pnpm build`, " +
-        "or install the package (`npm i immunogen`).",
+        "or install the package " +
+        "(`npm i https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz`).",
     );
   }
 }
@@ -162,8 +163,9 @@ export async function runScanSkill(target, options = {}) {
 /**
  * Parses `process.argv.slice(2)` for the CLI entry guard below: the first
  * non-flag argument is the scan target (a local path OR an `http(s)://`
- * URL), defaulting to `.` when omitted. `--authorize` and `--allow-private`
- * map to `options.authorize`/`options.allowPrivate` (only set when present,
+ * URL), defaulting to `.` when omitted. `--authorize`, `--allow-private`, and
+ * `--offline` map to `options.authorize`/`options.allowPrivate`/
+ * `options.offline` (only set when present,
  * mirroring bin/immunogen.ts's own conditional-inclusion pattern). Any other
  * flag-shaped argument (starting with `-`) is ignored rather than
  * mis-parsed as the target.
@@ -177,6 +179,8 @@ function parseArgs(argv) {
       options.authorize = true;
     } else if (arg === "--allow-private") {
       options.allowPrivate = true;
+    } else if (arg === "--offline") {
+      options.offline = true;
     } else if (!arg.startsWith("-") && target === undefined) {
       target = arg;
     }

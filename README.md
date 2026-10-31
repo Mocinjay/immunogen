@@ -4,7 +4,7 @@
 
 **Your AI agent shipped the code. immunogen makes sure it didn't ship an infection.**
 
-[![npm version](https://img.shields.io/npm/v/immunogen.svg)](https://www.npmjs.com/package/immunogen)
+[![Latest release](https://img.shields.io/github/v/release/Mocinjay/immunogen)](https://github.com/Mocinjay/immunogen/releases/latest)
 [![CI](https://github.com/Mocinjay/immunogen/actions/workflows/ci.yml/badge.svg)](https://github.com/Mocinjay/immunogen/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node >=22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
@@ -15,15 +15,42 @@
 
 </div>
 
-A clean bill of health for AI-built apps, before you ship. immunogen is a static, offline-first screen for repos built with Cursor, Claude Code, Lovable, Bolt, v0, or Replit — it never executes your code, reads it once, and returns a 0–100 **Ship Score** across 11 categories, including the AI layer itself (skills, MCP servers, agent/system prompts) — a surface most scanners skip entirely.
+A clean bill of health for AI-built apps, before you ship. immunogen is a static, offline-first screen for repos built with Cursor, Claude Code, Lovable, Bolt, v0, or Replit — JavaScript/TypeScript, Python, and Go — it never executes your code, reads it once, and returns a 0–100 **Ship Score** across 12 categories, including the AI layer itself (skills, MCP servers, agent/system prompts) — a surface most scanners skip entirely.
 
 ## Quickstart
 
+Requires Node.js 22 or newer. Install the latest release from GitHub:
+
 ```sh
-npx immunogen
+npm install -g https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz
 ```
 
-Run it in your project directory — it scans the current folder, fully offline, no API key required, and prints a terminal report with a Ship Score. Point it elsewhere with `npx immunogen ./path/to/app`.
+Then run it in your project directory:
+
+```sh
+immunogen
+```
+
+It scans the current folder, no API key required, and prints a terminal report with a Ship Score. Point it elsewhere with `immunogen ./path/to/app`. The only network call it ever makes is a dependency-vulnerability lookup against OSV.dev (package names + versions only); add `--offline` to skip that too.
+
+One-off run without a global install:
+
+```sh
+npx --yes --package=https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz immunogen
+```
+
+Per-project (CI gate / library use):
+
+```sh
+npm install --save-dev https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz
+```
+
+Or run it in Docker with no Node toolchain at all:
+
+```sh
+docker build -t immunogen https://github.com/Mocinjay/immunogen.git
+docker run --rm -v "$PWD:/app" immunogen /app
+```
 
 ## Sample output
 
@@ -33,17 +60,17 @@ Run against a deliberately contaminated fixture app:
 GRADE: F — Critical
 Ship Score: 0/100 — High risk
 Verdict: blocked
-Critical: 17  High: 34
+Critical: 13  High: 6
 
   CRITICAL SEC-05 .env:1
     Committed environment file (.env) found in the scanned tree. [confidence: HIGH]
 
   CRITICAL SEC-01 .env:2
-    Hardcoded Stripe live secret key (sk_live_) found in source. [confidence: HIGH]
+    Hardcoded Stripe live secret key (sk_live_/rk_live_) found in source. [confidence: HIGH]
     matched: sk_l****
 
   CRITICAL SEC-04 .env:3
-    Reference to SUPABASE_SERVICE_ROLE_KEY found in source. [confidence: HIGH]
+    SUPABASE_SERVICE_ROLE_KEY is assigned a hardcoded value in source. [confidence: HIGH]
     matched: SUPA****
 
   CRITICAL PAY-01 app/api/stripe/webhook/route.ts:3
@@ -53,13 +80,9 @@ Critical: 17  High: 34
     Exported Next.js route handler POST has no authentication or authorization check. [confidence: MEDIUM]
     matched: POST
 
-  CRITICAL AUTH-01 app/api/users/route.ts:5
-    Exported Next.js route handler GET has no authentication or authorization check. [confidence: MEDIUM]
-    matched: GET
-
-  CRITICAL AUTH-01 app/debug/route.ts:5
-    Exported Next.js route handler GET has no authentication or authorization check. [confidence: MEDIUM]
-    matched: GET
+  CRITICAL AUTH-02 firestore.rules:5
+    Firebase rule grants public read/write access (allow ...: if true). [confidence: HIGH]
+    matched: allow read, write: if true;
 ```
 
 🔴 **Contaminated — quarantine before shipping.** Every hit above is a detected contaminant with a `ruleId` and exact `file:line` — secrets are redacted, never printed in full.
@@ -104,40 +127,55 @@ immunogen isn't the only scanner for AI-built apps — but it's the only one tha
 
 ## What it screens for
 
-11 categories and 17 detectors on a repo scan — plus a 12th category of 5 web-probe detectors when you screen a live URL — the launch-blocking problems coding agents quietly ship.
+12 categories and 23 detectors on a repo scan (JavaScript/TypeScript, Python, Go) — plus 5 web-probe detectors when you screen a live URL — the launch-blocking problems coding agents quietly ship.
 
 | Category | What it catches |
 |---|---|
-| Secrets | Hardcoded provider keys (Stripe, AWS, OpenAI), committed `.env` files, high-entropy tokens |
-| Client-bundle exposure | Secret-named env vars leaking into the browser via `NEXT_PUBLIC_`/`VITE_` prefixes |
-| Auth & RLS | Unauthenticated route handlers, open Firebase rules, missing Supabase row-level security |
-| Payment safety | Stripe webhook handlers that skip signature verification |
-| Dependencies (OSV) | Known CVEs in direct dependencies via the OSV.dev batch API, with offline fallback |
-| Injection / XSS | Unsanitized `dangerouslySetInnerHTML` |
-| CORS & headers | Wildcard CORS with credentials, missing Content-Security-Policy |
+| Secrets | Hardcoded provider keys (Stripe, AWS, OpenAI incl. `sk-proj-`, Anthropic, Gemini / Google `AIza` keys outside Firebase/Maps client config, Supabase `service_role`/`sb_secret_`, GitHub, Slack, SendGrid, Resend, Groq, xAI, Hugging Face, Replicate, npm), committed private keys / service-account JSON, committed `.env` files (git-tracked, or not covered by any `.gitignore`), high-entropy tokens (prose, URLs, hashes, and lockfiles are ignored) |
+| Client-bundle exposure | Secret-named env vars inlined into the client via `NEXT_PUBLIC_`/`VITE_`/`EXPO_PUBLIC_`/`REACT_APP_`/`NUXT_PUBLIC_`/`GATSBY_` (public-by-design keys like the Supabase anon key are not flagged), LLM SDKs run in the browser with `dangerouslyAllowBrowser` |
+| Auth & RLS | Unauthenticated routes — Next.js App Router handlers, Pages Router API routes, Server Actions, Express/Fastify/Hono/Koa, FastAPI/Flask, Go (Gin/Echo/Chi/Fiber/net/http); Supabase tables created without RLS and `using (true)` write policies (read from your migrations); open Firebase rules incl. test-mode and signed-in-only wildcards; JWTs decoded without verification; auth tokens stored in `localStorage` |
+| Abuse / rate limiting | AI endpoints that call a paid LLM API and login/sign-up/password-reset endpoints with no rate limiting |
+| Payment safety | Stripe webhook handlers that skip signature verification, charge amounts taken from the request (JS, Python, Go) |
+| Dependencies (OSV) | Known vulnerabilities in every resolved package — direct and transitive, read from `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` / `bun.lock` / `poetry.lock` / `uv.lock` / `Pipfile.lock`, or from `package.json` / `requirements.txt` / `pyproject.toml` / `go.mod` when there is no lockfile — rated by each advisory's real severity (GitHub rating or CVSS v3 score), with an offline fallback |
+| Injection / XSS | Unsanitized `dangerouslySetInnerHTML`; SQL built by interpolation (`$queryRawUnsafe`, `` .query(`... ${x}`) ``, Python f-string `execute`, Go `Sprintf` queries); `eval` / `exec` / shell commands / unsafe YAML or pickle on dynamic input; server-side request forgery (fetching a URL taken from the request); open redirects |
+| CORS & headers | Wildcard CORS with credentials, any-origin-with-credentials setups (`cors({ origin: true, credentials: true })`, FastAPI/flask-cors, Go cors packages, reflected origins), missing Content-Security-Policy |
 | Storage | Public Firebase/Firestore/Storage rules, unpoliced Supabase buckets |
 | Legal | Missing privacy-policy / terms surface when the app collects user data |
-| Config / debug | Full `process.env` dumps to logs or debug endpoints |
+| Config / debug | Full environment dumps (`process.env`, `os.environ`, `os.Environ()`) to logs or HTTP responses |
 | ⭐ AI layer | Prompt-injection strings, data-exfiltration patterns, and MCP tool-poisoning/least-privilege gaps in skills, rules, and agent prompts — a layer most scanners skip |
 
 ## Architecture
 
 ```
-repo → ingest (walk + AST cache) → detectors (17, 11 categories) → Ship Score → reporters (terminal · json · sarif)
+repo → ingest (walk + AST cache) → detectors (23, 12 categories) → Ship Score → reporters (terminal · json · sarif)
 ```
 
 ## CLI usage
 
 ```sh
-immunogen <path> [--format terminal|json|sarif] [--no-llm] [--authorize] [--allow-private]
+immunogen [path] [--format terminal|json|sarif] [--offline] [--no-ignore] [--no-llm] [--authorize] [--allow-private]
 ```
 
-- `<path>` — path to the repository to scan, or a live `https://`/`http://` URL to screen.
+- `[path]` — path to the repository to scan (default: the current directory), a git repo URL to clone and scan (`https://github.com/owner/repo`, GitLab, Bitbucket, Codeberg, or any `.git` URL), or a live `https://`/`http://` URL to screen.
 - `--format terminal|json|sarif` — output format (default `terminal`). `json` is a stable machine-readable `ScanResult`; `sarif` is for GitHub code scanning / other SARIF-aware tooling.
+- `--offline` — never touch the network: skip the OSV.dev lookup and check dependencies against the bundled offline advisory list only (the report notes the dependency check is incomplete).
+- `--no-ignore` — disregard `.immunogenignore` and inline `immunogen-ignore` comments (see [Suppressing findings](#suppressing-findings)) — use it when auditing a repo you do not control.
 - `--no-llm` — disable LLM fix-prompt enrichment. This is already the default; the flag exists for explicitness in scripts/CI.
 - `--authorize` — required consent gate to screen a live URL target (see [Screen a live URL](#screen-a-live-url)). Has no effect when `<path>` is a local repo.
 - `--allow-private` — escape hatch letting live-URL screening target a loopback/private/link-local host (local dev/test only).
+- `-v, --version` — print the installed version.
 - **Exit code:** `1` when the verdict is `blocked` (contaminated), `0` when `pass` (cleared), `2` when the scan could not run at all (bad path, missing `--authorize`, refused private host, ...) — drop it straight into a CI gate.
+
+### Suppressing findings
+
+Accept a reviewed finding with a comment on its line or the line above it — bare to cover every rule there, or with the rule ids to cover just those:
+
+```ts
+// immunogen-ignore AUTH-01 — public newsletter signup, rate-limited upstream
+export async function POST(req: Request) { /* ... */ }
+```
+
+Exclude whole paths (vendored code, seed data) with a `.immunogenignore` file at the scan root, in `.gitignore` syntax. Route handlers can also be marked with a `// public` comment.
 
 ### Library usage
 
@@ -199,7 +237,7 @@ is enforced by a test), so the grade, Ship Score, and findings match the CLI.
 **Install it:**
 
 ```sh
-# 1. get immunogen and build it (until it's on npm)
+# 1. get immunogen and build it
 git clone https://github.com/Mocinjay/immunogen.git
 cd immunogen && pnpm install && pnpm build
 
@@ -210,37 +248,56 @@ ln -s "$PWD/.claude/skills/immunogen" ~/.claude/skills/immunogen
 
 The wrapper resolves the built library automatically — from the repo when the
 skill lives inside it (a symlink follows the real path), or from an installed
-`immunogen` package once you `npm i immunogen`. Live-URL screening stays
+`immunogen` package (see [Quickstart](#quickstart)). Live-URL screening stays
 consent-gated: a URL without `--authorize` is refused before any request is
 made.
 
 ## CI gate example
 
-Screen every push and upload results as a GitHub code-scanning alert:
+Screen every push and upload results as GitHub code-scanning alerts:
 
 ```yaml
-- name: Screen with immunogen
-  run: npx immunogen . --format sarif > results.sarif
+name: immunogen
 
-- name: Upload SARIF
-  uses: github/codeql-action/upload-sarif@v3
-  with:
-    sarif_file: results.sarif
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Screen with immunogen
+        run: npx --yes --package=https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz immunogen . --format sarif > results.sarif
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
 ```
 
-A `blocked` verdict fails the step; a `pass` verdict clears it — the repo's exit code is the gate.
+A `blocked` verdict fails the step; a `pass` verdict clears it — the exit code is the gate. `if: always()` makes sure the findings still reach the Security tab when the gate fails.
 
 ## Roadmap
 
-Planned for v2: Python/Go detector coverage, and deeper detectors (transitive lockfile traversal, slopsquatting/hallucinated-package detection, JWT storage checks, SQL injection detection). Live-URL screening shipped in v2 (see [Screen a live URL](#screen-a-live-url)).
+Planned: Django and Rails route coverage, slopsquatting / hallucinated-package detection, and cross-file data-flow for injection rules. Shipped since v1: live-URL screening (see [Screen a live URL](#screen-a-live-url)), Python and Go support, lockfile (transitive) dependency checks with real advisory severity, SSRF / open-redirect / rate-limit / token-storage rules.
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, how to add a detector, and commit conventions.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, how to add a detector, and commit conventions. Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
-## Install name
+## Security
 
-`immunogen` may already be taken on npm — if so, this package publishes under `@<scope>/immunogen` instead, with an identical CLI and library API.
+Found a vulnerability in immunogen itself (not in a repo you scanned)? Please report it privately — see [SECURITY.md](./SECURITY.md).
 
 ## License
 

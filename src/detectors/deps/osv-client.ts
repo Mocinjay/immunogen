@@ -2,7 +2,9 @@
  * osv-client — OSV.dev batch vulnerability query client (DEP-01).
  *
  * `queryOsvBatch` is the ONLY function in this codebase that POSTs to
- * OSV.dev (api.osv.dev/v1/querybatch). It exists as its own module
+ * OSV.dev (api.osv.dev/v1/querybatch); `fetchVulnSeverities` GETs the full
+ * record of advisories that query already returned (public advisory ids
+ * only) to rate them. Both live in their own module
  * specifically so `osv-detector.ts`'s tests can stub it at the module
  * boundary (`vi.mock("./osv-client.js", ...)`) rather than reaching for
  * global fetch directly — per the plan's pattern_analog note.
@@ -39,16 +41,22 @@
  * implement).
  */
 
+import { severityFromOsvRecord } from "./osv-severity.js";
+
+import type { Severity } from "../../core/types.js";
+
 /** 10-second hard timeout for the entire OSV.dev round trip (ARCHITECTURE.md Pattern 2). */
 const OSV_TIMEOUT_MS = 10_000;
 
 /** OSV.dev batch query endpoint — no API key required (ARCHITECTURE.md "Integration Points"). */
 const OSV_QUERYBATCH_URL = "https://api.osv.dev/v1/querybatch";
 
-/** A single dependency to check, reduced to the only two fields ever sent over the network. */
+/** A single dependency to check, reduced to the only fields ever sent over the network. */
 export interface OsvQuery {
   name: string;
   version: string;
+  /** OSV ecosystem; defaults to npm. */
+  ecosystem?: "npm" | "PyPI" | "Go";
 }
 
 /** A single OSV.dev vulnerability record, narrowed to the `id` field this detector consumes. */
@@ -80,7 +88,7 @@ const sessionCache = new Map<string, OsvResult>();
 
 /** Builds the stable `name@version` cache key for a single query. */
 function cacheKey(query: OsvQuery): string {
-  return `${query.name}@${query.version}`;
+  return `${query.ecosystem ?? "npm"}:${query.name}@${query.version}`;
 }
 
 /**
@@ -111,6 +119,70 @@ function narrowOsvResults(parsed: unknown): OsvResult[] | undefined {
   });
 }
 
+/** OSV.dev accepts at most this many queries per querybatch request. */
+const OSV_MAX_BATCH = 1000;
+
+/**
+ * POSTs one querybatch request (at most OSV_MAX_BATCH queries) and stores
+ * each aligned result in the session cache. Throws OsvUnavailableError on
+ * any failure (see `queryOsvBatch`).
+ */
+async function queryOsvChunk(uncachedQueries: OsvQuery[]): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, OSV_TIMEOUT_MS);
+
+  try {
+    const body = JSON.stringify({
+      queries: uncachedQueries.map((query) => ({
+        package: { name: query.name, ecosystem: query.ecosystem ?? "npm" },
+        version: query.version,
+      })),
+    });
+
+    const response = await fetch(OSV_QUERYBATCH_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new OsvUnavailableError(`OSV.dev responded with HTTP ${String(response.status)}`);
+    }
+
+    const parsedBody: unknown = await response.json();
+    const resultsObject = parsedBody as { results?: unknown };
+    const results = narrowOsvResults(resultsObject.results);
+    if (results === undefined || results.length !== uncachedQueries.length) {
+      throw new OsvUnavailableError("OSV.dev returned a response in an unexpected shape");
+    }
+
+    // Zips `uncachedQueries` with `results` into pairs up front (both
+    // arrays were just verified to have equal length above), then
+    // iterates the pairs directly — avoids indexing into `results` by a
+    // loop counter entirely, sidestepping security/detect-object-injection
+    // rather than just asserting the index is safe.
+    const pairs: Array<[OsvQuery, OsvResult]> = uncachedQueries.map((query, index) => [
+      query,
+      results.at(index) ?? {},
+    ]);
+    for (const [query, result] of pairs) {
+      sessionCache.set(cacheKey(query), result);
+    }
+  } catch (error) {
+    if (error instanceof OsvUnavailableError) {
+      throw error;
+    }
+    throw new OsvUnavailableError("OSV.dev query failed (network error, timeout, or malformed response)", {
+      cause: error,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 /**
  * POSTs `queries` to OSV.dev's batch endpoint and returns the aligned
  * `OsvResult[]` (one entry per input query, same order). Queries already
@@ -130,63 +202,77 @@ function narrowOsvResults(parsed: unknown): OsvResult[] | undefined {
  * returns a placeholder/empty result on failure.
  */
 export async function queryOsvBatch(queries: OsvQuery[]): Promise<OsvResult[]> {
-  const uncachedQueries = queries.filter((query) => !sessionCache.has(cacheKey(query)));
+  const seen = new Set<string>();
+  const uncachedQueries = queries.filter((query) => {
+    const key = cacheKey(query);
+    if (sessionCache.has(key) || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 
-  if (uncachedQueries.length > 0) {
+  // A lockfile can resolve thousands of packages: query in API-sized chunks.
+  for (let start = 0; start < uncachedQueries.length; start += OSV_MAX_BATCH) {
+    await queryOsvChunk(uncachedQueries.slice(start, start + OSV_MAX_BATCH));
+  }
+
+  return queries.map((query) => sessionCache.get(cacheKey(query)) ?? {});
+}
+
+/** OSV.dev single-vulnerability endpoint (full record, incl. severity). */
+const OSV_VULN_URL = "https://api.osv.dev/v1/vulns/";
+
+/** Concurrent record fetches per `fetchVulnSeverities` call. */
+const SEVERITY_FETCH_CONCURRENCY = 8;
+
+/** OSV advisory ids are short tokens like GHSA-xxxx-xxxx-xxxx, PYSEC-2023-1, GO-2023-1, CVE-2024-1. */
+const OSV_ID_RE = /^[A-Za-z0-9._:-]{3,64}$/;
+
+/** Session cache: advisory id -> its severity, or null when the record carries none. */
+const severityCache = new Map<string, Severity | null>();
+
+/**
+ * Fetches the full OSV record for each advisory id and returns the
+ * severities it could determine (see osv-severity.ts). Best-effort by
+ * design: the batch query already established THAT a package is
+ * vulnerable, so a failed or slow lookup here only loses the precise
+ * rating — the id is simply absent from the result and the caller keeps
+ * its default. Only public advisory ids are sent. Never throws.
+ */
+export async function fetchVulnSeverities(ids: string[]): Promise<Map<string, Severity>> {
+  const pending = [...new Set(ids)].filter((id) => OSV_ID_RE.test(id) && !severityCache.has(id));
+  if (pending.length > 0) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       controller.abort();
     }, OSV_TIMEOUT_MS);
-
     try {
-      const body = JSON.stringify({
-        queries: uncachedQueries.map((query) => ({
-          package: { name: query.name, ecosystem: "npm" },
-          version: query.version,
-        })),
-      });
-
-      const response = await fetch(OSV_QUERYBATCH_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new OsvUnavailableError(`OSV.dev responded with HTTP ${String(response.status)}`);
-      }
-
-      const parsedBody: unknown = await response.json();
-      const resultsObject = parsedBody as { results?: unknown };
-      const results = narrowOsvResults(resultsObject.results);
-      if (results === undefined || results.length !== uncachedQueries.length) {
-        throw new OsvUnavailableError("OSV.dev returned a response in an unexpected shape");
-      }
-
-      // Zips `uncachedQueries` with `results` into pairs up front (both
-      // arrays were just verified to have equal length above), then
-      // iterates the pairs directly — avoids indexing into `results` by a
-      // loop counter entirely, sidestepping security/detect-object-injection
-      // rather than just asserting the index is safe.
-      const pairs: Array<[OsvQuery, OsvResult]> = uncachedQueries.map((query, index) => [
-        query,
-        results.at(index) ?? {},
-      ]);
-      for (const [query, result] of pairs) {
-        sessionCache.set(cacheKey(query), result);
-      }
-    } catch (error) {
-      if (error instanceof OsvUnavailableError) {
-        throw error;
-      }
-      throw new OsvUnavailableError("OSV.dev query failed (network error, timeout, or malformed response)", {
-        cause: error,
-      });
+      const queue = [...pending];
+      const worker = async (): Promise<void> => {
+        for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+          try {
+            const response = await fetch(`${OSV_VULN_URL}${encodeURIComponent(id)}`, { signal: controller.signal });
+            if (response.ok) {
+              severityCache.set(id, severityFromOsvRecord(await response.json()) ?? null);
+            }
+          } catch {
+            // Leave this id unrated; a later scan in the same process may retry it.
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(SEVERITY_FETCH_CONCURRENCY, pending.length) }, worker));
     } finally {
       clearTimeout(timeoutId);
     }
   }
 
-  return queries.map((query) => sessionCache.get(cacheKey(query)) ?? {});
+  const severities = new Map<string, Severity>();
+  for (const id of ids) {
+    const severity = severityCache.get(id);
+    if (severity !== undefined && severity !== null) {
+      severities.set(id, severity);
+    }
+  }
+  return severities;
 }

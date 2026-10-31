@@ -24,13 +24,29 @@
  *      routing (selection-level proof; SDK-level baseURL threading is
  *      proven in 07-02's openai.test.ts).
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { enrichFindings } from "./enricher.js";
 import { selectAdapter } from "./provider.js";
 import { scan } from "../index.js";
 
 import type { ProviderAdapter } from "./provider.js";
+
+// OSV.dev is stubbed at the module boundary (same seam as
+// tests/golden/golden.test.ts) so this suite is hermetic: a sandbox, an
+// offline laptop, or a corporate proxy can never flip `scanIncomplete` or
+// the finding count. The stub reports a fixed 25 advisories for `next` (the
+// fixture's only dependency), like the real OSV response for next@14.0.0.
+vi.mock("../detectors/deps/osv-client.js", () => ({
+  queryOsvBatch: (queries: Array<{ name: string; version: string }>) =>
+    Promise.resolve(
+      queries.map((query) =>
+        query.name === "next"
+          ? { vulns: Array.from({ length: 25 }, (_, index) => ({ id: `GHSA-test-next-${String(index)}` })) }
+          : {},
+      ),
+    ),
+}));
 
 const WITH_SECRET_FIXTURE = "tests/fixtures/scan/with-secret";
 
@@ -130,24 +146,30 @@ describe("e2e — criterion 3: HIGH/CRITICAL findings gain a fixPrompt with a no
     }
   });
 
-  it("honors the MAX_ENRICHED count budget against the fixture's real (>20) HIGH/CRITICAL finding count", async () => {
+  it("honors the MAX_ENRICHED count budget against a real finding set larger than the cap", async () => {
     const offlineResult = await scan(WITH_SECRET_FIXTURE, { noLlm: true });
-    const highOrCriticalCount = offlineResult.findings.filter(
+    // Dependency advisories are grouped one finding per package, so a single
+    // fixture no longer yields 20+ HIGH findings on its own. Repeat the
+    // fixture's real HIGH/CRITICAL findings at distinct lines until the set
+    // exceeds the cap — every finding is still a genuine scan() output shape.
+    const severe = offlineResult.findings.filter(
       (finding) => finding.severity === "HIGH" || finding.severity === "CRITICAL",
-    ).length;
-    // Ground the test in the fixture's real shape: it must exceed the cap
-    // for this to be a meaningful budget proof, not a vacuous one.
-    expect(highOrCriticalCount).toBeGreaterThan(20);
+    );
+    expect(severe.length).toBeGreaterThan(0);
+    const findings = Array.from({ length: 25 }, (_, index) => ({
+      ...severe[index % severe.length],
+      line: index + 1,
+    })) as typeof severe;
 
     const fake = makeFakeAdapter("FIX: move the secret to an environment variable.");
-    const { findings: enrichedFindings, enriched } = await enrichFindings(offlineResult.findings, fake);
+    const { findings: enrichedFindings, enriched } = await enrichFindings(findings, fake);
 
     const enrichedCount = enrichedFindings.filter((finding) => finding.fixPrompt !== undefined).length;
     expect(enrichedCount).toBe(20);
     expect(enriched).toBe(true);
     // No finding is dropped — the un-enriched remainder is left in place,
     // simply without a fixPrompt (degrade, never error/drop).
-    expect(enrichedFindings).toHaveLength(offlineResult.findings.length);
+    expect(enrichedFindings).toHaveLength(findings.length);
   });
 });
 

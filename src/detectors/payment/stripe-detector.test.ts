@@ -145,3 +145,73 @@ describe("stripeDetector — no-throw contract", () => {
     expect(findings).toEqual([]);
   });
 });
+
+describe("stripeDetector — PAY-02 client-controlled charge amount", () => {
+  const checkout = (amountLine: string): string =>
+    [
+      'import Stripe from "stripe";',
+      "export async function POST(req: Request) {",
+      "  const body = await req.json();",
+      "  await stripe.checkout.sessions.create({",
+      `    line_items: [{ price_data: { currency: "usd", ${amountLine} }, quantity: 1 }],`,
+      "  });",
+      "}",
+    ].join("\n");
+
+  it.each([
+    ["unit_amount: body.amount", "app/api/checkout/route.ts"],
+    ["unit_amount: Number(body.price)", "app/api/checkout/route.ts"],
+    ["unit_amount: req.body.total", "server/routes/pay.ts"],
+  ])("flags %s as PAY-02 HIGH (in %s)", async (amountLine, path) => {
+    const findings = await stripeDetector.detect(makeContext(checkout(amountLine), path));
+
+    expect(findings.map((finding) => [finding.ruleId, finding.severity, finding.line])).toEqual([["PAY-02", "HIGH", 5]]);
+  });
+
+  it("does NOT flag an amount looked up on the server", async () => {
+    const findings = await stripeDetector.detect(
+      makeContext(checkout("unit_amount: product.priceCents"), "app/api/checkout/route.ts"),
+    );
+
+    expect(findings).toEqual([]);
+  });
+
+  it("does NOT flag amount assignments in files that do not import Stripe", async () => {
+    const content = "const order = { amount: body.amount };";
+
+    expect(await stripeDetector.detect(makeContext(content, "lib/cart.ts"))).toEqual([]);
+  });
+});
+
+describe("stripeDetector — Python and Go", () => {
+  async function summarize(content: string, path: string): Promise<string[]> {
+    const findings = await stripeDetector.detect(makeContext(content, path));
+    return findings.map((finding) => `${finding.ruleId} L${String(finding.line)}`);
+  }
+
+  it("flags a Python webhook route that never calls construct_event", async () => {
+    const content = ["import stripe", '@app.post("/stripe/webhook")', "async def hook(request: Request):", "    event = await request.json()"].join(
+      "\n",
+    );
+
+    expect(await summarize(content, "main.py")).toEqual(["PAY-01 L2"]);
+    expect(await summarize(`${content}\n    stripe.Webhook.construct_event(payload, sig, secret)`, "main.py")).toEqual([]);
+    expect(await summarize(content.replace("import stripe", "import os, stripe, jwt"), "main.py")).toEqual(["PAY-01 L2"]);
+  });
+
+  it("flags a Go webhook route without webhook.ConstructEvent", async () => {
+    const content = ['import "github.com/stripe/stripe-go/v76"', 'r.POST("/api/webhooks/stripe", handleStripe)'].join("\n");
+
+    expect(await summarize(content, "main.go")).toEqual(["PAY-01 L2"]);
+  });
+
+  it("flags Python and Go amounts taken from the request (PAY-02)", async () => {
+    expect(await summarize('import stripe\nstripe.PaymentIntent.create(amount=request.json["amount"], currency="usd")', "pay.py")).toEqual([
+      "PAY-02 L2",
+    ]);
+    expect(
+      await summarize('import "github.com/stripe/stripe-go/v76"\nparams := &stripe.PaymentIntentParams{Amount: stripe.Int64(req.Amount)}', "pay.go"),
+    ).toEqual(["PAY-02 L2"]);
+    expect(await summarize('import stripe\nstripe.PaymentIntent.create(amount=product.price_cents, currency="usd")', "pay.py")).toEqual([]);
+  });
+});

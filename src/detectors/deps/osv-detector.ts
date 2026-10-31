@@ -1,7 +1,11 @@
 /**
  * osvDetector — CAT-5 DEP-01: OSV.dev dependency vulnerability detector.
  *
- * Reads a scanned repo's `package.json` (never `node_modules/`, never a
+ * Reads every `package.json` in a scanned repo — the root manifest AND any
+ * nested app/package manifest (`app/`, `apps/web/`, `packages/*`), since
+ * AI-built projects routinely keep the real app in a subdirectory — but
+ * never one under `node_modules/` or a test/fixture/mock/example directory
+ * (never a
  * lockfile — PITFALLS.md Integration Gotchas: "parse only the lockfile's
  * top-level resolved versions, not the installed tree"; this detector
  * intentionally scopes to direct manifest-declared `dependencies` +
@@ -41,11 +45,19 @@
  * `queryOsvBatch` throws synchronously instead of returning a rejected
  * promise, and even if `ctx.content` is not valid JSON.
  *
+ * Strict offline mode (`ScanOptions.offline` / `--offline`, surfaced as
+ * `DetectorContext.offline`): the OSV.dev query is skipped entirely and the
+ * fallback branch runs directly — same DEP-OFFLINE sentinel, so an offline
+ * scan is still never reported as a complete dependency check.
+ *
  * ENG-05: this module only `JSON.parse`s `ctx.content` — it never
  * `require()`s, `eval`s, or executes the scanned package.json as code.
  */
 import { checkFallback, type FallbackEntry } from "./osv-fallback.js";
-import { queryOsvBatch } from "./osv-client.js";
+import { fetchVulnSeverities, queryOsvBatch } from "./osv-client.js";
+import { worstSeverity } from "./osv-severity.js";
+import { lockfileParserFor, NPM_LOCKFILES, PYTHON_LOCKFILES } from "../../core/ingest/lockfiles.js";
+import { manifestParserFor, type Ecosystem } from "../../core/ingest/manifests.js";
 
 import type { Confidence, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
 import type { OsvQuery } from "./osv-client.js";
@@ -60,11 +72,63 @@ const DEP_OFFLINE_RULE_ID = "DEP-OFFLINE";
 const DEP_OFFLINE_MESSAGE =
   "OSV.dev unreachable; dependency scan ran in offline fallback mode (results may be incomplete).";
 
-/** A single direct dependency parsed out of package.json, ready for either the OSV or fallback path. */
+/** Directory segments whose package.json is test scaffolding, not a shipped manifest (mirrors the secrets detector's FP allowlist). */
+const SKIPPED_MANIFEST_SEGMENTS = new Set(["node_modules", "__tests__", "fixtures", "mocks", "examples"]);
+
+/** True when `filePath` is a real dependency manifest or lockfile this detector should check. */
+function isScannableManifest(filePath: string): boolean {
+  const segments = filePath.split("/");
+  const isManifest =
+    segments.at(-1) === "package.json" ||
+    manifestParserFor(filePath) !== undefined ||
+    lockfileParserFor(filePath) !== undefined;
+  return isManifest && !segments.some((segment) => SKIPPED_MANIFEST_SEGMENTS.has(segment));
+}
+
+/** Directory part of a repo-relative path ("" at the root). */
+function dirOf(filePath: string): string {
+  const slash = filePath.lastIndexOf("/");
+  return slash === -1 ? "" : filePath.slice(0, slash);
+}
+
+/**
+ * The lockfile that resolves `manifestPath`'s dependencies — same
+ * ecosystem, in the manifest's directory or any ancestor (a monorepo's
+ * root lockfile covers every workspace package.json). When one exists, it
+ * is the source of truth: the lockfile's own detect() call checks the
+ * exact installed versions, transitive ones included.
+ */
+function governingLockfile(manifestPath: string, fileSet: ReadonlyMap<string, string>): string | undefined {
+  const basename = manifestPath.split("/").at(-1) ?? "";
+  const candidates =
+    basename === "package.json" ? NPM_LOCKFILES : basename === "pyproject.toml" || basename === "Pipfile" ? PYTHON_LOCKFILES : [];
+  let dir: string | undefined = dirOf(manifestPath);
+  while (dir !== undefined) {
+    for (const lockfile of candidates) {
+      const candidate = dir === "" ? lockfile : `${dir}/${lockfile}`;
+      if (fileSet.has(candidate)) {
+        return candidate;
+      }
+    }
+    dir = dir === "" ? undefined : dirOf(dir);
+  }
+  return undefined;
+}
+
+/** A single direct dependency parsed out of a manifest, ready for either the OSV or fallback path. */
 interface ParsedDependency {
+  ecosystem: Ecosystem;
   name: string;
-  /** The raw version specifier as written in package.json (may be a range, "latest", etc.). */
+  /** The version specifier as written (may be a range for npm), shown in messages. */
   rawVersion: string;
+  /** The version sent to OSV. */
+  queryVersion: string;
+  /** 1-indexed manifest line of the declaration. */
+  line: number;
+  /** File the finding should point at, when not the file being scanned (a direct dependency found via its lockfile). */
+  file?: string;
+  /** Resolved from a lockfile but not declared in the sibling manifest. */
+  transitive?: boolean;
 }
 
 /** package.json dependency/devDependency record shape, defensively typed (mirrors stack-detector.ts). */
@@ -124,7 +188,94 @@ function parseDirectDependencies(content: string): ParsedDependency[] {
     if (isUncomparableSpecifier(rawValue)) {
       continue;
     }
-    result.push({ name, rawVersion: rawValue });
+    result.push({
+      ecosystem: "npm",
+      name,
+      rawVersion: rawValue,
+      queryVersion: cleanVersionSpecifier(rawValue),
+      line: findDependencyLine(content, name),
+    });
+  }
+  return result;
+}
+
+/** Direct dependency names (with their declaration lines) of the manifest sitting next to a lockfile. */
+function siblingManifestDependencies(lockfilePath: string, fileSet: ReadonlyMap<string, string>): { file: string; lines: Map<string, number> } | undefined {
+  const dir = dirOf(lockfilePath);
+  const prefix = dir === "" ? "" : `${dir}/`;
+  const isNpm = NPM_LOCKFILES.includes(lockfilePath.split("/").at(-1) ?? "");
+  for (const basename of isNpm ? ["package.json"] : ["pyproject.toml", "Pipfile"]) {
+    const file = `${prefix}${basename}`;
+    const content = fileSet.get(file);
+    if (content === undefined) {
+      continue;
+    }
+    const lines = new Map<string, number>();
+    if (isNpm) {
+      try {
+        const parsed = JSON.parse(content) as ParsedPackageJson;
+        for (const name of Object.keys({ ...parsed.dependencies, ...parsed.devDependencies })) {
+          lines.set(name, findDependencyLine(content, name));
+        }
+      } catch {
+        // Malformed manifest — every locked package reports against the lockfile.
+      }
+    } else {
+      for (const dependency of manifestParserFor(file)?.(content) ?? []) {
+        lines.set(dependency.name, dependency.line);
+      }
+    }
+    return { file, lines };
+  }
+  return undefined;
+}
+
+/**
+ * Every exact version resolved by a lockfile. Packages the sibling manifest
+ * declares directly report against that manifest's line (the line a
+ * developer edits); everything else is marked transitive and reports
+ * against its lockfile entry.
+ */
+function parseLockfileDependencies(lockfilePath: string, content: string, fileSet: ReadonlyMap<string, string>): ParsedDependency[] {
+  const parse = lockfileParserFor(lockfilePath);
+  if (parse === undefined) {
+    return [];
+  }
+  const manifest = siblingManifestDependencies(lockfilePath, fileSet);
+  return parse(content).map((locked) => {
+    const manifestLine = manifest?.lines.get(locked.name);
+    const base = {
+      ecosystem: locked.ecosystem,
+      name: locked.name,
+      rawVersion: locked.version,
+      queryVersion: locked.version,
+    };
+    return manifest !== undefined && manifestLine !== undefined
+      ? { ...base, line: manifestLine, file: manifest.file }
+      : { ...base, line: locked.line, transitive: true };
+  });
+}
+
+/**
+ * Parses a Python or Go manifest into the dependencies OSV can check —
+ * only exactly-pinned versions (a range cannot be matched to advisories).
+ */
+function parseOtherEcosystemDependencies(filePath: string, content: string): ParsedDependency[] {
+  const parse = manifestParserFor(filePath);
+  if (parse === undefined) {
+    return [];
+  }
+  const result: ParsedDependency[] = [];
+  for (const dependency of parse(content)) {
+    if (dependency.version !== undefined) {
+      result.push({
+        ecosystem: dependency.ecosystem,
+        name: dependency.name,
+        rawVersion: dependency.version,
+        queryVersion: dependency.version,
+        line: dependency.line,
+      });
+    }
   }
   return result;
 }
@@ -150,13 +301,13 @@ function findDependencyLine(content: string, dependencyName: string): number {
 }
 
 /**
- * Maps an OSV/GHSA/CVE advisory id to a Severity. OSV.dev's querybatch
- * response (the lightweight `id`-only shape this detector requests) does
- * not include a CVSS/severity field per-vuln in the batch response, so
- * every OSV-sourced hit is conservatively reported as HIGH — a known
- * vulnerability with an assigned advisory id is, at minimum, a real risk
- * worth surfacing; a developer can read the linked advisory for the exact
- * CVSS score. (Fallback-path hits use the curated severity from
+ * Default Severity for an OSV-sourced hit whose real rating is unknown.
+ * OSV.dev's querybatch response carries advisory ids only; each finding is
+ * rated by the worst of its advisories' full records (`fetchVulnSeverities`
+ * + osv-severity.ts: GitHub's database severity, else the CVSS v3 base
+ * score). When no record can be fetched or rated, the hit stays HIGH — a
+ * known vulnerability with an assigned advisory id is, at minimum, a real
+ * risk worth surfacing. (Fallback-path hits use the curated severity from
  * `FALLBACK_VULNERABLE_NPM` instead, which IS pre-classified.)
  */
 const OSV_HIT_SEVERITY: Severity = "HIGH";
@@ -165,33 +316,63 @@ const OSV_HIT_CONFIDENCE: Confidence = "HIGH";
 /** Confidence for a fallback-list hit — same curated-list provenance as the bundled severity, so HIGH confidence applies uniformly. */
 const FALLBACK_HIT_CONFIDENCE: Confidence = "HIGH";
 
-/** Builds the DEP-01 Finding for an OSV-sourced hit (vuln id known, severity not pre-classified by the lightweight batch response). */
-function buildOsvFinding(dependency: ParsedDependency, content: string, vulnId: string): Finding {
+/** How many advisory ids a grouped DEP-01 message lists before summarizing the rest as "+N more". */
+const MAX_LISTED_ADVISORIES = 3;
+
+/**
+ * Builds the ONE DEP-01 Finding for a dependency with OSV-sourced hits
+ * (severity not pre-classified by the lightweight batch response). All of a
+ * package's advisories are grouped into a single finding: one upgrade fixes
+ * them all, and a finding per advisory let a single outdated framework
+ * (20+ advisories for an old `next`) flood the report and zero out the
+ * Ship Score on its own.
+ */
+function buildOsvFinding(
+  filePath: string,
+  dependency: ParsedDependency,
+  vulnIds: string[],
+  severities: ReadonlyMap<string, Severity>,
+): Finding {
+  // Most severe advisories first, so the listed ids are the ones that matter.
+  const rank = (id: string): number => ["LOW", "MEDIUM", "HIGH", "CRITICAL"].indexOf(severities.get(id) ?? "");
+  const ordered = [...vulnIds].sort((left, right) => rank(right) - rank(left));
+  const worst = worstSeverity(vulnIds.flatMap((id) => severities.get(id) ?? []));
+  const listed = ordered.slice(0, MAX_LISTED_ADVISORIES).join(", ");
+  const more = vulnIds.length > MAX_LISTED_ADVISORIES ? `, +${String(vulnIds.length - MAX_LISTED_ADVISORIES)} more` : "";
+  const advisories =
+    vulnIds.length === 1
+      ? `${worst === undefined ? "" : `${worst} `}OSV advisory ${listed}`
+      : `${String(vulnIds.length)} OSV advisories${worst === undefined ? "" : `, highest ${worst}`}: ${listed}${more}`;
   return {
     ruleId: DEP_RULE_ID,
     category: "deps",
     detectorName: "osv",
-    file: "package.json",
-    line: findDependencyLine(content, dependency.name),
-    severity: OSV_HIT_SEVERITY,
+    file: dependency.file ?? filePath,
+    line: dependency.line,
+    severity: worst ?? OSV_HIT_SEVERITY,
     confidence: OSV_HIT_CONFIDENCE,
-    message: `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (OSV advisory ${vulnId}).`,
-    remediation: `Upgrade ${dependency.name} to a version that resolves advisory ${vulnId} — check https://osv.dev/vulnerability/${vulnId} for the fixed version range.`,
+    message: dependency.transitive === true
+      ? `Vulnerable transitive dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}) — installed by another package, resolved in this lockfile.`
+      : `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}).`,
+    remediation:
+      dependency.transitive === true
+        ? `Update the package that depends on ${dependency.name}, or force a patched version with npm "overrides" / pnpm "pnpm.overrides" / yarn "resolutions" (or a direct pin in Python) — check https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`
+        : `Upgrade ${dependency.name} to a version that resolves ${vulnIds.length === 1 ? "this advisory" : "these advisories"} — check https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`,
   };
 }
 
 /** Builds the DEP-01 Finding for a fallback-list hit (pre-classified severity + title from the curated entry). */
 function buildFallbackFinding(
+  filePath: string,
   dependency: ParsedDependency,
-  content: string,
   hit: Pick<FallbackEntry, "advisoryId" | "severity" | "title">,
 ): Finding {
   return {
     ruleId: DEP_RULE_ID,
     category: "deps",
     detectorName: "osv",
-    file: "package.json",
-    line: findDependencyLine(content, dependency.name),
+    file: dependency.file ?? filePath,
+    line: dependency.line,
     severity: hit.severity,
     confidence: FALLBACK_HIT_CONFIDENCE,
     message: `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${hit.title}; advisory ${hit.advisoryId}).`,
@@ -200,12 +381,12 @@ function buildFallbackFinding(
 }
 
 /** Builds the DEP-OFFLINE sentinel Finding (see module header — the scaninclomplete_handoff contract for 05-08). */
-function buildOfflineSentinel(): Finding {
+function buildOfflineSentinel(filePath: string): Finding {
   return {
     ruleId: DEP_OFFLINE_RULE_ID,
     category: "deps",
     detectorName: "osv",
-    file: "package.json",
+    file: filePath,
     line: 1,
     severity: "INFO",
     confidence: "LOW",
@@ -222,13 +403,16 @@ function buildOfflineSentinel(): Finding {
  * appends the DEP-OFFLINE sentinel afterward regardless of this list's
  * length (offline must never be a silent clean pass).
  */
-function runFallbackCheck(dependencies: ParsedDependency[], content: string): Finding[] {
+function runFallbackCheck(filePath: string, dependencies: ParsedDependency[]): Finding[] {
   const findings: Finding[] = [];
   for (const dependency of dependencies) {
-    const cleanedVersion = cleanVersionSpecifier(dependency.rawVersion);
-    const hit = checkFallback(dependency.name, cleanedVersion);
+    // The bundled offline list is npm-only.
+    if (dependency.ecosystem !== "npm") {
+      continue;
+    }
+    const hit = checkFallback(dependency.name, dependency.queryVersion);
     if (hit !== undefined) {
-      findings.push(buildFallbackFinding(dependency, content, hit));
+      findings.push(buildFallbackFinding(filePath, dependency, hit));
     }
   }
   return findings;
@@ -238,29 +422,64 @@ export const osvDetector: Detector = {
   config: {
     name: "osv",
     category: "deps",
-    globs: ["package.json"],
+    globs: [
+      "package.json",
+      "**/package.json",
+      "**/requirements*.txt",
+      "**/pyproject.toml",
+      "**/Pipfile",
+      "**/go.mod",
+      "**/package-lock.json",
+      "**/npm-shrinkwrap.json",
+      "**/pnpm-lock.yaml",
+      "**/yarn.lock",
+      "**/bun.lock",
+      "**/poetry.lock",
+      "**/uv.lock",
+      "**/Pipfile.lock",
+    ],
     requiresNetwork: true,
   },
 
   async detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      const dependencies = parseDirectDependencies(ctx.content);
+      if (!isScannableManifest(ctx.filePath)) {
+        return [];
+      }
+
+      if (governingLockfile(ctx.filePath, ctx.fileSet) !== undefined) {
+        // The lockfile's own detect() call checks the exact installed versions.
+        return [];
+      }
+
+      const dependencies =
+        lockfileParserFor(ctx.filePath) !== undefined
+          ? parseLockfileDependencies(ctx.filePath, ctx.content, ctx.fileSet)
+          : ctx.filePath.endsWith("package.json")
+            ? parseDirectDependencies(ctx.content)
+            : parseOtherEcosystemDependencies(ctx.filePath, ctx.content);
       if (dependencies.length === 0) {
         return [];
       }
 
       // Privacy contract (threat T-05-07-01): the OSV query payload is
-      // reduced to ONLY {name, version} here — nothing else from the
-      // parsed package.json (scripts, author, etc.) is ever passed to
+      // reduced to ONLY {name, version, ecosystem} here — nothing else from
+      // the parsed manifest (scripts, author, etc.) is ever passed to
       // queryOsvBatch, which itself only accepts this exact shape.
       const queries: OsvQuery[] = dependencies.map((dependency) => ({
         name: dependency.name,
-        version: cleanVersionSpecifier(dependency.rawVersion),
+        version: dependency.queryVersion,
+        ecosystem: dependency.ecosystem,
       }));
 
       try {
+        if (ctx.offline === true) {
+          // Strict offline mode: never touch the network; take the same
+          // visible fallback path an OSV outage takes.
+          throw new Error("offline mode: OSV.dev query skipped");
+        }
         const results = await queryOsvBatch(queries);
-        const findings: Finding[] = [];
+        const hits: Array<{ dependency: ParsedDependency; vulnIds: string[] }> = [];
 
         results.forEach((result, index) => {
           // `.at(index)` (not bracket indexing) over `results`, which
@@ -272,12 +491,22 @@ export const osvDetector: Detector = {
           if (dependency === undefined) {
             return;
           }
-          for (const vuln of result.vulns ?? []) {
-            findings.push(buildOsvFinding(dependency, ctx.content, vuln.id));
+          const vulnIds = [...new Set((result.vulns ?? []).map((vuln) => vuln.id))];
+          if (vulnIds.length > 0) {
+            hits.push({ dependency, vulnIds });
           }
         });
 
-        return findings;
+        // Real ratings are best-effort: an unreachable or partial lookup
+        // keeps the conservative HIGH default rather than failing the scan.
+        let severities: ReadonlyMap<string, Severity> = new Map();
+        try {
+          severities = await fetchVulnSeverities(hits.flatMap((hit) => hit.vulnIds));
+        } catch {
+          // Leave every advisory at the default rating.
+        }
+
+        return hits.map((hit) => buildOsvFinding(ctx.filePath, hit.dependency, hit.vulnIds, severities));
       } catch {
         // ANY OSV failure (a typed OsvUnavailableError from osv-client.ts,
         // OR any other unexpected throw/rejection) triggers the offline
@@ -285,11 +514,11 @@ export const osvDetector: Detector = {
         // vulnerabilities found" (PITFALLS.md Pitfall 10). This catch
         // deliberately does not branch on the error's type or message: no
         // failure mode is special-cased back into a clean pass.
-        const fallbackFindings = runFallbackCheck(dependencies, ctx.content);
+        const fallbackFindings = runFallbackCheck(ctx.filePath, dependencies);
         // The DEP-OFFLINE sentinel is appended UNCONDITIONALLY here, even
         // when fallbackFindings.length === 0 — this is the non-negotiable
         // "offline is never a silent clean pass" requirement.
-        return [...fallbackFindings, buildOfflineSentinel()];
+        return [...fallbackFindings, buildOfflineSentinel(ctx.filePath)];
       }
     } catch {
       // No-throw contract (src/core/types.ts Detector.detect): an

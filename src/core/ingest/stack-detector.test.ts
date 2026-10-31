@@ -161,3 +161,59 @@ describe("detectStack — absent package.json", () => {
     expect(hints.frameworks.size).toBe(0);
   });
 });
+
+describe("detectStack — nested apps and non-Next app/ folders", () => {
+  it("reads dependencies from a nested app manifest (monorepo / app-in-subfolder)", () => {
+    const fileSet = new Map([
+      ["package.json", JSON.stringify({ name: "root", private: true })],
+      ["apps/web/package.json", JSON.stringify({ dependencies: { next: "15.0.0", "@supabase/ssr": "0.5.0", stripe: "17.0.0" } })],
+      ["node_modules/firebase/package.json", JSON.stringify({ dependencies: { firebase: "1.0.0" } })],
+    ]);
+
+    const hints = detectStack(fileSet);
+
+    expect(hints.frameworks.has("nextjs")).toBe(true);
+    expect(hints.hasSupabase).toBe(true);
+    expect(hints.hasStripe).toBe(true);
+    expect(hints.hasFirebase).toBe(false);
+  });
+
+  it("does NOT treat a React Native app/ folder as Next.js", () => {
+    const fileSet = new Map([
+      ["app/package.json", JSON.stringify({ dependencies: { "react-native": "0.76.0" } })],
+      ["app/App.tsx", "export default function App() { return null; }"],
+      ["app/src/screens/Home.tsx", "export {};"],
+    ]);
+
+    expect(detectStack(fileSet).frameworks.has("nextjs")).toBe(false);
+  });
+
+  it("detects Next.js from a Pages Router API file", () => {
+    expect(detectStack(new Map([["src/pages/api/hello.ts", "export default () => {};"]])).frameworks.has("nextjs")).toBe(true);
+  });
+});
+
+describe("detectStack — Python and Go", () => {
+  it("detects Python frameworks and services from requirements.txt / pyproject.toml", () => {
+    const hints = detectStack(
+      new Map([
+        ["requirements.txt", "FastAPI==0.110.0\nstripe==8.0.0\n"],
+        ["worker/pyproject.toml", '[project]\ndependencies = ["supabase>=2", "firebase_admin==6.0.0"]\n'],
+      ]),
+    );
+
+    expect([...hints.frameworks].sort()).toEqual(["fastapi", "firebase", "python", "supabase"]);
+    expect(hints.hasStripe).toBe(true);
+    expect(hints.hasSupabase).toBe(true);
+    expect(hints.hasFirebase).toBe(true);
+  });
+
+  it("detects Go and its web frameworks from go.mod", () => {
+    const hints = detectStack(
+      new Map([["go.mod", "module x\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.0\n\tgithub.com/stripe/stripe-go/v76 v76.0.0\n)\n"]]),
+    );
+
+    expect([...hints.frameworks].sort()).toEqual(["gin", "go"]);
+    expect(hints.hasStripe).toBe(true);
+  });
+});

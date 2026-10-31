@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build-and-verify:
     name: build-and-verify
@@ -35,6 +38,9 @@ jobs:
 
       - name: Test
         run: pnpm run test
+
+      - name: Dist smoke tests (built package, installed CLI, skill parity)
+        run: pnpm run test:dist
 
       - name: License check
         run: npx license-checker --production --summary
