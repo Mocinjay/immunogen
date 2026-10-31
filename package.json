@@ -75,7 +75,7 @@
     "ignore": "7.0.5",
     "openai": "6.44.0",
     "picocolors": "1.1.1",
-    "simple-git": "3.36.0"
+    "simple-git": "4.0.2"
   },
   "devDependencies": {
     "@types/babel__traverse": "7.28.0",
