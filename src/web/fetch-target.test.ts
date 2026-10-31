@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { fetchTarget } from "./fetch-target.js";
+import { VERSION } from "../version.js";
 
 import type { FetchDeps } from "./fetch-target.js";
 
@@ -280,6 +281,54 @@ describe("fetchTarget — user agent", () => {
     await fetchTarget("https://example.com", {}, deps);
 
     const headerRecord = sawHeaders as Record<string, string>;
-    expect(headerRecord["user-agent"]).toContain("immunogen/0.1");
+    expect(headerRecord["user-agent"]).toContain(`immunogen/${VERSION}`);
+  });
+});
+
+describe("fetchTarget — redirects are followed by hand and re-checked", () => {
+  it("re-checks every redirect hop and refuses one into a private address", async () => {
+    const checked: string[] = [];
+    const deps: FetchDeps = {
+      ...makeDeps((url) => {
+        const urlStr = url.toString();
+        if (urlStr === "https://example.com/") {
+          return makeResponse("", { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data/" }, url: urlStr });
+        }
+        throw new Error(`must never be fetched: ${urlStr}`);
+      }),
+      assertAllowed: (url) => {
+        checked.push(url.toString());
+        return url.hostname === "169.254.169.254" ? Promise.reject(new Error("refused")) : Promise.resolve();
+      },
+    };
+
+    await expect(fetchTarget("https://example.com/", {}, deps)).rejects.toThrow("refused");
+    expect(checked).toEqual(["https://example.com/", "http://169.254.169.254/latest/meta-data/"]);
+  });
+
+  it("follows a public redirect chain and reports the final URL", async () => {
+    const deps = makeDeps((url) => {
+      const urlStr = url.toString();
+      if (urlStr === "https://example.com/") {
+        return makeResponse("", { status: 301, headers: { location: "/home" }, url: urlStr });
+      }
+      if (urlStr === "https://example.com/home") {
+        return makeResponse("<html>home</html>", { url: urlStr });
+      }
+      throw new Error(`unexpected fetch: ${urlStr}`);
+    });
+
+    const result = await fetchTarget("https://example.com/", {}, deps);
+
+    expect(result.url).toBe("https://example.com/home");
+    expect(result.body).toBe("<html>home</html>");
+  });
+
+  it("enforces maxRedirects as a real hop count", async () => {
+    const deps = makeDeps((url) =>
+      makeResponse("", { status: 302, headers: { location: `${url.toString()}x` }, url: url.toString() }),
+    );
+
+    await expect(fetchTarget("https://example.com/", { maxRedirects: 2 }, deps)).rejects.toThrow(/Too many redirects/);
   });
 });

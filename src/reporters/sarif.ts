@@ -13,15 +13,15 @@
  * `ruleId` present in `result.findings` (first-seen order preserved) so
  * GitHub Code Scanning's alert pages show rule NAMES, not bare IDs.
  * `partialFingerprints.primaryLocationLineHash` is set on EVERY result (a
- * sha256 of `ruleId + file + line`, computed via the `node:crypto` builtin)
- * so GitHub can dedupe the same finding across repeated scans.
+ * line-independent sha256, see `computeFingerprints`) so GitHub tracks the
+ * same alert across scans even when unrelated edits move it.
  *
  * Findings arrive ALREADY masked and ALREADY sorted from the detector layer
  * (see `json.ts`'s precedent) — this reporter never unmasks, re-sorts, or
- * copies raw `matchedText` into the emitted document (T-06-03-01: only
+ * copies raw `matchedText` into the emitted document (only
  * `message` + `remediation` flow into `result.message.text`).
  *
- * ENG-05 / T-06-03-02: this module only reads plain `ScanResult` fields and
+ * ENG-05: this module only reads plain `ScanResult` fields and
  * calls `JSON.stringify` + `crypto.createHash` on the scanner's OWN finding
  * metadata — it never imports a parser, never evals/requires/spawns, and
  * never re-decodes scanned content.
@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 
 import type { Reporter } from "./interface.js";
 import type {
+  SarifArtifactLocation,
   SarifLevel,
   SarifLocation,
   SarifLog,
@@ -38,7 +39,11 @@ import type {
   SarifRun,
 } from "./sarif-types.js";
 
-import type { Category, Finding, ScanResult, Severity } from "../core/types.js";
+import { VERSION } from "../version.js";
+
+import type { SarifNotification } from "./sarif-types.js";
+
+import type { Category, Diagnostic, Finding, ScanResult, Severity } from "../core/types.js";
 
 /** SARIF 2.1.0's published schema URI — pinned so consumers can validate against it. */
 const SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json";
@@ -49,12 +54,8 @@ const SARIF_VERSION = "2.1.0" as const;
 /** `tool.driver.name` — identifies immunogen as the producing tool. */
 const DRIVER_NAME = "immunogen";
 
-/**
- * Placeholder project URL for `tool.driver.informationUri`. A real published
- * repository URL can replace this constant later without touching any other
- * part of the reporter.
- */
-const DRIVER_INFORMATION_URI = "https://github.com/immunogen-dev/immunogen";
+/** `tool.driver.informationUri` — the project's home page. */
+const DRIVER_INFORMATION_URI = "https://github.com/Mocinjay/immunogen";
 
 /** Number of spaces used for `JSON.stringify`'s pretty-print indentation. */
 const JSON_INDENT_SPACES = 2;
@@ -126,16 +127,41 @@ function deriveRuleName(category: Category, detectorName: string): string {
   return `${CATEGORY_LABELS[category]} (${detectorName})`;
 }
 
+/** The finding fields that identify "the same problem" independent of where in the file it sits. */
+function fingerprintKey(finding: Finding): string {
+  return JSON.stringify([finding.ruleId, finding.file, finding.message, finding.matchedText ?? ""]);
+}
+
 /**
- * Computes a deterministic sha256 hex digest over a finding's stable logical
- * location (`ruleId + " " + file + " " + line`) using the `node:crypto`
- * builtin. This hashes only the scanner's OWN finding metadata — never
- * scanned file content — satisfying ENG-05 / T-06-03-02. The same tuple
- * always yields the same hash, letting GitHub Code Scanning dedupe the same
- * finding across repeated scans.
+ * `partialFingerprints.primaryLocationLineHash` for every finding, in
+ * `findings` order. The hash covers rule, file, message and the (masked)
+ * matched snippet — never the line number — so an alert keeps its identity
+ * when unrelated edits shift it up or down the file. Findings that share all
+ * of those get an occurrence index (counted in line order) mixed in, so they
+ * stay distinct. Only the scanner's own finding metadata is hashed.
  */
-function computePrimaryLocationLineHash(ruleId: string, file: string, line: number): string {
-  return createHash("sha256").update(`${ruleId} ${file} ${line}`).digest("hex");
+function computeFingerprints(findings: readonly Finding[]): string[] {
+  const indicesByKey = new Map<string, number[]>();
+  for (const [index, finding] of findings.entries()) {
+    const key = fingerprintKey(finding);
+    const indices = indicesByKey.get(key);
+    if (indices === undefined) {
+      indicesByKey.set(key, [index]);
+    } else {
+      indices.push(index);
+    }
+  }
+
+  const fingerprints = new Map<number, string>();
+  for (const [key, indices] of indicesByKey) {
+    const byLine = indices
+      .map((index) => ({ index, line: findings.at(index)?.line ?? 0 }))
+      .sort((a, b) => a.line - b.line || a.index - b.index);
+    for (const [occurrence, { index }] of byLine.entries()) {
+      fingerprints.set(index, createHash("sha256").update(`${key}\n${String(occurrence)}`).digest("hex"));
+    }
+  }
+  return findings.map((_, index) => fingerprints.get(index) ?? "");
 }
 
 /**
@@ -170,6 +196,31 @@ function buildRules(findings: readonly Finding[]): {
 }
 
 /**
+ * A finding's `file` as a SARIF artifact location. Live-URL findings carry an
+ * absolute URL (already a valid URI); repo paths are percent-encoded per
+ * segment — a raw space, `#`, `%` or `?` in a filename would otherwise make
+ * an invalid or misresolved URI — and anchored to `%SRCROOT%`.
+ */
+function artifactLocationFor(file: string): SarifArtifactLocation {
+  if (/^https?:\/\//i.test(file)) {
+    return { uri: file };
+  }
+  return { uri: file.split("/").map(encodeURIComponent).join("/"), uriBaseId: "%SRCROOT%" };
+}
+
+/** Maps a pipeline `Diagnostic` to a SARIF tool-execution notification. */
+function buildNotification(diagnostic: Diagnostic): SarifNotification {
+  return {
+    level: diagnostic.level === "warn" ? "warning" : "note",
+    message: { text: diagnostic.message },
+    descriptor: { id: diagnostic.code },
+    ...(diagnostic.file === undefined
+      ? {}
+      : { locations: [{ physicalLocation: { artifactLocation: artifactLocationFor(diagnostic.file), region: { startLine: 1 } } }] }),
+  };
+}
+
+/**
  * Maps a single `Finding` to a `SarifLocation`. Respects
  * `exactOptionalPropertyTypes` — `endLine` is only present on the region
  * object when the finding actually has one; it is never explicitly set to
@@ -178,7 +229,7 @@ function buildRules(findings: readonly Finding[]): {
 function buildLocation(finding: Finding): SarifLocation {
   return {
     physicalLocation: {
-      artifactLocation: { uri: finding.file },
+      artifactLocation: artifactLocationFor(finding.file),
       region:
         finding.endLine !== undefined
           ? { startLine: finding.line, endLine: finding.endLine }
@@ -191,9 +242,9 @@ function buildLocation(finding: Finding): SarifLocation {
  * Maps a single `Finding` to a `SarifResult`. `message.text` is built from
  * `finding.message` + `finding.remediation` only — `matchedText` is never
  * copied in, since it may carry (already-masked, but still best kept out of
- * a shared alert surface) matched content (T-06-03-01).
+ * a shared alert surface) matched content.
  */
-function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>): SarifResult {
+function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>, fingerprint: string): SarifResult {
   const ruleIndex = ruleIndexByRuleId.get(finding.ruleId);
 
   return {
@@ -202,13 +253,7 @@ function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>): 
     level: mapSeverityToLevel(finding.severity),
     message: { text: `${finding.message} ${finding.remediation}`.trim() },
     locations: [buildLocation(finding)],
-    partialFingerprints: {
-      primaryLocationLineHash: computePrimaryLocationLineHash(
-        finding.ruleId,
-        finding.file,
-        finding.line,
-      ),
-    },
+    partialFingerprints: { primaryLocationLineHash: fingerprint },
   };
 }
 
@@ -221,19 +266,30 @@ function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>): 
  */
 function buildRun(result: ScanResult): SarifRun {
   const { rules, ruleIndexByRuleId } = buildRules(result.findings);
+  const fingerprints = computeFingerprints(result.findings);
 
   return {
     tool: {
       driver: {
         name: DRIVER_NAME,
+        version: VERSION,
+        semanticVersion: VERSION,
         informationUri: DRIVER_INFORMATION_URI,
         rules,
       },
     },
-    results: result.findings.map((finding) => buildResult(finding, ruleIndexByRuleId)),
+    invocations: [
+      {
+        executionSuccessful: true,
+        ...(result.diagnostics.length > 0 ? { toolExecutionNotifications: result.diagnostics.map(buildNotification) } : {}),
+      },
+    ],
+    results: result.findings.map((finding, index) => buildResult(finding, ruleIndexByRuleId, fingerprints.at(index) ?? "")),
     properties: {
       grade: result.score.grade,
       gradeLabel: result.score.gradeLabel,
+      score: result.score.score,
+      scanIncomplete: result.scanIncomplete,
     },
   };
 }
@@ -246,6 +302,6 @@ export const sarifReporter: Reporter = {
       runs: [buildRun(result)],
     };
 
-    return JSON.stringify(log, null, JSON_INDENT_SPACES);
+    return `${JSON.stringify(log, null, JSON_INDENT_SPACES)}\n`;
   },
 };

@@ -18,7 +18,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("ingest — assembles resolveInput -> walkFiles -> detectStack -> buildAstCache", () => {
+describe("ingest — assembles resolveInput -> walkFiles -> detectStack", () => {
   it("returns a ScanContext whose fields match each component's own output for a local directory", async () => {
     const { root, cleanup } = await makeRepoTreeIngest({
       "package.json": '{"dependencies":{"next":"14.0.0"}}',
@@ -33,8 +33,6 @@ describe("ingest — assembles resolveInput -> walkFiles -> detectStack -> build
     expect(ctx.fileSet.has("app/page.tsx")).toBe(true);
     expect(ctx.fileSet.has("src/lib/util.ts")).toBe(true);
     expect(ctx.stackHints.frameworks.has("nextjs")).toBe(true);
-    expect(ctx.astCache.has("app/page.tsx")).toBe(true);
-    expect(ctx.astCache.has("src/lib/util.ts")).toBe(true);
     expect(ctx.options).toEqual({});
     expect(Array.isArray(ctx.diagnostics)).toBe(true);
   });
@@ -61,7 +59,7 @@ describe("ingest — assembles resolveInput -> walkFiles -> detectStack -> build
     expect(ctx.options).toEqual({ offline: true, maxFileSizeBytes: 1024 });
   });
 
-  it("surfaces AST-cache PARSE_WARN diagnostics on ctx.diagnostics", async () => {
+  it("does not parse during ingest (the registry parses lazily per file)", async () => {
     const { root, cleanup } = await makeRepoTreeIngest({
       "bad.tsx": "export const = <<< broken(((",
     });
@@ -69,10 +67,9 @@ describe("ingest — assembles resolveInput -> walkFiles -> detectStack -> build
 
     const ctx = await ingest(root);
 
-    expect(ctx.diagnostics).toHaveLength(1);
-    expect(ctx.diagnostics[0]?.code).toBe("PARSE_WARN");
-    expect(ctx.diagnostics[0]?.file).toBe("bad.tsx");
-    expect(ctx.astCache.has("bad.tsx")).toBe(false);
+    expect(ctx.fileSet.has("bad.tsx")).toBe(true);
+    expect(ctx.diagnostics).toEqual([]);
+    expect("astCache" in ctx).toBe(false);
   });
 });
 
@@ -93,7 +90,7 @@ describe("ingest — pipeline order is fixed: resolve -> walk -> detect -> parse
     // input passed straight through.
     expect(ctx.rootPath).toBe(resolve(root));
     expect(ctx.stackHints.frameworks.has("vite")).toBe(true);
-    expect(ctx.astCache.has("src/main.ts")).toBe(true);
+    expect(ctx.fileSet.has("src/main.ts")).toBe(true);
   });
 });
 
@@ -195,20 +192,13 @@ describe("ingest — end-to-end: a single call on a realistic local fixture tree
     expect(ctx.stackHints.hasSupabase).toBe(true);
     expect(ctx.stackHints.hasMcpJson).toBe(true);
 
-    // (4) astCache has the two parseable source files and skips non-JS/TS
-    // always-preserved files (.env, .mcp.json are not parsed as code).
-    expect(ctx.astCache.has("app/page.tsx")).toBe(true);
-    expect(ctx.astCache.has("src/lib/util.ts")).toBe(true);
-    expect(ctx.astCache.has(".env")).toBe(false);
-    expect(ctx.astCache.has(".mcp.json")).toBe(false);
+    // (4) source files are read as text; parsing (and any PARSE_WARN for
+    // bad.tsx) happens later, in the registry — see src/scan.test.ts.
+    expect(ctx.fileSet.has("app/page.tsx")).toBe(true);
+    expect(ctx.fileSet.has("src/lib/util.ts")).toBe(true);
+    expect(ctx.diagnostics.some((d) => d.code === "PARSE_WARN")).toBe(false);
 
-    // (5) diagnostics contains a PARSE_WARN entry for bad.tsx.
-    const parseWarnForBadTsx = ctx.diagnostics.find(
-      (d) => d.code === "PARSE_WARN" && d.file === "bad.tsx",
-    );
-    expect(parseWarnForBadTsx).toBeDefined();
-
-    // (6) options deep-equals {} when called with no options.
+    // (5) options deep-equals {} when called with no options.
     expect(ctx.options).toEqual({});
   });
 });

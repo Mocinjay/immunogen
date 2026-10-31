@@ -14,20 +14,16 @@
  * (granting entitlements, marking orders paid, etc.). PAY-01 fires when a
  * file BOTH (a) sits on a webhook/stripe route path AND (b) imports the
  * `stripe` module AND (c) never references `constructEvent` anywhere in its
- * content. All three signals must hold — per
- * .planning/research/FEATURES.md CAT-4's False Positive Management Strategy
- * ("Require constructEvent absence + webhook path match together; not just
- * one signal"), a stripe import alone (e.g. in a checkout/lib file) or a
+ * content. All three signals must hold — a stripe import alone (e.g. in a checkout/lib file) or a
  * webhook-shaped path with no stripe import at all must never fire.
  *
  * STACK GATE (ctx.stackHints.hasStripe, src/core/ingest/stack-detector.ts):
  * checked FIRST, before any other logic — a repo with no `stripe` dependency
- * never runs the path/import/constructEvent scan at all. This mirrors
- * ARCHITECTURE.md's stack-detection rationale: framework-specific detectors
- * must never activate on a stack that doesn't use that framework. The gate
- * lives inside detect() itself (not the registry) per this plan's contract.
+ * never runs the path/import/constructEvent scan at all: framework-specific
+ * detectors must never activate on a stack that doesn't use that framework.
+ * The gate lives inside detect() itself.
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` also
+ * FP allowlist: `detect()` also
  * opens with the same path-segment check against `__tests__`, `fixtures`,
  * `mocks`, `examples`, plus a `.test.`/`.stories.` basename check, mirroring
  * src/detectors/secrets/entropy-detector.ts's `isAllowlistedPath` — a
@@ -42,23 +38,7 @@
  * malformed/empty `ctx.content` can never propagate a rejection.
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /**
  * True when `filePath` (lowercased) looks like a Stripe webhook route:
@@ -195,17 +175,17 @@ export const stripeDetector: Detector = {
   // the body is plain synchronous work wrapped in `Promise.resolve()`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // STACK GATE FIRST (per this plan's contract): a repo with no stripe
-      // dependency never runs the rest of the scan. requiresStack on
-      // config is declarative metadata for the registry; this in-code gate
-      // is the actual enforcement until the registry wiring plan (05-08).
+      // STACK GATE FIRST: a repo with no stripe dependency never runs the
+      // rest of the scan. The registry enforces config.requiresStack
+      // ("stripe" is in StackHints.frameworks); this repeats it for direct
+      // callers of detect().
       if (!ctx.stackHints.hasStripe) {
         return Promise.resolve([]);
       }
 
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 
@@ -236,7 +216,7 @@ export const stripeDetector: Detector = {
       // PATH MATCH (signal a): only webhook/stripe route files are eligible
       // for PAY-01. Both signals (path-match AND missing-constructEvent) are
       // required — a stripe import on a non-route file must never fire
-      // PAY-01 (FP mitigation per FEATURES.md CAT-4).
+      // PAY-01 (false-positive mitigation).
       if (!isWebhookOrStripeRoute(ctx.filePath)) {
         return Promise.resolve(amountFindings);
       }

@@ -83,6 +83,7 @@ const validScanResult = {
   score: validShipScore,
   llmEnriched: false,
   scanIncomplete: false,
+  diagnostics: [],
 } satisfies ScanResult;
 void validScanResult;
 
@@ -178,5 +179,6 @@ const scanResultMissingScore: ScanResult = {
   findings: [],
   llmEnriched: false,
   scanIncomplete: false,
+  diagnostics: [],
 };
 void scanResultMissingScore;

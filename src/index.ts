@@ -11,11 +11,10 @@
  * `scan()` is the single source of truth for the pipeline: ingest -> detect
  * -> score -> enrich -> assemble. The CLI (`bin/immunogen.ts`), and
  * eventually the Claude Code skill and MCP server, all call this one
- * function rather than reimplementing any step of it
- * (.planning/research/ARCHITECTURE.md "Pattern 3: Library-First,
- * CLI-as-Thin-Wrapper").
+ * function rather than reimplementing any step of it (library-first; the
+ * CLI is a thin wrapper).
  *
- * The enrichment stage (Phase 7, LLM-01/SAFE-01) is a no-op whenever
+ * The enrichment stage is a no-op whenever
  * `options.noLlm` is `true` OR no provider+key is configured via
  * `selectAdapter(process.env)` — in both cases a `NoopAdapter` is used and
  * `enrichFindings` short-circuits with zero provider calls, so the offline
@@ -33,6 +32,7 @@
  */
 
 export type {
+  Diagnostic,
   Finding,
   ScanOptions,
   ScanResult,
@@ -45,12 +45,13 @@ import { computeScore } from "./core/scoring.js";
 import { runDetectors } from "./detectors/registry.js";
 import { NoopAdapter } from "./llm/adapters/index.js";
 import { enrichFindings } from "./llm/enricher.js";
-import { selectAdapter } from "./llm/provider.js";
+import { providerConfigDiagnostic, selectAdapter } from "./llm/provider.js";
 import { isGitRepoUrl } from "./core/ingest/input-resolver.js";
 import { isUrl } from "./web/url-resolver.js";
 import { scanUrl } from "./web/scan-url.js";
 
 import type { ScanOptions, ScanResult } from "./core/types.js";
+import type { ProviderAdapter } from "./llm/provider.js";
 
 /**
  * Scan a local path, git URL, or ZIP for launch-blocking issues and return a
@@ -82,7 +83,7 @@ import type { ScanOptions, ScanResult } from "./core/types.js";
  * never terminates the host process — exit-code/printing concerns belong to
  * the CLI layer only.
  *
- * URL routing (Pass 2): when `isUrl(path)` is true — i.e. `path` begins with
+ * URL routing: when `isUrl(path)` is true — i.e. `path` begins with
  * `http://` or `https://` — and the URL does not name a git repository
  * (`isGitRepoUrl`: a github.com / gitlab.com / bitbucket.org / codeberg.org
  * repo URL, or any `.git` URL, which is cloned and scanned statically like a
@@ -91,7 +92,7 @@ import type { ScanOptions, ScanResult } from "./core/types.js";
  * static ingest/detect/score/enrich pipeline below. `scanUrl` returns the
  * same `ScanResult` shape but is a fully separate, deterministic pipeline
  * (no LLM enrichment — see that module's own header comment) built on the
- * Pass 1 `resolveUrlTarget`/`fetchTarget` foundation. This is a pure routing
+ * `resolveUrlTarget`/`fetchTarget` foundation. This is a pure routing
  * decision: `scan()`'s signature and return type are unchanged either way.
  */
 export async function scan(
@@ -107,24 +108,40 @@ export async function scan(
   const ctx = await ingest(path, options);
   const findings = await runDetectors(ctx);
   const score = computeScore(findings);
-  const scanIncomplete =
-    findings.some((finding) => finding.ruleId === "DEP-OFFLINE") ||
-    ctx.diagnostics.some((diagnostic) => diagnostic.code === "SCAN_TRUNCATED");
+  const depsOffline = findings.some((finding) => finding.ruleId === "DEP-OFFLINE");
+  const scanIncomplete = depsOffline || ctx.diagnostics.some((diagnostic) => diagnostic.code === "SCAN_TRUNCATED");
 
-  // --no-llm forces NoopAdapter regardless of env (overrides selectAdapter),
-  // satisfying criterion 4. Otherwise selectAdapter(process.env) is the sole
-  // provider decision point (LLM-01) — Noop unless a provider+key are both
-  // configured (T-07-06 offline default).
-  const adapter = options?.noLlm === true ? new NoopAdapter() : selectAdapter(process.env);
-  const { findings: enrichedFindings, enriched } = await enrichFindings(findings, adapter);
+  // --no-llm forces NoopAdapter regardless of env. Otherwise
+  // selectAdapter(process.env) is the sole provider decision point — Noop
+  // unless a provider and its key are both configured (offline default).
+  const diagnostics = [...ctx.diagnostics];
+  if (depsOffline) {
+    diagnostics.push({
+      level: "warn",
+      code: "DEPS_OFFLINE",
+      message:
+        "Dependencies were checked against the small bundled offline advisory list only (OSV.dev was not queried or was unreachable).",
+    });
+  }
+  let adapter: ProviderAdapter = new NoopAdapter();
+  if (options?.noLlm !== true) {
+    adapter = selectAdapter(process.env);
+    const configWarning = providerConfigDiagnostic(process.env);
+    if (configWarning !== undefined) {
+      diagnostics.push(configWarning);
+    }
+  }
+  const enrichment = await enrichFindings(findings, adapter);
+  diagnostics.push(...enrichment.diagnostics);
 
   return {
     target: path,
     scannedAt,
     stackHints: ctx.stackHints,
-    findings: enrichedFindings,
+    findings: enrichment.findings,
     score,
-    llmEnriched: enriched,
+    llmEnriched: enrichment.enriched,
     scanIncomplete,
+    diagnostics,
   };
 }

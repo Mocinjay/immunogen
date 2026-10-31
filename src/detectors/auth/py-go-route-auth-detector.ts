@@ -43,6 +43,7 @@
 import { PUBLIC_BY_NATURE_SEGMENTS } from "./auth-evidence.js";
 
 import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Text that looks like an auth decorator, dependency, middleware, or guard. */
 const AUTH_LIKE_TEXT_RE =
@@ -66,19 +67,6 @@ const GO_ROUTE_RE =
 /** Go router group or `.Use(` registration: captures the variable and the arguments. */
 const GO_GROUP_RE = /\b(\w+)\s*:?=\s*\w+\.(?:Group|Route)\(\s*"[^"]*"\s*,?\s*(.*)$/;
 const GO_USE_RE = /\b(\w+)\.(?:Use|With)\(\s*(.*)$/;
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples", "tests", "testdata"]);
-
-/** True when `filePath` falls inside a test/fixture directory or is a Python/Go test file. */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return /^test_.*\.py$|_test\.py$|_test\.go$|^conftest\.py$/.test(basename);
-}
 
 /** True when a route path is public by nature, carries a `public` segment, or is the bare root. */
 function isPublicPath(path: string): boolean {
@@ -380,7 +368,7 @@ export const pyGoRouteAuthDetector: Detector = {
       const frameworks = ctx.stackHints.frameworks;
       const language = ctx.filePath.endsWith(".go") ? "go" : "py";
       const pythonFramework = frameworks.has("fastapi") ? "FastAPI" : frameworks.has("flask") ? "Flask" : undefined;
-      if (isAllowlistedPath(ctx.filePath) || (language === "py" ? pythonFramework === undefined : !frameworks.has("go"))) {
+      if (isTestOrFixturePath(ctx.filePath) || (language === "py" ? pythonFramework === undefined : !frameworks.has("go"))) {
         return Promise.resolve([]);
       }
 

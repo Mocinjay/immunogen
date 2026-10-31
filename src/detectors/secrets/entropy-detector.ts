@@ -5,8 +5,7 @@
  *
  *   Pass A (provider-key regex, SEC-01/02/03/04/07): rigid, low-FP key
  *   formats (Stripe `sk_live_`, AWS `AKIA...`, OpenAI `sk-...`/`sk-proj-...`,
- *   Supabase `sb_secret_...`, Anthropic `sk-ant-...`) per FEATURES.md CAT-1's
- *   "V1 PICK". Each match is CRITICAL/HIGH confidence — the format itself is
+ *   Supabase `sb_secret_...`, Anthropic `sk-ant-...`). Each match is CRITICAL/HIGH confidence — the format itself is
  *   the provider's own naming convention, near-zero FP risk.
  *
  *   Pass A2 (Supabase service_role JWT, SEC-04 — plan 05-01): two
@@ -27,9 +26,8 @@
  *   literal >=40 chars with entropy >=4.0 is flagged ONLY when its own line
  *   also contains a secret/key/token/password-family keyword as a whole
  *   word or identifier part (`apiKey`, `API_KEY`, `access_token` — not
- *   `keyboard`/`monkey`) — this is the FEATURES.md "False Positive
- *   Management Strategy" CAT-1 row's documented keyword-anchor mitigation,
- *   preventing UUID/hash false positives — AND the literal itself is shaped
+ *   `keyboard`/`monkey`) — the keyword anchor that prevents UUID/hash false
+ *   positives — AND the literal itself is shaped
  *   like a credential (`isPlausibleSecretValue`): no whitespace (prose), no
  *   `${...}` interpolation, not a Subresource-Integrity hash, not a plain
  *   URL or package/path name, and it mixes letters with digits. Capped
@@ -40,7 +38,7 @@
  *   report usability. Pass A and Pass A2 are NOT subject to this cap — those
  *   are precision-anchored, and every match is independently meaningful.
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` opens
+ * FP allowlist: `detect()` opens
  * with a path-segment check against `__tests__`, `fixtures`, `mocks`,
  * `examples`, plus a `.test.`/`.stories.` basename check and a package
  * manager lockfile check (`package-lock.json` & co. are full of integrity
@@ -50,23 +48,24 @@
  *
  * ENG-05 (text-only invariant): this module reads `ctx.content` as a plain
  * string. It never reads `ctx.ast`, never imports a parser, and never
- * evaluates, requires, or spawns a subprocess from scanned content —
- * verified by the plan's grep acceptance gate.
+ * evaluates, requires, or spawns a subprocess from scanned content.
  *
  * No-throw contract (src/core/types.ts `Detector.detect`): the entire body
  * of `detect()` runs inside a try/catch returning `[]` on any failure, so a
  * malformed/empty `ctx.content` can never propagate a rejection. The JWT
  * base64url decode (Pass A2) runs inside this same outer try/catch and is
  * additionally guarded per-match so one malformed JWT segment cannot abort
- * the rest of the scan (T-05-01-02).
+ * the rest of the scan.
  *
- * T-04-02 mitigation: `maskSecret()` truncates every matched secret to its
+ * Masking: `maskSecret()` truncates every matched secret to its
  * first 4 characters before it is ever assigned to `Finding.matchedText` —
  * the full secret value never appears in any Finding field.
  */
 import {
   decodesToServiceRole,
   ENTROPY_THRESHOLD,
+  GOOGLE_GENAI_CONTEXT_RE,
+  GOOGLE_PUBLIC_CONTEXT_RE,
   JWT_RE,
   MIN_ENTROPY_CANDIDATE_LENGTH,
   PROVIDER_KEY_PATTERNS,
@@ -76,8 +75,9 @@ import {
 } from "./secret-patterns.js";
 
 import type { Confidence, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
-/** Literal mask suffix appended after the first 4 characters of any matched secret (T-04-02). */
+/** Literal mask suffix appended after the first 4 characters of any matched secret. */
 const MASK_SUFFIX = "****";
 
 /**
@@ -196,18 +196,6 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
   ...thirdPartyTokenPatterns(),
 ];
 
-/**
- * Text near a Google `AIza...` key that marks it as public-by-design client
- * config: a Firebase web config object (`authDomain`, `messagingSenderId`,
- * `storageBucket`, `firebaseConfig`), a Maps / Places browser key, or a
- * reCAPTCHA / YouTube embed.
- */
-const GOOGLE_PUBLIC_CONTEXT_RE =
-  /authDomain|messagingSenderId|storageBucket|firebase|maps\.googleapis\.com|maps_?api_?key|mapsApiKey|googleMapsApiKey|places|recaptcha|youtube/i;
-
-/** Text near a Google key that marks it as a Gemini / Generative Language API key — a paid, server-side secret. */
-const GOOGLE_GENAI_CONTEXT_RE = /gemini|generativeai|genai|generativelanguage|vertex|palm|GoogleGenerativeAI/i;
-
 /** Basenames of Firebase mobile config files, whose `current_key` / `API_KEY` is public by design. */
 const FIREBASE_MOBILE_CONFIG_BASENAMES = new Set(["google-services.json", "GoogleService-Info.plist"]);
 
@@ -262,9 +250,6 @@ function runGoogleKeyPass(
 /** Ruleid assigned to every Supabase service_role signal (JWT decode OR env-name shortcut). */
 const SUPABASE_SERVICE_ROLE_RULE_ID = "SEC-04";
 
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
 /**
  * Package-manager lockfiles: machine-generated, full of integrity hashes
  * (`sha512-...`) and registry URLs whose package names routinely contain
@@ -283,21 +268,9 @@ const LOCKFILE_BASENAMES = new Set([
   "poetry.lock",
 ]);
 
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * its basename marks it as a test or story file (`.test.` / `.stories.`),
- * or it is a package-manager lockfile.
- * Mirrors the codebase's existing `.split("/")` segment-check style (see
- * src/core/ingest/stack-detector.ts `hasKeyWithPrefix`/`hasEnvFile`) rather
- * than pulling in micromatch.
- */
+/** True for test/fixture/story code (shared allowlist) and for package-manager lockfiles. */
 function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.") || LOCKFILE_BASENAMES.has(basename);
+  return isTestOrFixturePath(filePath) || LOCKFILE_BASENAMES.has(filePath.slice(filePath.lastIndexOf("/") + 1));
 }
 
 /**
@@ -552,8 +525,7 @@ function runSupabaseServiceRolePass(
 /**
  * Returns the first 4 characters of `raw` followed by a fixed mask marker.
  * Never returns more than the leading 4 characters of the original secret —
- * the literal masking mitigation for T-04-02 (Information Disclosure via
- * Finding.matchedText). The marker length is constant, not proportional to
+ * so `Finding.matchedText` can never disclose the secret. The marker length is constant, not proportional to
  * `raw.length`, so the mask itself never leaks the secret's real length.
  */
 function maskSecret(raw: string): string {
@@ -682,7 +654,14 @@ export const secretsDetector: Detector = {
   config: {
     name: "secrets",
     category: "secrets",
-    globs: ["**/*.{ts,tsx,js,jsx,mjs,cjs,json,env,txt,md,py,go,yaml,yml,toml,ini,cfg,sh}", "**/.env*"],
+    // Source and config across the stacks AI-built apps ship on — including
+    // Vue/Svelte/Astro single-file components and HTML, where client code
+    // inlines keys just as often as in .ts/.js.
+    globs: [
+      "**/*.{ts,tsx,js,jsx,mjs,cjs,mts,cts,vue,svelte,astro,html,htm,json,env,txt,md,py,go,rb,php,java,kt,swift,dart,cs,rs,yaml,yml,toml,ini,cfg,conf,properties,xml,plist,tf,tfvars,gradle,sh}",
+      "**/.env*",
+      "**/Dockerfile*",
+    ],
   },
 
   // Not declared `async` — there is no network/disk wait in this text-only
@@ -693,7 +672,7 @@ export const secretsDetector: Detector = {
   // that actually await something.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding this
+      // FP allowlist: suppress every finding this
       // detector could emit for test/fixture/mock/example/story paths —
       // applies uniformly across Pass A, A2, and B, not just the new
       // Supabase branch, so test-suite source itself never self-flags.

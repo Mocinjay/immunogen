@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_DETECTORS, matchesGlob, runDetectors } from "./registry.js";
 import { secretsDetector } from "./secrets/index.js";
 
-import type { Detector, ScanContext, StackHints } from "../core/types.js";
+import type { Detector, Finding, ScanContext, StackHints } from "../core/types.js";
 
 /** Minimal StackHints fixture for an inline ScanContext literal. */
 const STACK_HINTS: StackHints = {
@@ -22,7 +22,6 @@ function makeScanContext(files: Record<string, string>): ScanContext {
   return {
     rootPath: "/repo",
     fileSet: new Map(Object.entries(files)),
-    astCache: new Map(),
     stackHints: STACK_HINTS,
     options: {},
     diagnostics: [],
@@ -49,7 +48,7 @@ describe("runDetectors — fan-out and aggregation", () => {
     expect(DEFAULT_DETECTORS).toContain(secretsDetector);
   });
 
-  it("DEFAULT_DETECTORS contains every Phase 5 + Phase 6 detector by config.name (catches a future dropped registration)", () => {
+  it("DEFAULT_DETECTORS contains every expected detector by config.name (catches a future dropped registration)", () => {
     const names = new Set(DEFAULT_DETECTORS.map((detector) => detector.config.name));
     const expectedNames = [
       "secrets",
@@ -233,8 +232,7 @@ describe("runDetectors — inline immunogen-ignore suppression", () => {
     return {
       rootPath: "/repo",
       fileSet: new Map([["src/a.ts", content]]),
-      astCache: new Map(),
-      stackHints: {
+        stackHints: {
         frameworks: new Set(),
         hasSupabase: false,
         hasFirebase: false,
@@ -271,5 +269,128 @@ describe("runDetectors — inline immunogen-ignore suppression", () => {
     const content = ["a // immunogen-ignore", "b"].join("\n");
 
     expect(await runDetectors(makeScanContext(content, true), [flagEveryLine])).toHaveLength(2);
+  });
+});
+
+describe("runDetectors — lazy per-file parsing", () => {
+  function recordingDetector(usesAst: boolean, seen: Array<{ file: string; hasAst: boolean }>): Detector {
+    return {
+      config: { name: usesAst ? "ast-stub" : "text-stub", category: "injection", globs: ["**/*.ts"], usesAst },
+      detect(ctx) {
+        seen.push({ file: ctx.filePath, hasAst: ctx.ast !== undefined });
+        return Promise.resolve([]);
+      },
+    };
+  }
+
+  it("hands the parsed AST only to detectors that declare usesAst", async () => {
+    const seen: Array<{ file: string; hasAst: boolean }> = [];
+    const ctx = makeScanContext({ "src/a.ts": "export const a = 1;" });
+
+    await runDetectors(ctx, [recordingDetector(true, seen), recordingDetector(false, seen)]);
+
+    expect(seen).toEqual([
+      { file: "src/a.ts", hasAst: true },
+      { file: "src/a.ts", hasAst: false },
+    ]);
+  });
+
+  it("records a PARSE_WARN diagnostic for an unparseable file an AST detector wanted", async () => {
+    const ctx = makeScanContext({ "src/bad.ts": "export const = <<< broken(((" });
+
+    await runDetectors(ctx, [recordingDetector(true, [])]);
+
+    expect(ctx.diagnostics).toEqual([expect.objectContaining({ code: "PARSE_WARN", file: "src/bad.ts" })]);
+  });
+
+  it("never parses when no applicable detector uses the AST", async () => {
+    const ctx = makeScanContext({ "src/bad.ts": "export const = <<< broken(((" });
+
+    await runDetectors(ctx, [recordingDetector(false, [])]);
+
+    expect(ctx.diagnostics).toEqual([]);
+  });
+});
+
+describe("runDetectors — requiresStack gating", () => {
+  it("skips a detector whose requiresStack frameworks are absent, and runs it when one is present", async () => {
+    const detectSpy = vi.fn().mockResolvedValue([]);
+    const gated: Detector = {
+      config: { name: "gated", category: "auth", globs: ["**/*"], requiresStack: ["nextjs", "express"] },
+      detect: detectSpy,
+    };
+
+    await runDetectors(makeScanContext({ "a.ts": "x" }), [gated]);
+    expect(detectSpy).not.toHaveBeenCalled();
+
+    const ctx = makeScanContext({ "a.ts": "x" });
+    await runDetectors({ ...ctx, stackHints: { ...STACK_HINTS, frameworks: new Set(["express"]) } }, [gated]);
+    expect(detectSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runDetectors — dedupe and deterministic ordering", () => {
+  const finding = (file: string, ruleId = "SEC-01"): Finding => ({
+    ruleId,
+    category: "secrets",
+    detectorName: "stub",
+    file,
+    line: 1,
+    severity: ruleId === "DEP-OFFLINE" ? "INFO" : "HIGH",
+    confidence: "HIGH",
+    message: "m",
+    remediation: "r",
+  });
+
+  it("drops an exact duplicate reported twice for the same file and line", async () => {
+    const twice: Detector = {
+      config: { name: "twice", category: "secrets", globs: ["**/*"] },
+      detect: (ctx) => Promise.resolve([finding(ctx.filePath), finding(ctx.filePath)]),
+    };
+
+    expect(await runDetectors(makeScanContext({ "a.ts": "x" }), [twice])).toHaveLength(1);
+  });
+
+  it("keeps a single DEP-OFFLINE sentinel per scan, however many manifests degraded", async () => {
+    const offline: Detector = {
+      config: { name: "offline", category: "deps", globs: ["**/package.json"] },
+      detect: (ctx) => Promise.resolve([finding(ctx.filePath, "DEP-OFFLINE")]),
+    };
+    const ctx = makeScanContext({ "package.json": "{}", "apps/a/package.json": "{}", "apps/b/package.json": "{}" });
+
+    const findings = await runDetectors(ctx, [offline]);
+
+    expect(findings.filter((f) => f.ruleId === "DEP-OFFLINE")).toHaveLength(1);
+  });
+
+  it("orders files by code point, independent of the host locale", async () => {
+    const each: Detector = {
+      config: { name: "each", category: "secrets", globs: ["**/*"] },
+      detect: (ctx) => Promise.resolve([finding(ctx.filePath)]),
+    };
+    const ctx = makeScanContext({ "b.ts": "x", "B.ts": "x", "_a.ts": "x", "a.ts": "x" });
+
+    const files = (await runDetectors(ctx, [each])).map((f) => f.file);
+
+    expect(files).toEqual(["B.ts", "_a.ts", "a.ts", "b.ts"]);
+  });
+});
+
+describe("detector coverage — component and markup files", () => {
+  it.each(["src/App.vue", "src/routes/+page.svelte", "src/pages/index.astro", "public/index.html", "Dockerfile"])(
+    "runs the secrets detector on %s",
+    (path) => {
+      expect(matchesGlob(path, secretsDetector.config.globs)).toBe(true);
+    },
+  );
+
+  it("finds a live key hardcoded in a Vue single-file component", async () => {
+    const ctx = makeScanContext({
+      "src/App.vue": `<script setup>\nconst stripe = "${STRIPE_KEY}";\n</script>\n<template><div /></template>\n`,
+    });
+
+    const findings = await runDetectors(ctx);
+
+    expect(findings.some((finding) => finding.ruleId === "SEC-01" && finding.file === "src/App.vue")).toBe(true);
   });
 });

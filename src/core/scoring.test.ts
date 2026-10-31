@@ -75,7 +75,7 @@ describe("computeScore — severity weights", () => {
   });
 });
 
-describe("computeScore — critical hard cap (criterion 3, threat T-04-06)", () => {
+describe("computeScore — critical hard cap (criterion 3)", () => {
   it("a single CRITICAL yields score <= 25 and verdict blocked", () => {
     const result = computeScore([makeFinding("CRITICAL")]);
     expect(result.score).toBeLessThanOrEqual(25);
@@ -178,7 +178,7 @@ describe("computeScore — counts", () => {
   });
 });
 
-describe("computeScore — determinism (threat T-04-05)", () => {
+describe("computeScore — determinism", () => {
   it("the same findings in a different order produce a deep-equal ShipScore", () => {
     const findings: Finding[] = [
       makeFinding("CRITICAL", { file: "a.ts" }),
@@ -268,7 +268,7 @@ describe("computeScore — grade + gradeLabel wiring", () => {
     }
   });
 
-  it("grade stays order-independent alongside score/band/verdict (threat T-04-05)", () => {
+  it("grade stays order-independent alongside score/band/verdict", () => {
     const findings: Finding[] = [
       makeFinding("CRITICAL", { file: "a.ts" }),
       makeFinding("HIGH", { file: "b.ts" }),

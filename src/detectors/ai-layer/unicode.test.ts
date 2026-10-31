@@ -89,7 +89,7 @@ describe("findHiddenContent / findDeceptiveUnicode — ReDoS guard", () => {
     // genuinely benign prose). Space is outside every pattern's alphabet
     // (not base64, not a comment delimiter, not zero-width/RTL/homoglyph),
     // so this string is truly hit-free while still exercising the O(n)
-    // linear-scan budget on a 100_000-char input (threat T-06-02-02).
+    // linear-scan budget on a 100_000-char input.
     const hostileInput = " ".repeat(100_000);
 
     const start = performance.now();

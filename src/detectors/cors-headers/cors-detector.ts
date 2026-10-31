@@ -11,10 +11,8 @@
  *
  * This is a FILE-level co-occurrence check, not a per-line independent scan:
  * a wildcard `Access-Control-Allow-Origin: *` header is the legitimate public
- * API case on its own (.planning/research/FEATURES.md CAT-7 FP table: "Public
- * APIs legitimately use `*`; downgrade to MEDIUM if no credentials header
- * present" — here, "downgrade" means "do not fire at all", since the FORBIDDEN
- * combination is the trigger, not the wildcard alone). Only when BOTH
+ * API case on its own (public APIs legitimately use `*`, so the wildcard
+ * alone never fires — the FORBIDDEN combination is the trigger). Only when BOTH
  * signals — a wildcard-origin header AND an allow-credentials-true header —
  * are present anywhere in the same file does CORS-01 fire, once, at the
  * wildcard-origin header's line. This keeps false positives near zero: the
@@ -22,7 +20,7 @@
  * misconfigured servers still send it), so co-occurrence is a near-certain
  * signal rather than a heuristic.
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` opens
+ * FP allowlist: `detect()` opens
  * with a path-segment check against `__tests__`, `fixtures`, `mocks`,
  * `examples`, plus a `.test.`/`.stories.` basename check — matching paths
  * short-circuit to `[]` before the scan runs, mirroring
@@ -37,23 +35,7 @@
  * malformed/empty `ctx.content` can never propagate a rejection.
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /**
  * Matches an `Access-Control-Allow-Origin` header (case-insensitive header
@@ -189,9 +171,9 @@ export const corsDetector: Detector = {
   // the body is plain synchronous work wrapped in `Promise.resolve()`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 
@@ -202,8 +184,7 @@ export const corsDetector: Detector = {
       }
 
       // First pass: find the line of the FIRST wildcard-origin header match
-      // (if any) — this is the Finding's reported line per the plan's
-      // behavior spec ("line = the line of the wildcard-origin header").
+      // (if any) — this is the Finding's reported line.
       let wildcardOriginLine: number | undefined;
       for (const [index, line] of lines.entries()) {
         if (WILDCARD_ORIGIN_RE.test(line)) {
@@ -226,7 +207,7 @@ export const corsDetector: Detector = {
 
       if (!hasCredentialsTrue) {
         // Signal (b) absent — wildcard-without-credentials is the legitimate
-        // public-API case (FEATURES.md CAT-7 FP mitigation). Do not fire.
+        // public-API case. Do not fire.
         return Promise.resolve(reflected);
       }
 

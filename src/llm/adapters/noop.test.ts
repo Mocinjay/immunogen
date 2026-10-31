@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { NoopAdapter } from "./noop.js";
 
-describe("NoopAdapter — mandatory zero-setup default (T-07-06)", () => {
+describe("NoopAdapter — mandatory zero-setup default", () => {
   it("generate() resolves to an empty string", async () => {
     const adapter = new NoopAdapter();
 

@@ -3,16 +3,13 @@
  * `Finding[]`. SCORE-01 deliverable.
  *
  * Inverts SkillSpector's scoring direction: SkillSpector scores _risk_
- * (higher = worse); immunogen scores _ship-readiness_ (higher = safer). See
- * .planning/research/ARCHITECTURE.md ("Scoring Engine" section) for the
- * weight/cap formula this implements. That document's earlier draft used a
- * different, school-grade-style set of band names; src/core/types.ts since
- * LOCKED a separate, action-oriented set of labels (STATE.md Phase 02-01
- * decision) — this module classifies into those locked labels exclusively.
+ * (higher = worse); immunogen scores _ship-readiness_ (higher = safer). The
+ * weight/cap formula is documented on `computeScore`; scores classify into
+ * the action-oriented `Band` labels from src/core/types.ts.
  *
  * `computeScore` is a pure function: no I/O, no timing or randomness calls,
- * no reliance on input order. The CRITICAL hard cap (threat T-04-06) and
- * overall determinism (threat T-04-05) are both enforced here and proven by
+ * no reliance on input order. The CRITICAL hard cap and
+ * overall determinism are both enforced here and proven by
  * scoring.test.ts.
  */
 import type { Band, Finding, Grade, Severity, ShipScore, Verdict } from "./types.js";
@@ -26,7 +23,7 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
   INFO: 0,
 };
 
-/** Risk floor applied when at least one CRITICAL finding is present — the critical hard cap (T-04-06). */
+/** Risk floor applied when at least one CRITICAL finding is present — the critical hard cap. */
 const CRITICAL_RISK_FLOOR = 80;
 
 /** Maximum representable risk before inversion; also the score/risk clamp ceiling. */
@@ -68,9 +65,7 @@ const GRADE_STATUS_LABELS: Record<Grade, string> = {
 
 /**
  * Classifies a 0–100 score into one of the four LOCKED action-oriented
- * `Band` labels from types.ts. Thresholds mirror ARCHITECTURE.md's numeric
- * ranges (90/70/40) but map onto the action-oriented labels, never the
- * grade-style ones that document proposed.
+ * `Band` labels from types.ts, at thresholds 90/70/40.
  */
 function bandFor(score: number): Band {
   if (score >= BAND_READY_TO_SHIP_MIN) {
@@ -115,13 +110,13 @@ export function gradeFor(score: number, hasCritical: boolean): Grade {
 /**
  * Computes the deterministic Ship Score for a scan's findings.
  *
- * Formula (ARCHITECTURE.md "Scoring Engine"):
+ * Formula:
  *   rawPoints  = sum of SEVERITY_WEIGHTS[finding.severity] across all findings
  *   hasCritical = at least one finding has severity "CRITICAL"
  *   cappedRisk = hasCritical ? max(rawPoints, 80) : min(rawPoints, 100)
  *   score      = 100 - cappedRisk   (inverted: 0 risk -> 100 Ship Score)
  *
- * The CRITICAL hard cap (criterion 3 / threat T-04-06) means cappedRisk is
+ * The CRITICAL hard cap means cappedRisk is
  * floored at 80 whenever any CRITICAL finding exists, which floors `score`
  * at <= 20 regardless of how few other findings are present — well inside
  * the <= 25 acceptance bound. Verdict is "blocked" whenever a CRITICAL is
@@ -132,7 +127,7 @@ export function gradeFor(score: number, hasCritical: boolean): Grade {
  *
  * Pure and order-independent: reduces and counts iterate `findings` without
  * depending on array order, and the function performs no I/O, timing, or
- * randomness (threat T-04-05) — calling this twice with the same findings,
+ * randomness — calling this twice with the same findings,
  * in any order, returns a deep-equal `ShipScore`.
  */
 export function computeScore(findings: Finding[]): ShipScore {

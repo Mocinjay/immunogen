@@ -1,9 +1,8 @@
 /**
  * Builds an in-memory `Map<relativePath, rawText>` from a flat spec object,
- * for ASTCache tests. Mirrors `make-file-set.ts` (the Plan 03-03 helper
- * used by StackDetector's tests) but is owned by this plan to avoid
- * cross-plan file contention — both are trivial one-line Map builders
- * over the same `Record<string, string>` shape.
+ * for AST tests. Mirrors `make-file-set.ts` (used by StackDetector's
+ * tests) — both are trivial one-line Map builders over the same
+ * `Record<string, string>` shape.
  *
  * Lives under tests/helpers/ (not tests/**\/*.test.ts) so vitest does not
  * treat it as a spec file — see vitest.config.ts's `include` pattern.

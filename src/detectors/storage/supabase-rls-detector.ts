@@ -32,9 +32,7 @@
  * inside a try/catch returning `[]` on any failure.
  */
 import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
+import { isInTestDirectory } from "../shared/test-paths.js";
 
 /** A possibly schema-qualified, possibly double-quoted SQL identifier. */
 const IDENT = String.raw`(?:"[^"]+"|[\w$]+)(?:\s*\.\s*(?:"[^"]+"|[\w$]+))?`;
@@ -63,11 +61,6 @@ const POLICY_ROLES_RE = /\bto\s+([\w\s,"]+?)(?=\s+(?:using|with)\b|\s*$)/i;
 
 /** An unconditional `using (true)` / `with check (true)` predicate. */
 const ALWAYS_TRUE_PREDICATE_RE = /\b(?:using|with\s+check)\s*\(\s*true\s*\)/i;
-
-/** True when `filePath` falls inside a test/fixture/mock/example directory. */
-function isAllowlistedPath(filePath: string): boolean {
-  return filePath.split("/").some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment));
-}
 
 /** True when `filePath` is a SQL file that belongs to a Supabase project. */
 function isSupabaseSqlFile(filePath: string, hasSupabase: boolean): boolean {
@@ -184,7 +177,7 @@ export const supabaseRlsDetector: Detector = {
   // Not declared `async` — plain synchronous text work wrapped in Promise.resolve().
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      if (isAllowlistedPath(ctx.filePath) || !isSupabaseSqlFile(ctx.filePath, ctx.stackHints.hasSupabase)) {
+      if (isInTestDirectory(ctx.filePath) || !isSupabaseSqlFile(ctx.filePath, ctx.stackHints.hasSupabase)) {
         return Promise.resolve([]);
       }
 

@@ -9,8 +9,8 @@
  * instructions; if it contains an instruction-override directive ("ignore
  * previous instructions", "disregard safety", "you must now", "forget your
  * guidelines"...) that directive is a live jailbreak sitting in the
- * repository, not a hypothetical risk (.planning/research/FEATURES.md
- * AILAYER-01 row: severity CRITICAL, FP risk LOW).
+ * repository, not a hypothetical risk (severity CRITICAL, low
+ * false-positive risk).
  *
  * This module REIMPLEMENTS (does not copy verbatim) the signature family
  * documented as NVIDIA SkillSpector's P1 "Instruction Override" pattern and
@@ -21,22 +21,22 @@
  * pattern logic into a new TypeScript expression requires the exact
  * two-line SPDX header above, copied character-for-character.
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` opens
+ * FP allowlist: `detect()` opens
  * with the same path-segment check against `__tests__`, `fixtures`,
  * `mocks`, `examples`, plus a `.test.`/`.stories.` basename check, mirroring
  * src/detectors/storage/firebase-rules-detector.ts `isAllowlistedPath`.
  *
- * ENG-05 (text-only invariant, threat T-06-01-01): this module reads
+ * ENG-05 (text-only invariant): this module reads
  * `ctx.content` as a plain string only. It never reads `ctx.ast`, never
  * imports a parser, and never evaluates, requires, `new Function`s, or
  * spawns a subprocess from scanned content — these are TEXT detectors.
  *
- * ReDoS safety (threat T-06-01-02): every pattern below is bounded — no
+ * ReDoS safety: every pattern below is bounded — no
  * nested quantifiers, no unbounded `.*` spanning the whole line — and each
  * regex is run per-line (content is split on `\n` first), so the input to
  * any single `.test()` call is bounded by that line's own length.
  *
- * Information-disclosure safety (threat T-06-01-03): `matchedText` is the
+ * Information-disclosure safety: `matchedText` is the
  * trimmed line, truncated to a fixed 120-character cap, so a hostile file
  * with a giant line cannot blow up output or leak more than a short
  * snippet.
@@ -45,31 +45,15 @@
  * runs inside try/catch returning `[]` on any failure.
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/** Maximum length of a `matchedText` snippet — bounds output even for a pathologically long line (threat T-06-01-03). */
+/** Maximum length of a `matchedText` snippet — bounds output even for a pathologically long line. */
 const MATCHED_TEXT_MAX_LENGTH = 120;
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/storage/firebase-rules-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
 
 /**
  * Truncates `line` (already trimmed) to `MATCHED_TEXT_MAX_LENGTH` characters,
  * so a hostile file with a giant single line cannot blow up Finding output
- * (threat T-06-01-03).
+ *.
  */
 function truncateMatchedText(line: string): string {
   return line.length > MATCHED_TEXT_MAX_LENGTH ? line.slice(0, MATCHED_TEXT_MAX_LENGTH) : line;
@@ -87,7 +71,7 @@ function truncateMatchedText(line: string): string {
  *
  * Bounded character classes / fixed-cardinality groups only — no
  * `.*`/unbounded-quantifier spans — keeps each pattern ReDoS-safe
- * (threat T-06-01-02).
+ *.
  */
 const INSTRUCTION_OVERRIDE_PATTERNS: readonly RegExp[] = [
   // ignore (previous|prior|all|above) (instructions|prompts|rules)
@@ -141,9 +125,9 @@ export const promptInjectionDetector: Detector = {
   // matching firebase-rules-detector.ts's convention.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

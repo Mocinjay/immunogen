@@ -19,7 +19,7 @@
  * these helpers without depending on the MCP-specific Finding-shaping
  * logic.
  *
- * ReDoS safety (threat T-06-02-02): zero-width / RTL-override /
+ * ReDoS safety: zero-width / RTL-override /
  * invisible-formatting / homoglyph detection is O(n) codepoint-`Set`/`Map`
  * MEMBERSHIP testing — `for (const ch of text)` + `ch.codePointAt(0)` — NOT
  * a backtracking regex. The HTML/markdown-comment and base64-blob checks
@@ -36,7 +36,7 @@
  * but that is a property of the CALLER, not this module.
  */
 
-/** A single hidden-content finding: which technique matched, plus a short, bounded snippet (never a decoded payload — threat T-06-02-04). */
+/** A single hidden-content finding: which technique matched, plus a short, bounded snippet (never a decoded payload). */
 export interface HiddenContentHit {
   kind: string;
   snippet: string;
@@ -48,13 +48,13 @@ export interface DeceptiveUnicodeHit {
   codepoint: string;
 }
 
-/** Maximum length of a `snippet`/source excerpt — bounds output even for a pathologically long input (threat T-06-02-04). */
+/** Maximum length of a `snippet`/source excerpt — bounds output even for a pathologically long input. */
 const SNIPPET_MAX_LENGTH = 80;
 
 /**
  * Truncates `text` to `SNIPPET_MAX_LENGTH` characters. Used for hidden-content
  * snippets so a giant base64 blob or comment body never blows up Finding
- * output, and the raw decoded payload is never re-emitted (threat T-06-02-04).
+ * output, and the raw decoded payload is never re-emitted.
  */
 function truncateSnippet(text: string): string {
   return text.length > SNIPPET_MAX_LENGTH ? `${text.slice(0, SNIPPET_MAX_LENGTH)}…` : text;
@@ -221,8 +221,7 @@ export function findHiddenContent(text: string): HiddenContentHit[] {
  * text with no deceptive characters.
  *
  * Iterates codepoints once (`for (const ch of text)`) and tests `Set`/`Map`
- * membership per character — O(n), no backtracking regex (threat
- * T-06-02-02).
+ * membership per character — O(n), no backtracking regex (ReDoS-safe).
  */
 export function findDeceptiveUnicode(text: string): DeceptiveUnicodeHit[] {
   const hits: DeceptiveUnicodeHit[] = [];

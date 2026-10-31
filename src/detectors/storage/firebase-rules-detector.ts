@@ -2,22 +2,16 @@
  * firebaseRulesDetector — CAT-3 (Auth) + CAT-8 (Storage) detector, ONE
  * detector emitting two ruleIds: AUTH-02 and STORAGE-01.
  *
- * Both requirements collapse into the same exact string match per
- * .planning/research/FEATURES.md: a Firebase Firestore/Database/Storage
+ * Both rules collapse into the same exact string match: a Firebase Firestore/Database/Storage
  * rules file containing the unambiguous `allow ...: if true` directive
  * grants public read/write to every document or object it covers — this is
- * the root cause behind CVE-2025-48757-class AI-app breaches. FEATURES.md
- * names this row "AUTH-04" (CAT-3) / "STORAGE-01" (CAT-8); this plan's own
- * requirements field and acceptance criteria use "AUTH-02" for the CAT-3
- * side, matching the 05-02/05-03 precedent that the plan's literal naming
- * is authoritative over FEATURES.md's row label.
+ * the root cause behind CVE-2025-48757-class AI-app breaches.
  *
  * Which ruleId fires is decided by file basename, not directory: a
  * `storage.rules` file emits STORAGE-01/category "storage"; any other rules
  * file (`firestore.rules`, `database.rules.json`, or another `*.rules`
  * file) emits AUTH-02/category "auth". Both share severity CRITICAL,
- * confidence HIGH — per PITFALLS.md Pitfall 1's confidence-discipline rule,
- * absence-evidence findings are never CRITICAL, but THIS is not absence
+ * confidence HIGH — absence-evidence findings are never CRITICAL, but THIS is not absence
  * evidence: `if true` is a literal, unambiguous condition present in the
  * scanned text, so CRITICAL/HIGH is correct here (contrast with the
  * Supabase detector's absence-based AUTH-03/STORAGE-02, which must never
@@ -40,11 +34,10 @@
  * package.json, e.g. a mobile app or a backend-only repo). Checked FIRST,
  * before any other logic — mirrors
  * src/detectors/payment/stripe-detector.ts's hasStripe gate. The gate lives
- * inside detect() itself (not the registry) per this plan's contract;
- * config.requiresStack is declarative metadata for the registry-wiring plan
- * (05-08).
+ * inside detect() itself rather than in config.requiresStack, because it is
+ * deliberately broader than "Firebase dependency detected".
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` also
+ * FP allowlist: `detect()` also
  * opens with the same path-segment check against `__tests__`, `fixtures`,
  * `mocks`, `examples`, plus a `.test.`/`.stories.` basename check, mirroring
  * src/detectors/secrets/entropy-detector.ts's `isAllowlistedPath`.
@@ -58,23 +51,7 @@
  * malformed/empty `ctx.content` can never propagate a rejection.
  */
 import type { Category, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors src/detectors/secrets/entropy-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /**
  * Matches an `allow` directive whose condition is literally `if true`,
@@ -123,24 +100,26 @@ export const firebaseRulesDetector: Detector = {
   config: {
     name: "firebase-rules",
     category: "storage",
+    // No requiresStack: firestore.rules / storage.rules / database.rules.json
+    // are Firebase by name and are checked even without a Firebase dependency
+    // (see the STACK GATE note above); the in-code gate handles *.rules.
     globs: ["**/firestore.rules", "**/storage.rules", "**/database.rules.json", "**/*.rules"],
-    requiresStack: ["firebase"],
   },
 
   // Not declared `async` — no network/disk wait in this text-only detector;
   // the body is plain synchronous work wrapped in `Promise.resolve()`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // STACK GATE FIRST (per this plan's contract): a generic `*.rules`
+      // STACK GATE FIRST: a generic `*.rules`
       // file in a repo with no Firebase dependency/config is not Firebase.
       const basename = ctx.filePath.split("/").at(-1) ?? "";
       if (!ctx.stackHints.hasFirebase && !FIREBASE_RULES_BASENAMES.has(basename)) {
         return Promise.resolve([]);
       }
 
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

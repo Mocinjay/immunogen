@@ -34,9 +34,7 @@
 import { manifestParserFor } from "../../core/ingest/manifests.js";
 
 import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples", "tests", "testdata"]);
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** LLM SDK imports / calls (JS, Python, Go). */
 const LLM_USAGE_RE =
@@ -78,16 +76,6 @@ const RATE_LIMIT_PACKAGES = [
 
 /** Next.js middleware basenames (`proxy.ts` is its Next.js 16 name). */
 const MIDDLEWARE_BASENAMES = new Set(["middleware.ts", "middleware.js", "proxy.ts", "proxy.js"]);
-
-/** True when `filePath` falls inside a test/fixture directory or is a test file. */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return /\.(?:test|spec|stories)\.|^test_.*\.py$|_test\.(?:py|go)$/.test(basename);
-}
 
 /** Route paths declared in a non-Next server file (Express/Fastify/Hono/Koa, FastAPI/Flask, Go). */
 function declaredRoutePaths(content: string): string[] {
@@ -168,7 +156,7 @@ export const rateLimitDetector: Detector = {
   // Not declared `async`: synchronous text work wrapped in Promise.resolve().
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      if (isAllowlistedPath(ctx.filePath) || RATE_LIMIT_CODE_RE.test(ctx.content)) {
+      if (isTestOrFixturePath(ctx.filePath) || RATE_LIMIT_CODE_RE.test(ctx.content)) {
         return Promise.resolve([]);
       }
       const paths = endpointPaths(ctx);

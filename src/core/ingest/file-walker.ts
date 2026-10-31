@@ -19,10 +19,8 @@
  * git work tree, `.gitignore` is the only signal. A gitignored, untracked
  * `.env.local` holding real keys is the correct local setup and is never
  * scanned. Tracked paths come from `readTrackedFiles` (git-index.ts), which
- * parses `.git/index` directly instead of running git. See
- * .planning/research/ARCHITECTURE.md ("File Walker Rules") and
- * .planning/research/PITFALLS.md (Pitfall 2, Pitfall 11) for the rationale
- * behind each rule below.
+ * parses `.git/index` directly instead of running git. Each rule's
+ * rationale is noted where it is applied below.
  *
  * Total-repo bounds (belt-and-suspenders alongside the per-file size cap):
  * once either `maxTotalBytes` or `maxTotalFiles` is exceeded, the walker
@@ -30,14 +28,14 @@
  * single `SCAN_TRUNCATED` `Diagnostic` (`diagnostics`, alongside `fileSet`)
  * so callers can surface a degraded/partial scan — this never throws.
  *
- * Security-critical: `followSymbolicLinks: false` is load-bearing (T-03-05 —
- * a symlink pointing at /etc/shadow must never be followed or read). This
+ * Security-critical: `followSymbolicLinks: false` is load-bearing (a
+ * symlink pointing at /etc/shadow must never be followed or read). This
  * module never imports child_process and never exec/spawn/eval/requires a
  * scanned file (ENG-05).
  */
 import fg from "fast-glob";
 import ignore from "ignore";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 
 import { readTrackedFiles } from "./git-index.js";
@@ -75,6 +73,12 @@ const DEFAULT_MAX_TOTAL_FILES = 25_000;
 
 /** Stable diagnostic code emitted when the total-repo cap truncates the walk before every candidate file was read. */
 const SCAN_TRUNCATED_CODE = "SCAN_TRUNCATED";
+
+/** Stable diagnostic code summarizing files skipped for exceeding the per-file size cap. */
+const FILES_SKIPPED_CODE = "FILES_SKIPPED";
+
+/** Skipped paths named in the FILES_SKIPPED diagnostic before the rest are counted. */
+const MAX_SKIPPED_PATHS_LISTED = 5;
 
 /** Number of leading bytes sniffed for a NUL byte when detecting binaries. */
 const BINARY_SNIFF_BYTES = 8192;
@@ -219,35 +223,45 @@ function isGitignored(gitignores: ScopedGitignore[], relPath: string): boolean {
   });
 }
 
+/** Why a candidate produced no content. */
+type SkipReason = "oversize" | "binary" | "unreadable";
+
 /**
- * Reads `path` and reports whether it should be skipped as binary or
- * over-cap, returning its text content when it survives both checks.
- * Returns `undefined` when the file should be skipped.
+ * Reads `absPath` as text, or reports why it was skipped. The size is checked
+ * with `stat` BEFORE reading, so an oversized file (a multi-GB dump or
+ * build artifact) is never loaded into memory just to be discarded.
  */
 async function readIfEligible(
   absPath: string,
   maxFileSizeBytes: number,
-): Promise<string | undefined> {
-  // eslint-disable-next-line security/detect-non-literal-fs-filename -- walker reads caller-supplied repo paths by design
-  const buffer = await readFile(absPath);
-
-  if (buffer.length > maxFileSizeBytes) {
-    return undefined;
+): Promise<{ content: string } | { skipped: SkipReason }> {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- walker reads caller-supplied repo paths by design
+    const info = await stat(absPath);
+    if (info.size > maxFileSizeBytes) {
+      return { skipped: "oversize" };
+    }
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- walker reads caller-supplied repo paths by design
+    const buffer = await readFile(absPath);
+    // Re-check: the file may have grown between stat and read.
+    if (buffer.length > maxFileSizeBytes) {
+      return { skipped: "oversize" };
+    }
+    const sniffWindow = buffer.subarray(0, Math.min(buffer.length, BINARY_SNIFF_BYTES));
+    if (sniffWindow.includes(0x00)) {
+      return { skipped: "binary" };
+    }
+    return { content: buffer.toString("utf8") };
+  } catch {
+    // Vanished or permission-denied mid-walk: skip it rather than abort the scan.
+    return { skipped: "unreadable" };
   }
-
-  const sniffLength = Math.min(buffer.length, BINARY_SNIFF_BYTES);
-  const sniffWindow = buffer.subarray(0, sniffLength);
-  if (sniffWindow.includes(0x00)) {
-    return undefined;
-  }
-
-  return buffer.toString("utf8");
 }
 
 /**
  * Walks `rootDir` and returns a `Map<relativePath, rawText>` of exactly the
  * files a detector should see, plus any `Diagnostic[]` warnings. Order of
- * rules applied per candidate path (ARCHITECTURE.md "File Walker Rules"):
+ * rules applied per candidate path:
  *
  * 1. Hard-coded blocklist directories never visited (glob-level `ignore`).
  * 2. `.gitignore` applied via the `ignore` package — UNLESS the path is in
@@ -261,7 +275,7 @@ async function readIfEligible(
  *    whatever was already accumulated, plus a single `SCAN_TRUNCATED`
  *    diagnostic. This never throws.
  *
- * Never follows symlinks (`followSymbolicLinks: false` — T-03-05).
+ * Never follows symlinks (`followSymbolicLinks: false`).
  */
 export async function walkFiles(
   rootDir: string,
@@ -272,6 +286,7 @@ export async function walkFiles(
   const maxTotalFiles = options?.maxTotalFiles ?? DEFAULT_MAX_TOTAL_FILES;
   const fileSet = new Map<string, string>();
   const diagnostics: Diagnostic[] = [];
+  const oversized: string[] = [];
   let totalBytesRead = 0;
 
   const candidates = await fg("**/*", {
@@ -317,16 +332,29 @@ export async function walkFiles(
 
     const absPath = join(rootDir, relPath);
     const isLockfile = LOCKFILE_BASENAMES.has(relPath.slice(relPath.lastIndexOf("/") + 1));
-    const content = await readIfEligible(
+    const read = await readIfEligible(
       absPath,
       isLockfile ? Math.max(maxFileSizeBytes, LOCKFILE_MAX_FILE_SIZE_BYTES) : maxFileSizeBytes,
     );
-    if (content === undefined) {
+    if ("skipped" in read) {
+      if (read.skipped === "oversize") {
+        oversized.push(relPath);
+      }
       continue;
     }
 
-    fileSet.set(relPath, content);
-    totalBytesRead += Buffer.byteLength(content, "utf8");
+    fileSet.set(relPath, read.content);
+    totalBytesRead += Buffer.byteLength(read.content, "utf8");
+  }
+
+  if (oversized.length > 0) {
+    const listed = oversized.slice(0, MAX_SKIPPED_PATHS_LISTED).join(", ");
+    const more = oversized.length > MAX_SKIPPED_PATHS_LISTED ? `, +${String(oversized.length - MAX_SKIPPED_PATHS_LISTED)} more` : "";
+    diagnostics.push({
+      level: "info",
+      code: FILES_SKIPPED_CODE,
+      message: `${String(oversized.length)} file(s) larger than the ${String(Math.round(maxFileSizeBytes / 1024))} KB per-file cap were not scanned: ${listed}${more}.`,
+    });
   }
 
   return { fileSet, diagnostics };

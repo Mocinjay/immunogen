@@ -5,8 +5,7 @@
  * through the scan pipeline — ingestion, detectors, scoring, LLM enrichment,
  * and reporters all import their types from here. No other module may
  * redefine Finding, Detector, ScanResult, ShipScore, or any of the supporting
- * shapes declared below. See .planning/research/ARCHITECTURE.md ("Data
- * Contracts" section) for the architectural rationale.
+ * shapes declared below.
  *
  * This file is types-only: the sole runtime values permitted are the
  * string-literal unions themselves (erasable under `isolatedModules`). No
@@ -19,7 +18,7 @@
  * Closed severity union. EXACTLY these five members, in no other order or
  * count. Downstream code (detectors, scoring, reporters) cannot invent or
  * assign an invalid severity — the compiler rejects it. ASVS L1: enforce
- * valid value domains at the type level (see plan 02-01 threat T-02-01).
+ * valid value domains at the type level.
  */
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
@@ -31,11 +30,8 @@ export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 export type Confidence = "HIGH" | "MEDIUM" | "LOW";
 
 /**
- * Action-oriented Ship Score band labels. Resolves the STATE.md open
- * question (ARCHITECTURE.md proposed grade-style "Production/Launch/Needs
- * Work/Early" labels; this plan commits to the action-oriented variant so
- * a developer reading the band knows what to do next, not just how they
- * were graded).
+ * Action-oriented Ship Score band labels, so a developer reading the band
+ * knows what to do next, not just how they were graded.
  */
 export type Band = "Ready to ship" | "Low risk" | "Moderate risk" | "High risk";
 
@@ -52,8 +48,8 @@ export type Verdict = "pass" | "blocked";
 export type Grade = "A" | "B" | "C" | "D" | "F";
 
 /**
- * Closed detector-family category union. One member per CAT-1..CAT-11 from
- * REQUIREMENTS.md. Closed (not `string`) so DetectorConfig.category and
+ * Closed detector-family category union, one member per detector family.
+ * Closed (not `string`) so DetectorConfig.category and
  * Finding.category cannot drift to an unregistered category name.
  */
 export type Category =
@@ -103,7 +99,7 @@ export interface Finding {
   /** The snippet that triggered (truncated). */
   matchedText?: string;
 
-  /** Added by the LLM stage in Phase 7; absent offline. */
+  /** Added by the optional LLM enrichment stage; absent offline. */
   fixPrompt?: string;
 }
 
@@ -114,10 +110,20 @@ export interface DetectorConfig {
   category: Category;
   /** micromatch/fast-glob patterns the walker pre-filters on. */
   globs: string[];
-  /** Only activate when StackHints includes these frameworks. */
+  /**
+   * Run only when `StackHints.frameworks` contains at least one of these.
+   * Enforced by the registry, so a gated detector is never even invoked on
+   * an unrelated stack.
+   */
   requiresStack?: string[];
-  /** true for the OSV dep check; skipped in strict offline mode. */
+  /** true for the OSV dep check, which honors `DetectorContext.offline`. */
   requiresNetwork?: boolean;
+  /**
+   * true when `detect()` reads `ctx.ast`. The registry parses a file only
+   * when at least one applicable detector sets this, and frees the tree as
+   * soon as that file's detectors finish.
+   */
+  usesAst?: boolean;
 }
 
 /**
@@ -139,8 +145,8 @@ export interface StackHints {
 /**
  * Read-only view passed to Detector.detect(). Detectors must treat every
  * field as immutable — `fileSet` is a ReadonlyMap specifically so a detector
- * cannot accidentally write to shared pipeline state (Anti-Pattern 4 in
- * ARCHITECTURE.md: no process-level/shared mutable state in detectors).
+ * cannot accidentally write to shared pipeline state (no process-level or
+ * shared mutable state in detectors).
  */
 export interface DetectorContext {
   /** Repo-relative path. */
@@ -148,9 +154,9 @@ export interface DetectorContext {
   /** Full file text. */
   content: string;
   /**
-   * Present for .js/.jsx/.ts/.tsx when ASTCache parsed OK; `undefined`
-   * otherwise. Typed `unknown` here — Phase 3 narrows this to the real AST
-   * node type once @babel/parser is wired in.
+   * The file's Babel `File` AST — present only for detectors that declare
+   * `config.usesAst` and only when the file parsed. Typed `unknown`; AST
+   * detectors narrow it with `isBabelFile` (src/detectors/ast/ast-utils.ts).
    */
   ast?: unknown;
   stackHints: StackHints;
@@ -163,7 +169,7 @@ export interface DetectorContext {
 /**
  * The pluggable detector contract every detector family implements.
  *
- * Key decisions baked in (ARCHITECTURE.md "Detector Plugin Contract"):
+ * Key decisions baked in:
  * - Always async — lets network-dependent detectors (OSV) await without a
  *   special code path; regex-only detectors resolve immediately.
  * - No-throw contract — detect() must catch its own errors internally and
@@ -209,7 +215,7 @@ export interface ScanOptions {
    * running infrastructure — unlike the existing dir/git/zip inputs, which
    * only ever read bytes the caller already possesses — so this must be
    * explicitly opted into. `undefined`/`false` behaves identically: the URL
-   * branch (wired in Pass 2) refuses to resolve any URL target at all.
+   * branch refuses to resolve any URL target at all.
    */
   authorize?: boolean;
   /**
@@ -249,20 +255,16 @@ export interface Diagnostic {
 
 /**
  * Internal pipeline state for a single scan. Created per `scan()` call and
- * garbage-collected when that call returns — this is the non-reentrancy
- * guard from ARCHITECTURE.md Anti-Pattern 4 (no module-level/process-level
- * mutable state in detectors; all per-scan state lives here instead).
+ * garbage-collected when that call returns — all per-scan state lives here,
+ * never in module-level variables. ASTs are deliberately NOT held here: the
+ * registry parses each file on demand and frees the tree afterwards (see
+ * src/core/parse/ast-cache.ts for why).
  */
 export interface ScanContext {
   /** Resolved absolute path. */
   rootPath: string;
   /** relative path -> raw text. */
   fileSet: Map<string, string>;
-  /**
-   * relative path -> parsed AST (JS/TS only). Typed `unknown` here; Phase 3
-   * narrows this once @babel/parser is wired in.
-   */
-  astCache: Map<string, unknown>;
   stackHints: StackHints;
   options: ScanOptions;
   diagnostics: Diagnostic[];
@@ -290,7 +292,7 @@ export interface ShipScore {
 
 /**
  * Public scan() return shape. target/scannedAt/findings/score are the four
- * fields Phase 4's CLI and JSON reporter depend on directly.
+ * fields the CLI and JSON reporter depend on directly.
  */
 export interface ScanResult {
   /** The original input path/URL. */
@@ -304,15 +306,20 @@ export interface ScanResult {
   /** Whether the LLM stage ran (always false offline). */
   llmEnriched: boolean;
   /**
-   * True when a network-dependent detector degraded (e.g. OSV unreachable)
-   * — surfaces a partial scan explicitly rather than silently passing.
+   * True when coverage was reduced — a network-dependent detector degraded
+   * (OSV unreachable / `--offline`), the walk hit a total-repo cap, or a URL
+   * probe failed — so a partial scan is never mistaken for a clean one.
    */
   scanIncomplete: boolean;
   /**
-   * Forward-compatible SARIF slot. Phase 6 narrows this to the SARIF `Log`
-   * type from the DefinitelyTyped SARIF type package once the SARIF
-   * reporter is built; left as `unknown` now so this remains a
-   * zero-dependency, types-only phase.
+   * Every non-fatal pipeline warning: unparseable files, files skipped for
+   * size, truncated walks, LLM misconfiguration or failures. Rendered by
+   * every reporter so degraded coverage is visible, not silent.
+   */
+  diagnostics: Diagnostic[];
+  /**
+   * Reserved, currently unused: SARIF output is produced by the SARIF
+   * reporter (`--format sarif`), not attached to the result.
    */
   sarif?: unknown;
 }

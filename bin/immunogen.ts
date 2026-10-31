@@ -7,9 +7,8 @@
  * `runCli()` is the entire CLI action: it calls `scan()` exactly once,
  * selects a `Reporter` via `getReporter()`, prints `reporter.render(result)`,
  * and derives the exit code purely from `result.score.verdict` — it
- * contains no detection, scoring, or AST-parsing logic of its own
- * (.planning/research/ARCHITECTURE.md "Pattern 3: Library-First,
- * CLI-as-Thin-Wrapper").
+ * contains no detection, scoring, or AST-parsing logic of its own (the
+ * library is the product; the CLI is a thin wrapper).
  *
  * `scan()` is wrapped in try/catch: any ingestion throw (nonexistent path,
  * file-as-path, non-ZIP `.zip`, unreachable git host, etc.) is caught here,
@@ -34,23 +33,18 @@
  * every installed `immunogen` invocation silently print nothing and exit 0.
  */
 import { realpathSync } from "node:fs";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-import { Command } from "commander";
+import { Command, Option } from "commander";
 
 import { scan } from "../src/index.js";
 import { getReporter } from "../src/reporters/index.js";
+import { VERSION } from "../src/version.js";
 
 import type { ScanOptions } from "../src/index.js";
 
-/**
- * The package version, read from package.json at runtime. Both the source
- * entry (bin/immunogen.ts) and the built entry (dist/immunogen.js) sit one
- * directory below the package root, so the same relative path resolves in
- * dev, in tests, and in an installed npm package.
- */
-const { version: VERSION } = createRequire(import.meta.url)("../package.json") as { version: string };
+/** Output formats `--format` accepts; anything else is a usage error, not a silent fallback. */
+const FORMATS = ["terminal", "json", "sarif"] as const;
 
 /**
  * Runs one CLI scan action: calls `scan(path, { format, noLlm, authorize,
@@ -68,7 +62,7 @@ const { version: VERSION } = createRequire(import.meta.url)("../package.json") a
  * unset/false option must be omitted entirely rather than set to
  * `undefined`/`false`.
  *
- * `authorize`/`allowPrivate` (Pass 2) flow straight through to `scan()`,
+ * `authorize`/`allowPrivate` flow straight through to `scan()`,
  * which routes a `https?://`-prefixed `path` to `scanUrl()` — the consent
  * gate and SSRF guard both live in `src/web/url-resolver.ts`, not here; this
  * function only forwards the flags.
@@ -142,11 +136,7 @@ if (isEntryScript()) {
       "path to the repository to scan (default: current directory), or a live https:// URL to screen (requires --authorize)",
       ".",
     )
-    .option(
-      "--format <format>",
-      "output format: terminal, json, or sarif",
-      "terminal",
-    )
+    .addOption(new Option("--format <format>", "output format").choices(FORMATS).default("terminal"))
     .option(
       "--no-llm",
       "disable LLM fix-prompt enrichment (offline is the default)",
@@ -171,7 +161,7 @@ if (isEntryScript()) {
       async (
         path: string,
         options: {
-          format: string;
+          format: (typeof FORMATS)[number];
           llm: boolean;
           ignore: boolean;
           offline?: boolean;
@@ -180,7 +170,7 @@ if (isEntryScript()) {
         },
       ) => {
         process.exitCode = await runCli(path, {
-          format: options.format as "terminal" | "json" | "sarif",
+          format: options.format,
           noLlm: options.llm === false,
           ...(options.offline === true ? { offline: true } : {}),
           ...(options.ignore === false ? { noIgnore: true } : {}),

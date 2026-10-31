@@ -7,48 +7,41 @@
  * only) to rate them. Both live in their own module
  * specifically so `osv-detector.ts`'s tests can stub it at the module
  * boundary (`vi.mock("./osv-client.js", ...)`) rather than reaching for
- * global fetch directly — per the plan's pattern_analog note.
+ * global fetch directly.
  *
- * Privacy contract (PITFALLS.md Security row, threat T-05-07-01): the
+ * Privacy contract: the
  * request body is built from ONLY `{ package: { name, ecosystem: "npm" },
  * version }` per query — no other package.json field (scripts, author,
  * etc.) is ever read by this module, because this module never sees the
  * raw package.json at all; it only receives the already-narrowed
  * `{ name, version }` pairs the caller (`osv-detector.ts`) constructed.
  *
- * Per ARCHITECTURE.md "Integration Points" and Pattern 2 (10-second hard
- * timeout), `queryOsvBatch` uses the global `fetch` (Node >=22 built-in,
- * via undici) with an `AbortController` timer — no new HTTP dependency is
- * introduced (CLAUDE.md stack guidance + this plan's threat register
- * T-05-07-SC: "no new dependency added — no install gate needed").
+ * `queryOsvBatch` uses the global `fetch` (Node >=22 built-in) with a
+ * 10-second hard timeout.
  *
  * Fail-safe contract: ANY failure mode — network error, non-2xx HTTP
  * status, the 10-second timeout firing, or a response body that is not
  * valid JSON in the expected shape — causes this function to THROW an
  * `OsvUnavailableError`. It NEVER returns a value on failure (no
  * `[[] for _ in packages]`-style silent-empty return, which is exactly the
- * SkillSpector anti-pattern PITFALLS.md Pitfall 10 documents). The caller
+ * anti-pattern that hides an outage as "no vulnerabilities"). The caller
  * (`osv-detector.ts`) catches this error and switches to the bundled
  * offline fallback list, always appending a visible DEP-OFFLINE sentinel.
  *
  * An in-memory `Map` keyed by `name@version` caches successful per-query
- * results across calls within the same process (ARCHITECTURE.md
- * "Integration Points": "In-memory cache for session"; PITFALLS.md
- * Performance Traps: avoid the OSV N+1 trap). The cache is process-lifetime
- * only — no disk persistence, no TTL logic, matching the plan's "Optional
- * in-memory session cache" scope (disk-cache-with-TTL is explicitly listed
- * under PITFALLS Pitfall 10 as a "How to avoid" option this plan does not
- * implement).
+ * results across calls within the same process (avoids re-querying the
+ * same package). The cache is process-lifetime only — no disk persistence,
+ * no TTL.
  */
 
 import { severityFromOsvRecord } from "./osv-severity.js";
 
 import type { Severity } from "../../core/types.js";
 
-/** 10-second hard timeout for the entire OSV.dev round trip (ARCHITECTURE.md Pattern 2). */
+/** 10-second hard timeout for the entire OSV.dev round trip. */
 const OSV_TIMEOUT_MS = 10_000;
 
-/** OSV.dev batch query endpoint — no API key required (ARCHITECTURE.md "Integration Points"). */
+/** OSV.dev batch query endpoint — no API key required. */
 const OSV_QUERYBATCH_URL = "https://api.osv.dev/v1/querybatch";
 
 /** A single dependency to check, reduced to the only fields ever sent over the network. */
@@ -93,7 +86,7 @@ function cacheKey(query: OsvQuery): string {
 
 /**
  * Narrows an unknown parsed-JSON value to `OsvResult[]` defensively: OSV.dev
- * is an external, untrusted response source (threat T-05-07-04), so this
+ * is an external, untrusted response source, so this
  * function trusts nothing about its shape beyond "is it an array" — any
  * entry that is not a plausible result object is left as `{}` (no vulns)
  * rather than crashing the whole batch on one malformed entry.
@@ -188,13 +181,13 @@ async function queryOsvChunk(uncachedQueries: OsvQuery[]): Promise<void> {
  * `OsvResult[]` (one entry per input query, same order). Queries already
  * present in the in-memory session cache short-circuit the network call
  * for that entry (avoids the OSV N+1 trap on repeated package names across
- * scans within the same process — PITFALLS.md Performance Traps).
+ * scans within the same process).
  *
  * The request body contains ONLY `{ package: { name, ecosystem: "npm" },
  * version }` per query — `queries` itself (the caller's input) already
  * carries nothing beyond `{ name, version }` (see `OsvQuery`), so there is
  * no other package.json field this function COULD serialize even if it
- * tried (privacy contract, threat T-05-07-01).
+ * tried (privacy contract).
  *
  * On ANY failure (network error, non-2xx status, the AbortController
  * 10-second timeout firing, or a response that does not parse to the

@@ -22,13 +22,18 @@
  *            (sufficient for every glob declared by this project's
  *            detectors, e.g. `**\/*.{ts,tsx,js,jsx,...}`).
  *
- * Fan-out pattern (.planning/research/ARCHITECTURE.md Pattern 2): every
- * (detector, matching-file) pair's `detect()` call is collected into one
- * flat array of promises and awaited via `Promise.allSettled` — a throwing
- * detector (violating its own no-throw contract) is isolated and contributes
- * zero findings instead of aborting the whole run. This module performs no
- * terminal output and never terminates the host process directly — it is
- * pure data-in/data-out (library-first invariant).
+ * Execution model: files are processed by a small pool of workers
+ * (FILE_CONCURRENCY). For each file the registry selects the applicable
+ * detectors (glob match + `requiresStack`), parses the file ONCE if any of
+ * them declares `usesAst`, awaits that file's `detect()` calls via
+ * `Promise.allSettled` (a throwing detector contributes zero findings instead
+ * of aborting the run), and then drops the AST. At most FILE_CONCURRENCY
+ * trees are alive at a time, so memory stays flat regardless of repo size.
+ *
+ * Results are collected per file index and flattened in file order before
+ * the final sort, so output is deterministic despite the concurrency. This
+ * module performs no terminal output and never terminates the host process —
+ * it is pure data-in/data-out (library-first invariant).
  */
 import { secretsDetector, committedEnvDetector } from "./secrets/index.js";
 import { clientExposureDetector } from "./client-exposure/index.js";
@@ -48,20 +53,18 @@ import {
   mcpLeastPrivilegeDetector,
 } from "./ai-layer/index.js";
 
+import { isParseable, parseSource } from "../core/parse/ast-cache.js";
+
 import type { Detector, DetectorContext, Finding, ScanContext, Severity } from "../core/types.js";
 
 /**
- * Every detector registered by default. Phase 5 (Wave 1) appended 12
- * detector families to the original `secretsDetector` — 13 `Detector`
- * instances, covering all 17 REQUIREMENTS.md requirement ids (some single
- * detector files emit two ruleIds, e.g. `firebaseRulesDetector` covers both
- * AUTH-02 and STORAGE-01; `supabaseDetector` covers AUTH-03 and STORAGE-02;
- * `configDebugDetector` covers CONFIG-01 and CONFIG-02). Phase 6 (Plan
- * 06-04) appends the four CAT-11 (AI Layer) detectors —
+ * Every detector registered by default. Some detector files emit more than
+ * one ruleId (e.g. `firebaseRulesDetector` covers AUTH-02 and STORAGE-01;
+ * `supabaseDetector` covers AUTH-03 and STORAGE-02; `configDebugDetector`
+ * covers CONFIG-01 and CONFIG-02). The AI-layer family is
  * `promptInjectionDetector` (AILAYER-01), `exfiltrationDetector`
  * (AILAYER-02), `mcpPoisoningDetector` (AILAYER-03), and
- * `mcpLeastPrivilegeDetector` (AILAYER-04) — bringing the total to 17
- * `Detector` instances.
+ * `mcpLeastPrivilegeDetector` (AILAYER-04).
  */
 export const DEFAULT_DETECTORS: Detector[] = [
   secretsDetector,
@@ -155,13 +158,26 @@ function globToRegex(glob: string): RegExp {
   return new RegExp(`^${globFragmentToRegexBody(glob)}$`);
 }
 
+/** Compiled glob cache — glob strings come only from detector configs, so the set is small and bounded. */
+const compiledGlobs = new Map<string, RegExp>();
+
+/** Returns the compiled `RegExp` for `glob`, compiling it at most once per process. */
+function compiledGlob(glob: string): RegExp {
+  let regex = compiledGlobs.get(glob);
+  if (regex === undefined) {
+    regex = globToRegex(glob);
+    compiledGlobs.set(glob, regex);
+  }
+  return regex;
+}
+
 /**
  * Returns true when `filePath` matches at least one pattern in `globs`.
  * `filePath` is expected to be a repo-relative path with forward slashes
  * (matching `ScanContext.fileSet`'s key shape).
  */
 export function matchesGlob(filePath: string, globs: string[]): boolean {
-  return globs.some((glob) => globToRegex(glob).test(filePath));
+  return globs.some((glob) => compiledGlob(glob).test(filePath));
 }
 
 /** Severity ordering for the final sort — higher rank sorts first (most severe first). */
@@ -173,14 +189,23 @@ const SEVERITY_RANK: Record<Severity, number> = {
   INFO: 1,
 };
 
-/** Sorts `findings` by severity descending, then file ascending, then line ascending — deterministic output. */
+/** Locale-independent string ordering, so output order never depends on the host's ICU locale. */
+function compareOrdinal(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Sorts `findings` by severity descending, then file, then line. The sort is
+ * stable, so ties keep their (deterministic) collection order: file order,
+ * then detector registration order.
+ */
 function sortFindings(findings: Finding[]): Finding[] {
   return [...findings].sort((a, b) => {
     const severityDelta = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
     if (severityDelta !== 0) {
       return severityDelta;
     }
-    const fileDelta = a.file.localeCompare(b.file);
+    const fileDelta = compareOrdinal(a.file, b.file);
     if (fileDelta !== 0) {
       return fileDelta;
     }
@@ -188,58 +213,132 @@ function sortFindings(findings: Finding[]): Finding[] {
   });
 }
 
-/** Builds the per-file `DetectorContext` a single `detector.detect()` call receives. */
-function buildDetectorContext(ctx: ScanContext, filePath: string, content: string): DetectorContext {
-  return {
+/** Files processed concurrently. Bounds live ASTs and in-flight network calls (OSV) at the same time. */
+const FILE_CONCURRENCY = 16;
+
+/** Stable ruleId of the OSV offline-degradation sentinel, which is a per-scan fact, not a per-manifest one. */
+const DEP_OFFLINE_RULE_ID = "DEP-OFFLINE";
+
+/** True when `detector` applies to this scan's stack (no `requiresStack`, or at least one listed framework detected). */
+function appliesToStack(detector: Detector, ctx: ScanContext): boolean {
+  const required = detector.config.requiresStack;
+  return required === undefined || required.some((framework) => ctx.stackHints.frameworks.has(framework));
+}
+
+/** Runs every applicable detector on one file, parsing it once if any of them reads the AST. */
+async function detectFile(
+  ctx: ScanContext,
+  detectors: readonly Detector[],
+  filePath: string,
+  content: string,
+): Promise<Finding[]> {
+  const applicable = detectors.filter((detector) => matchesGlob(filePath, detector.config.globs));
+  if (applicable.length === 0) {
+    return [];
+  }
+
+  let ast: unknown;
+  if (applicable.some((detector) => detector.config.usesAst === true) && isParseable(filePath)) {
+    const outcome = parseSource(filePath, content);
+    ast = outcome.ast;
+    if (outcome.diagnostic !== undefined) {
+      ctx.diagnostics.push(outcome.diagnostic);
+    }
+  }
+
+  const base: Omit<DetectorContext, "ast"> = {
     filePath,
     content,
-    ast: ctx.astCache.get(filePath),
     stackHints: ctx.stackHints,
     fileSet: ctx.fileSet,
     ...(ctx.options.offline === true ? { offline: true } : {}),
   };
+
+  const settled = await Promise.allSettled(
+    applicable.map((detector) =>
+      // Only AST detectors receive the tree; everything else stays text-only.
+      detector.detect(detector.config.usesAst === true && ast !== undefined ? { ...base, ast } : base),
+    ),
+  );
+
+  const findings: Finding[] = [];
+  for (const result of settled) {
+    // Rejected promises are dropped — the Detector contract forbids
+    // throwing, so this is purely the defensive backstop.
+    if (result.status === "fulfilled") {
+      findings.push(...result.value);
+    }
+  }
+  return findings;
+}
+
+/** Identity of a finding for deduplication: two detectors (or two passes) reporting the same thing count once. */
+function findingKey(finding: Finding): string {
+  return [finding.ruleId, finding.file, String(finding.line), finding.message, finding.matchedText ?? ""].join("\u0000");
+}
+
+/** Drops exact duplicates and keeps a single DEP-OFFLINE sentinel per scan. */
+function dedupeFindings(findings: Finding[]): Finding[] {
+  const seen = new Set<string>();
+  let sawOfflineSentinel = false;
+  const kept: Finding[] = [];
+  for (const finding of findings) {
+    if (finding.ruleId === DEP_OFFLINE_RULE_ID) {
+      if (sawOfflineSentinel) {
+        continue;
+      }
+      sawOfflineSentinel = true;
+    }
+    const key = findingKey(finding);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    kept.push(finding);
+  }
+  return kept;
 }
 
 /**
- * Fans `detectors` out across every file in `ctx.fileSet`, calling
- * `detector.detect()` once per (detector, matching-file) pair after
- * glob-pre-filtering on `detector.config.globs`. Awaits the entire flattened
- * set of calls via `Promise.allSettled` so one throwing detector — a
- * violation of its own no-throw contract — cannot abort the run; only the
- * fulfilled results are flattened into the returned array. The result is
- * sorted by severity (descending), then file, then line for deterministic
- * output across runs.
+ * Runs `detectors` over every file in `ctx.fileSet` (see the module comment
+ * for the execution model), applies inline `immunogen-ignore` suppression
+ * unless `ctx.options.noIgnore`, drops duplicate findings, and returns them
+ * sorted by severity (descending), then file, then line. Parse failures are
+ * appended to `ctx.diagnostics`. Never rejects.
  */
 export async function runDetectors(
   ctx: ScanContext,
   detectors: Detector[] = DEFAULT_DETECTORS,
 ): Promise<Finding[]> {
-  const calls: Array<Promise<Finding[]>> = [];
+  const active = detectors.filter((detector) => appliesToStack(detector, ctx));
+  const files = [...ctx.fileSet];
+  // Keyed by file index so results flatten in file order regardless of completion order.
+  const perFile = new Map<number, Finding[]>();
 
-  for (const detector of detectors) {
-    for (const [filePath, content] of ctx.fileSet) {
-      if (!matchesGlob(filePath, detector.config.globs)) {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < files.length) {
+      // Claim the next index synchronously — no await between read and increment.
+      const index = next;
+      next += 1;
+      const entry = files.at(index);
+      if (entry === undefined) {
         continue;
       }
-      const detectorContext = buildDetectorContext(ctx, filePath, content);
-      calls.push(detector.detect(detectorContext));
+      try {
+        perFile.set(index, await detectFile(ctx, active, entry[0], entry[1]));
+      } catch {
+        // detectFile only throws if a detector throws synchronously; isolate it.
+        perFile.set(index, []);
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(FILE_CONCURRENCY, files.length) }, worker));
 
-  const settled = await Promise.allSettled(calls);
-
-  const findings: Finding[] = [];
-  for (const result of settled) {
-    if (result.status === "fulfilled") {
-      findings.push(...result.value);
-    }
-    // Rejected promises are dropped — the Detector contract forbids
-    // throwing, so this is purely the defensive backstop required by
-    // ARCHITECTURE.md Pattern 2; a well-behaved detector never lands here.
-  }
-
-  const kept = ctx.options.noIgnore === true ? findings : findings.filter((finding) => !isSuppressed(finding, ctx.fileSet));
-  return sortFindings(kept);
+  const findings = files.flatMap((_, index) => perFile.get(index) ?? []);
+  const suppression = new SuppressionIndex(ctx.fileSet);
+  const kept = ctx.options.noIgnore === true ? findings : findings.filter((finding) => !suppression.isSuppressed(finding));
+  return sortFindings(dedupeFindings(kept));
 }
 
 /** Inline suppression marker, with any rule ids listed after it captured in group 1. */
@@ -249,27 +348,46 @@ const IGNORE_MARKER_RE = /immunogen-ignore\b([^\n]*)/;
 const RULE_ID_TOKEN_RE = /\b[A-Z]+-[A-Z0-9-]*[A-Z0-9]\b/g;
 
 /**
- * True when the finding's own line, or the line directly above it, carries
- * an `immunogen-ignore` comment that either lists no rule ids (suppress
- * everything there) or lists this finding's ruleId — e.g.
- * `// immunogen-ignore SEC-06` or `# immunogen-ignore AUTH-04, AUTH-05`.
+ * Inline `immunogen-ignore` lookups, splitting each file into lines at most
+ * once per scan (a naive per-finding split is O(findings x file size)).
  */
-function isSuppressed(finding: Finding, fileSet: ReadonlyMap<string, string>): boolean {
-  const content = fileSet.get(finding.file);
-  if (content === undefined || !content.includes("immunogen-ignore")) {
-    return false;
+class SuppressionIndex {
+  private readonly linesByFile = new Map<string, string[] | null>();
+
+  constructor(private readonly fileSet: ReadonlyMap<string, string>) {}
+
+  private linesOf(file: string): string[] | null {
+    let lines = this.linesByFile.get(file);
+    if (lines === undefined) {
+      const content = this.fileSet.get(file);
+      lines = content === undefined || !content.includes("immunogen-ignore") ? null : content.split("\n");
+      this.linesByFile.set(file, lines);
+    }
+    return lines;
   }
-  const lines = content.split("\n");
-  const candidates = [lines.at(finding.line - 1)];
-  if (finding.line >= 2) {
-    candidates.push(lines.at(finding.line - 2));
-  }
-  return candidates.some((line) => {
-    const marker = line?.match(IGNORE_MARKER_RE);
-    if (marker === null || marker === undefined) {
+
+  /**
+   * True when the finding's own line, or the line directly above it, carries
+   * an `immunogen-ignore` comment that either lists no rule ids (suppress
+   * everything there) or lists this finding's ruleId — e.g.
+   * `// immunogen-ignore SEC-06` or `# immunogen-ignore AUTH-04, AUTH-05`.
+   */
+  isSuppressed(finding: Finding): boolean {
+    const lines = this.linesOf(finding.file);
+    if (lines === null || finding.line < 1) {
       return false;
     }
-    const ruleIds: string[] = (marker[1] ?? "").match(RULE_ID_TOKEN_RE) ?? [];
-    return ruleIds.length === 0 || ruleIds.includes(finding.ruleId);
-  });
+    const candidates = [lines.at(finding.line - 1)];
+    if (finding.line >= 2) {
+      candidates.push(lines.at(finding.line - 2));
+    }
+    return candidates.some((line) => {
+      const marker = line?.match(IGNORE_MARKER_RE);
+      if (marker === null || marker === undefined) {
+        return false;
+      }
+      const ruleIds: string[] = (marker[1] ?? "").match(RULE_ID_TOKEN_RE) ?? [];
+      return ruleIds.length === 0 || ruleIds.includes(finding.ruleId);
+    });
+  }
 }

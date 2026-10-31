@@ -7,9 +7,9 @@
  * properties), which would silently drop `stackHints.frameworks`. `render`
  * therefore builds an explicit serializable view first — converting
  * `frameworks` to a plain array via `Array.from` — before stringifying, so
- * the emitted JSON always carries the real framework list (ARCHITECTURE.md
- * Anti-Pattern 3: JSON output must be a clean parseable stream with no
- * mixed-in text; T-04-07: no ANSI/prose corruption).
+ * the emitted JSON always carries the real framework list. JSON output must
+ * be a clean parseable stream with no mixed-in text (no ANSI/prose
+ * corruption).
  *
  * `matchedText` on each finding is passed through untouched — it arrives
  * already masked from the detector layer (Plan 01); this reporter never
@@ -45,6 +45,6 @@ function toSerializableView(result: ScanResult): Record<string, unknown> {
 
 export const jsonReporter: Reporter = {
   render(result: ScanResult): string {
-    return JSON.stringify(toSerializableView(result), null, JSON_INDENT_SPACES);
+    return `${JSON.stringify(toSerializableView(result), null, JSON_INDENT_SPACES)}\n`;
   },
 };

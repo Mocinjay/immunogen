@@ -6,9 +6,8 @@
  * The sibling of AILAYER-01 (prompt-injection-detector.ts): a skill/rules
  * file scanned by an AI coding agent that instructs sending conversation
  * context, environment variables, or secrets to an external destination is
- * a live data-exfiltration directive sitting in the repository
- * (.planning/research/FEATURES.md AILAYER-02 row: severity CRITICAL, FP
- * risk LOW).
+ * a live data-exfiltration directive sitting in the repository (severity
+ * CRITICAL; false-positive risk is low, see the triple gate below).
  *
  * This module REIMPLEMENTS (does not copy verbatim) the signature family
  * documented as NVIDIA SkillSpector's P3 "Exfiltration Commands" pattern
@@ -29,25 +28,25 @@
  *       localhost/127.0.0.1/0.0.0.0, OR a `| base64` / `| base32` pipe
  *       encoding a harvested value
  * A bare URL alone, or a bare "send" alone, never fires — this triple-gate
- * is what keeps FP risk LOW per FEATURES.md's row for this rule (Test 4:
+ * is what keeps FP risk LOW (Test 4:
  * "See the docs at https://nextjs.org/docs" has a URL but no action/context
  * and must stay silent; Test 5: "send the result to http://localhost:3000"
  * has an action but no context-ref AND is localhost, so it must also stay
  * silent).
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): same
+ * FP allowlist: same
  * `__tests__`/`fixtures`/`mocks`/`examples` + `.test.`/`.stories.` guard as
  * prompt-injection-detector.ts's `isAllowlistedPath`.
  *
- * ENG-05 (text-only invariant, threat T-06-01-01): reads `ctx.content` as a
+ * ENG-05 (text-only invariant): reads `ctx.content` as a
  * plain string only — never `ctx.ast`, never a parser, never eval/require/
  * `new Function`/subprocess on scanned content.
  *
- * ReDoS safety (threat T-06-01-02): every clause below is bounded — no
+ * ReDoS safety: every clause below is bounded — no
  * nested quantifiers, no unbounded `.*` spanning the whole line — and all
  * are run per-line (content split on `\n` first).
  *
- * Information-disclosure safety (threat T-06-01-03): `matchedText` is the
+ * Information-disclosure safety: `matchedText` is the
  * trimmed line, truncated to a fixed 120-character cap; the detector never
  * decodes or re-emits the secret value itself, only the directive line that
  * names it.
@@ -56,30 +55,14 @@
  * runs inside try/catch returning `[]` on any failure.
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
-/** Maximum length of a `matchedText` snippet — bounds output even for a pathologically long line (threat T-06-01-03). */
+/** Maximum length of a `matchedText` snippet — bounds output even for a pathologically long line. */
 const MATCHED_TEXT_MAX_LENGTH = 120;
 
 /**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors prompt-injection-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
-
-/**
  * Truncates `line` (already trimmed) to `MATCHED_TEXT_MAX_LENGTH`
- * characters (threat T-06-01-03).
+ * characters.
  */
 function truncateMatchedText(line: string): string {
   return line.length > MATCHED_TEXT_MAX_LENGTH ? line.slice(0, MATCHED_TEXT_MAX_LENGTH) : line;
@@ -87,7 +70,7 @@ function truncateMatchedText(line: string): string {
 
 /**
  * Clause (a): exfiltration ACTION verb. Bounded word-boundary alternation,
- * no unbounded quantifiers (threat T-06-01-02). `\b` boundaries avoid
+ * no unbounded quantifiers. `\b` boundaries avoid
  * matching inside unrelated identifiers (e.g. "depostal" must not match
  * "post"); the alternation itself stays short and fixed.
  */
@@ -186,9 +169,9 @@ export const exfiltrationDetector: Detector = {
   // prompt-injection-detector.ts's convention.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

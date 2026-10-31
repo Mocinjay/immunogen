@@ -46,6 +46,7 @@ import { isAuthCall, NON_SESSION_AUTH_RE, PUBLIC_BY_NATURE_SEGMENTS } from "./au
 
 import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
 import type { CallExpression, Node, ObjectExpression } from "@babel/types";
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Stack hints for the frameworks this detector covers, with their display names. */
 const SERVER_FRAMEWORKS: ReadonlyArray<[string, string]> = [
@@ -74,21 +75,8 @@ const MIDDLEWARE_METHODS = new Set(["use", "addHook"]);
 /** Cross-file signal: some file registers auth-looking middleware via `.use(...)`. */
 const OTHER_FILE_AUTH_USE_RE = /\.use\([^)]{0,240}?(?:auth|protect|jwt|passport|session|clerk|guard)/i;
 
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
-
 /** Comment fragment a developer adds to opt a route out of AUTH-01. */
 const PUBLIC_COMMENT_MARKER = "// public";
-
-/** True when `filePath` falls inside a test/fixture/mock/example directory, or is a test/spec/story file. */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".spec.") || basename.includes(".stories.");
-}
 
 /** Source text of `node`, sliced from the file by its byte offsets. */
 function sourceOf(content: string, node: Node): string {
@@ -263,14 +251,15 @@ export const serverRouteAuthDetector: Detector = {
     name: "server-route-auth",
     category: "auth",
     requiresStack: ["express", "fastify", "hono", "koa"],
-    globs: ["**/*.{ts,js,mjs,cjs}"],
+    globs: ["**/*.{ts,js,mjs,cjs,mts,cts}"],
+    usesAst: true,
   },
 
   // Not declared `async`: synchronous AST work wrapped in Promise.resolve().
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
       const present = SERVER_FRAMEWORKS.filter(([hint]) => ctx.stackHints.frameworks.has(hint));
-      if (present.length === 0 || isAllowlistedPath(ctx.filePath) || !isBabelFile(ctx.ast)) {
+      if (present.length === 0 || isTestOrFixturePath(ctx.filePath) || !isBabelFile(ctx.ast)) {
         return Promise.resolve([]);
       }
       const framework = present.length === 1 ? (present[0]?.[1] ?? "Server") : "Server";

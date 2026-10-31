@@ -2,15 +2,14 @@
  * committedEnvDetector — text-only CAT-1 (Leaked Secrets) detector, SEC-05.
  *
  * The finding here is about a FILE's existence in the scanned tree, not a
- * string pattern inside it (.planning/research/FEATURES.md CAT-1 SEC-05:
- * "`.env`, `.env.local`, `.env.production`, `.env.staging` present in git
- * tree (not in .gitignore)"). The registry (src/detectors/registry.ts)
+ * string pattern inside it (`.env`, `.env.local`, `.env.production`,
+ * `.env.staging` present in the tree and not ignored). The registry (src/detectors/registry.ts)
  * calls `detect()` once per file matching `config.globs`, so this detector
  * keys entirely off `ctx.filePath` — `ctx.content` is never read.
  *
  * Two guards run in sequence before a Finding is ever pushed:
  *   1. FP allowlist — test/fixture/mock/example directories never fire
- *      (.planning/research/PITFALLS.md Pitfall 1).
+ *.
  *   2. Template exclusion — `.env.example`/`.env.sample`/etc. carry no real
  *      secrets by convention and are excluded outright.
  *
@@ -32,9 +31,7 @@
  * (see plan 05-01 task 2 action).
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding from this detector (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
+import { isInTestDirectory } from "../shared/test-paths.js";
 
 /**
  * Template-suffix basenames that carry no real secrets by convention and
@@ -48,12 +45,6 @@ const TEMPLATE_BASENAMES = new Set([
   ".env.dist",
   ".env.local.example",
 ]);
-
-/** True when `filePath` falls inside a test/fixture/mock/example directory. */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  return segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment));
-}
 
 /**
  * Returns the basename of a repo-relative path (the text after the final
@@ -83,7 +74,7 @@ export const committedEnvDetector: Detector = {
   // sync-detector convention documented in entropy-detector.ts.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isInTestDirectory(ctx.filePath)) {
         return Promise.resolve([]);
       }
 

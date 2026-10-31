@@ -131,7 +131,7 @@ describe("secretsDetector — keyword-anchored entropy (Pass B)", () => {
   });
 });
 
-describe("secretsDetector — masking (T-04-02)", () => {
+describe("secretsDetector — masking", () => {
   it("masks matchedText to the first 4 characters of a provider-key secret", async () => {
     const ctx = makeContext(`const stripeKey = "${STRIPE_KEY}";`);
 

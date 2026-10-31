@@ -168,3 +168,18 @@ describe("resolveUrlTarget — SSRF guard", () => {
     ).not.toThrow();
   });
 });
+
+describe("resolveUrlTarget — SSRF pre-flight covers alternate address forms", () => {
+  it.each([
+    "http://[::ffff:127.0.0.1]/",
+    "http://[::ffff:a9fe:a9fe]/latest/meta-data/",
+    "http://[fd00:ec2::254]/",
+    "http://[fe80::1]/",
+    "http://100.100.100.200/",
+    "http://2130706433/",
+    "http://0x7f.1/",
+    "http://admin.localhost/",
+  ])("blocks %s", (url) => {
+    expect(() => resolveUrlTarget(url, { authorize: true })).toThrow(/private\/loopback/);
+  });
+});

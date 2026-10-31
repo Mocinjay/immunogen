@@ -27,9 +27,8 @@ export const MIN_ENTROPY_CANDIDATE_LENGTH = 40;
 
 /**
  * Case-insensitive keyword family that must co-occur on the same line as a
- * high-entropy literal before it is flagged/redacted (FP-management keyword
- * anchor — .planning/research/FEATURES.md "False Positive Management
- * Strategy").
+ * high-entropy literal before it is flagged/redacted (the false-positive
+ * keyword anchor).
  */
 export const ANCHOR_KEYWORDS = [
   "secret",
@@ -78,7 +77,7 @@ export interface ProviderKeyPattern {
 /**
  * Provider-key regex table — rigid, low-FP key formats (Stripe `sk_live_`,
  * AWS `AKIA...`, OpenAI `sk-...`, Supabase `sb_secret_...`, Anthropic
- * `sk-ant-...`) per FEATURES.md CAT-1's "V1 PICK". This is the shared source
+ * `sk-ant-...`). This is the shared source
  * `entropy-detector.ts`'s Pass A and `redactor.ts`'s fixed-format pass both
  * read from — the ruleId is only meaningful to the detector side; the
  * redactor ignores it and matches on `regex` alone.
@@ -142,6 +141,18 @@ export const PROVIDER_KEY_PATTERNS: ProviderKeyPattern[] = [
 ];
 
 /**
+ * Text near a Google `AIza...` key that marks it as public-by-design client
+ * config: a Firebase web config object (`authDomain`, `messagingSenderId`,
+ * `storageBucket`, `firebaseConfig`), a Maps / Places browser key, or a
+ * reCAPTCHA / YouTube embed.
+ */
+export const GOOGLE_PUBLIC_CONTEXT_RE =
+  /authDomain|messagingSenderId|storageBucket|firebase|maps\.googleapis\.com|maps_?api_?key|mapsApiKey|googleMapsApiKey|places|recaptcha|youtube/i;
+
+/** Text near a Google key that marks it as a Gemini / Generative Language API key — a paid, server-side secret. */
+export const GOOGLE_GENAI_CONTEXT_RE = /gemini|generativeai|genai|generativelanguage|vertex|palm|GoogleGenerativeAI/i;
+
+/**
  * Shannon entropy of `value` in bits per character: sum over each distinct
  * character c of -p(c) * log2(p(c)), where p(c) is c's frequency in value.
  * Custom implementation per CLAUDE.md's stack guidance ("custom Shannon
@@ -174,7 +185,7 @@ export function hasAnchorKeyword(line: string): boolean {
 /**
  * Returns true when `jwt`'s middle (payload) segment, once base64url
  * decoded, contains the compact `"role":"service_role"` marker. Decoding
- * happens inside its own try/catch (T-05-01-02): a malformed/non-JSON
+ * happens inside its own try/catch: a malformed/non-JSON
  * payload segment yields `false` for that match rather than throwing,
  * keeping one hostile JWT-shaped string from aborting the whole scan.
  */

@@ -5,9 +5,8 @@
  * resolves the single `scan()` export from the BUILT immunogen package (see
  * `loadScan()` below) and does exactly one thing beyond that: it formats the
  * returned `ScanResult` into markdown for a Claude Code conversation to
- * present verbatim (.planning/research/ARCHITECTURE.md "Pattern 3:
- * Library-First, CLI-as-Thin-Wrapper" — the skill and the CLI are siblings,
- * both thin callers of the same `scan()`). The markdown leads with the
+ * present verbatim (the skill and the CLI are siblings, both thin callers of
+ * the same `scan()`). The markdown leads with the
  * headline A-F health grade (`score.grade`/`score.gradeLabel`) before the
  * existing Ship Score/band/verdict/counts lines — an additive headline, not
  * a replacement for the numeric score already presented below it.
@@ -17,7 +16,7 @@
  * cannot rely on a fixed repo-relative path to `dist/index.js` — see
  * `loadScan()`.
  *
- * Determinism / offline-by-default (T-08-12, T-08-13): when `runScanSkill`
+ * Determinism / offline-by-default: when `runScanSkill`
  * is called with no `options` (the parity test's usage), it forwards NO
  * options object to `scan()` at all — it never reads or forwards any
  * provider/LLM environment variable itself, and never passes `noLlm` either
@@ -92,15 +91,17 @@ function renderFindingLine(finding) {
   return `- **[${finding.severity}] ${finding.ruleId}** ${finding.file}:${finding.line} — ${finding.message} (confidence: ${finding.confidence})`;
 }
 
+/** Diagnostics listed in the markdown report before the rest are summarized as a count. */
+const MAX_LISTED_DIAGNOSTICS = 10;
+
 /**
  * Formats a `ScanResult` into a markdown report: a headline line leading
  * with the A-F health grade + status word (e.g. `**Grade: F — Critical**
  * (Ship Score 18/100 — blocked)`), followed by the existing band/verdict/
  * critical/high-count lines unchanged; a ranked findings list (findings
  * arrive pre-sorted by severity from `runDetectors()` — see src/index.ts,
- * this function does not re-sort); and a trailing note when
- * `scanIncomplete` is true (the OSV-offline fallback fired, per
- * src/index.ts's DEP-OFFLINE sentinel).
+ * this function does not re-sort); a note when `scanIncomplete` is true; and
+ * the pipeline warnings (`result.diagnostics`).
  */
 function formatMarkdown(result) {
   const { score } = result;
@@ -126,8 +127,19 @@ function formatMarkdown(result) {
   if (result.scanIncomplete) {
     lines.push(
       "",
-      "> **Note:** this scan is incomplete — the offline dependency-vulnerability list was used because OSV.dev was unreachable. Re-run with network access for a complete dependency check.",
+      "> **Note:** this scan is incomplete — coverage was reduced (see warnings below), so the score may be optimistic.",
     );
+  }
+
+  const diagnostics = result.diagnostics ?? [];
+  if (diagnostics.length > 0) {
+    lines.push("", `### Warnings (${diagnostics.length})`, "");
+    for (const diagnostic of diagnostics.slice(0, MAX_LISTED_DIAGNOSTICS)) {
+      lines.push(`- \`${diagnostic.code}\` ${diagnostic.message}`);
+    }
+    if (diagnostics.length > MAX_LISTED_DIAGNOSTICS) {
+      lines.push(`- ... and ${diagnostics.length - MAX_LISTED_DIAGNOSTICS} more`);
+    }
   }
 
   return lines.join("\n");
@@ -148,7 +160,7 @@ function formatMarkdown(result) {
  * on the exact `score`/`count` numbers directly instead of parsing rendered
  * text. `score` is `result.score.score` (the 0-100 Ship Score); `count` is
  * `result.findings.length` (total finding count) — the two numbers parity
- * is defined over (see PLAN.md critical_facts #3).
+ * is defined over.
  */
 export async function runScanSkill(target, options = {}) {
   const scan = await loadScan();

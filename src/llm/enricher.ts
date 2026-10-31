@@ -1,50 +1,38 @@
 /**
- * LLMEnricher — the integration point that ties SAFE-01 (redaction) and
- * LLM-01 (provider adapters) together into a single, degradable enrichment
- * stage: select HIGH/CRITICAL findings, redact every snippet BEFORE it is
- * concatenated into a provider prompt, call the injected `ProviderAdapter`,
- * and attach the result as `Finding.fixPrompt`.
+ * LLMEnricher — ties redaction and the provider adapters into one degradable
+ * enrichment stage: select HIGH/CRITICAL findings, redact every snippet
+ * BEFORE it is concatenated into a provider prompt, call the injected
+ * `ProviderAdapter`, and attach the result as `Finding.fixPrompt`.
  *
  * This module never imports an SDK and never touches `process.env` — the
- * adapter is always injected by the caller (`scan()`, in a later plan) so
- * this file stays trivially unit-testable with a fake adapter, mirroring
- * `src/llm/provider.ts`'s injected-dependency style.
+ * adapter is injected by `scan()`, so tests use a fake adapter.
  *
- * Threat-model mitigations (07-03 register):
- * - T-07-07 (Information Disclosure): every snippet/message handed to the
- *   provider is sourced from `redactFinding()` — the SAFE-01 gate — BEFORE
- *   it is concatenated into the prompt template. No verbatim secret is ever
- *   built into a request string here.
- * - T-07-08 (Tampering / prompt injection): the (already-redacted) snippet
- *   is length-capped and embedded inside a fixed, clearly-delimited
- *   template — it is data, never instructions, and the injection surface
- *   from a hostile scanned file is bounded by MAX_SNIPPET_CHARS.
- * - T-07-11 (Denial of Service): each provider call is wrapped in its own
- *   try/catch; one finding's adapter failure never aborts enrichment of the
- *   remaining findings, and enrichment itself never throws.
+ * - Information disclosure: every snippet/message handed to the provider
+ *   comes from `redactFinding()` BEFORE prompt assembly.
+ * - Prompt injection: the redacted snippet is length-capped and embedded
+ *   inside a fixed, clearly delimited template — data, never instructions.
+ * - Availability: calls run with bounded concurrency (provider rate limits),
+ *   each failure only leaves its own finding un-enriched, and failures are
+ *   summarized as one `LLM_FAILED` diagnostic so a bad key or model name is
+ *   visible instead of silently producing no fix prompts.
  */
 import { redactFinding } from "./redactor.js";
 
 import type { ProviderAdapter } from "./provider.js";
 
-import type { Finding } from "../core/types.js";
+import type { Diagnostic, Finding } from "../core/types.js";
 
-/**
- * Count budget: the maximum number of findings enriched in a single
- * `enrichFindings` call. This is the token/cost budget guard mentioned in
- * the plan — capping call COUNT bounds total token spend without needing a
- * per-call tokenizer. Findings beyond this cap are left un-enriched, never
- * erroring.
- */
+/** Maximum number of findings enriched per scan — bounds total token spend. */
 const MAX_ENRICHED = 20;
 
-/**
- * Length cap (characters) applied to the redacted snippet embedded in the
- * prompt template — bounds the prompt-injection surface a hostile scanned
- * file's matchedText could carry (T-07-08), independent of any budget
- * concern.
- */
+/** Concurrent provider calls. Enough to keep latency down without tripping per-key rate limits. */
+const MAX_CONCURRENT_CALLS = 4;
+
+/** Length cap (characters) on the redacted snippet embedded in the prompt — bounds the injection surface. */
 const MAX_SNIPPET_CHARS = 500;
+
+/** Upper bound on a provider error message echoed into a diagnostic. */
+const MAX_ERROR_MESSAGE_CHARS = 200;
 
 /** Only these two severities are ever selected for enrichment. */
 function isEnrichable(finding: Finding): boolean {
@@ -54,8 +42,7 @@ function isEnrichable(finding: Finding): boolean {
 /**
  * Builds the fix-prompt request string for a single (already redacted)
  * finding. The snippet is embedded as clearly-delimited data inside a fixed
- * template — never treated as instructions — and truncated to
- * MAX_SNIPPET_CHARS.
+ * template and truncated to MAX_SNIPPET_CHARS.
  */
 function buildPrompt(redacted: Finding): string {
   const snippet = (redacted.matchedText ?? "").slice(0, MAX_SNIPPET_CHARS);
@@ -72,55 +59,70 @@ function buildPrompt(redacted: Finding): string {
 }
 
 /**
- * Selects HIGH/CRITICAL findings, redacts each via `redactFinding` (SAFE-01
- * gate) BEFORE building its prompt, calls `adapter.generate()` for each
- * selected finding (capped at MAX_ENRICHED), and attaches any non-empty
- * result as `fixPrompt` on a COPY of the original finding.
+ * Selects up to MAX_ENRICHED HIGH/CRITICAL findings (in input order — the
+ * most severe first, since findings arrive sorted), redacts each BEFORE
+ * building its prompt, and attaches any non-empty response as `fixPrompt` on
+ * a COPY of the finding. Never mutates its input and never rejects.
  *
- * Short-circuits to a zero-call no-op whenever `adapter.name === "noop"` —
- * this is what keeps the offline/no-provider path free of even attempting a
- * call. Never mutates the input array or any input Finding object. Returns
- * `enriched: true` only when at least one finding actually received a
- * fixPrompt, so callers can set `ScanResult.llmEnriched` from reality rather
- * than merely "a provider was configured".
+ * Short-circuits with zero calls when `adapter.name === "noop"`. `enriched`
+ * is true only when at least one finding actually received a fixPrompt.
  */
 export async function enrichFindings(
   findings: Finding[],
   adapter: ProviderAdapter,
-): Promise<{ findings: Finding[]; enriched: boolean }> {
+): Promise<{ findings: Finding[]; enriched: boolean; diagnostics: Diagnostic[] }> {
   if (adapter.name === "noop") {
-    return { findings, enriched: false };
+    return { findings, enriched: false, diagnostics: [] };
   }
 
-  let remainingBudget = MAX_ENRICHED;
-  let enriched = false;
+  const selected: number[] = [];
+  for (const [index, finding] of findings.entries()) {
+    if (selected.length >= MAX_ENRICHED) {
+      break;
+    }
+    if (isEnrichable(finding)) {
+      selected.push(index);
+    }
+  }
 
-  const results = await Promise.all(
-    findings.map(async (finding) => {
-      if (!isEnrichable(finding) || remainingBudget <= 0) {
-        return finding;
+  const results = [...findings];
+  let succeeded = 0;
+  let failed = 0;
+  let firstError: string | undefined;
+
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (cursor < selected.length) {
+      const index = selected.at(cursor);
+      cursor += 1;
+      const finding = index === undefined ? undefined : findings.at(index);
+      if (index === undefined || finding === undefined) {
+        continue;
       }
-      remainingBudget -= 1;
-
-      // Redact BEFORE building the prompt (SAFE-01 gate) — never
-      // concatenate the raw finding's message/matchedText.
-      const redacted = redactFinding(finding);
-      const prompt = buildPrompt(redacted);
-
+      // Redact BEFORE building the prompt — never concatenate raw finding text.
+      const prompt = buildPrompt(redactFinding(finding));
       try {
         const fixPrompt = await adapter.generate(prompt);
         if (fixPrompt.length > 0) {
-          enriched = true;
-          return { ...finding, fixPrompt };
+          results.splice(index, 1, { ...finding, fixPrompt });
+          succeeded += 1;
         }
-        return finding;
-      } catch {
-        // A single provider failure degrades that finding to un-enriched;
-        // it never aborts the rest of the enrichment pass (T-07-11).
-        return finding;
+      } catch (error) {
+        failed += 1;
+        firstError ??= error instanceof Error ? error.message : String(error);
       }
-    }),
-  );
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_CALLS, selected.length) }, worker));
 
-  return { findings: results, enriched };
+  const diagnostics: Diagnostic[] = [];
+  if (failed > 0) {
+    diagnostics.push({
+      level: "warn",
+      code: "LLM_FAILED",
+      message: `LLM fix-prompt generation failed for ${String(failed)} of ${String(selected.length)} findings (${adapter.name}, model ${adapter.model}): ${(firstError ?? "unknown error").slice(0, MAX_ERROR_MESSAGE_CHARS)}`,
+    });
+  }
+
+  return { findings: results, enriched: succeeded > 0, diagnostics };
 }

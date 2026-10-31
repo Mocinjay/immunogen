@@ -1,12 +1,11 @@
 /**
- * Phase 5 coverage integration test — ROADMAP Phase 5 success criteria 1, 3,
- * and 5-fire.
+ * Detector coverage integration test.
  *
  * Calls the real, public `scan()` (src/index.ts) over the deliberately
  * vulnerable `tests/fixtures/vulnerable-apps/nextjs-kitchen-sink/` fixture
- * app and asserts that every one of the 17 phase requirement ruleIds (+
- * SEC-04, the Supabase service_role signal) fires at least once, that the
- * ROADMAP criterion-1 ruleIds each carry file/line/severity, and that
+ * app and asserts that every core ruleId (incl. SEC-04, the Supabase
+ * service_role signal) fires at least once, that the headline ruleIds each
+ * carry file/line/severity, and that
  * ScanResult.scanIncomplete is true on this offline-degraded run.
  *
  * NETWORK SAFETY: every scan here passes `{ offline: true }`, which
@@ -37,13 +36,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const KITCHEN_SINK_ROOT = join(__dirname, "..", "fixtures", "vulnerable-apps", "nextjs-kitchen-sink");
 
 /**
- * Every requirement ruleId this phase's 17 REQUIREMENTS.md ids actually
- * emit, PLUS SEC-04 (the Supabase service_role signal, emitted by the same
- * secretsDetector file as SEC-01/05/06). Per the 05-0X-SUMMARYs' ruleId
- * reconciliation: requirement label "SEC-02" emits ruleId "SEC-05"
- * (committed .env), and requirement label "SEC-03" emits ruleId "SEC-06"
- * (keyword-anchored entropy) — both reflected here by their EMITTED id, not
- * their requirement label.
+ * Every core ruleId the kitchen-sink fixture must trigger, including SEC-04
+ * (the Supabase service_role signal), SEC-05 (committed .env) and SEC-06
+ * (keyword-anchored entropy).
  */
 const EXPECTED_RULE_IDS = [
   "SEC-01",
@@ -66,14 +61,14 @@ const EXPECTED_RULE_IDS = [
   "CONFIG-02",
 ];
 
-/** ROADMAP criterion 1's named ruleIds — each must carry file + line + severity. */
+/** Headline ruleIds — each must carry file + line + severity. */
 const CRITERION_1_RULE_IDS = ["SEC-01", "SEC-05", "BUNDLE-01", "AUTH-01", "PAY-01"];
 
 afterEach(() => {
   queryOsvBatchMock.mockReset();
 });
 
-describe("Phase 5 coverage — vulnerable kitchen-sink fixture, full scan()", () => {
+describe("detector coverage — vulnerable kitchen-sink fixture, full scan()", () => {
   it("fires every one of the 17 requirement ruleIds (+SEC-04) on a real scan() call", async () => {
     queryOsvBatchMock.mockRejectedValue(new Error("network unavailable (test stub — never a real call)"));
 
@@ -85,7 +80,7 @@ describe("Phase 5 coverage — vulnerable kitchen-sink fixture, full scan()", ()
     expect(missing, `missing expected ruleIds: ${missing.join(", ")}`).toEqual([]);
   });
 
-  it("ROADMAP criterion 1 ruleIds (SEC-01, SEC-05, BUNDLE-01, AUTH-01, PAY-01) each have file + line + severity", async () => {
+  it("headline ruleIds (SEC-01, SEC-05, BUNDLE-01, AUTH-01, PAY-01) each have file + line + severity", async () => {
     queryOsvBatchMock.mockRejectedValue(new Error("network unavailable (test stub — never a real call)"));
 
     const result = await scan(KITCHEN_SINK_ROOT, { offline: true });

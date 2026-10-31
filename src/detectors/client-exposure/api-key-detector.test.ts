@@ -83,7 +83,7 @@ describe("clientExposureDetector — BUNDLE-01 (NEXT_PUBLIC_/VITE_ on secret-nam
     const findings = await clientExposureDetector.detect(ctx);
 
     // At minimum NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY and NEXT_PUBLIC_API_URL
-    // must yield zero findings (the plan's explicit minimum bar).
+    // must yield zero findings (the minimum bar).
     const ruleIdsOnPublishableOrUrlLines = findings.filter(
       (f) => f.line === 1 || f.line === 3,
     );

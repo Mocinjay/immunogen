@@ -1,68 +1,94 @@
 /**
- * Provider abstraction — the LLM-01 pluggability seam.
+ * Provider abstraction — the LLM pluggability seam.
  *
- * Every LLM-backed enrichment in this project goes through a single
- * `ProviderAdapter` contract so the rest of the codebase (the future
- * wiring plan, 07-03) never imports `@anthropic-ai/sdk` or `openai`
- * directly. This keeps the provider swap (Anthropic <-> OpenAI/Ollama
- * <-> Noop) a one-line factory decision instead of a call-site branch.
+ * Every LLM-backed enrichment goes through a single `ProviderAdapter`
+ * contract so nothing outside `src/llm/adapters/` imports `@anthropic-ai/sdk`
+ * or `openai` directly.
  *
  * `selectAdapter` is the ONLY place provider selection happens, and it is a
- * pure function of an injected env object (never `process.env` directly),
- * which is what makes it trivially unit-testable with a plain literal — see
- * src/llm/adapters/select.test.ts. The default, when no provider AND its
- * matching key are both present, is always `NoopAdapter` (T-07-06:
- * offline/no-LLM is the default and must never be silently upgraded to a
- * network-backed adapter).
+ * pure function of an injected env object (never `process.env` directly), so
+ * it is unit-testable with a plain literal (src/llm/adapters/select.test.ts).
+ * The default, when no provider AND its matching key are both present, is
+ * always `NoopAdapter`: offline/no-LLM is the default and is never silently
+ * upgraded to a network-backed adapter.
  */
 import { AnthropicAdapter, NoopAdapter, OpenAIAdapter } from "./adapters/index.js";
 
-/**
- * The single contract every LLM provider wraps. Deliberately minimal —
- * one stateless async method — so adding a new provider never requires
- * touching call sites, only adding a class that implements this shape and
- * wiring it into `selectAdapter`.
- */
+import type { Diagnostic } from "../core/types.js";
+
+/** The single contract every LLM provider wraps. */
 export interface ProviderAdapter {
-  /** Stable provider identifier, used for logging/diagnostics and tests. */
+  /** Stable provider identifier, used for diagnostics and tests. */
   readonly name: "anthropic" | "openai" | "noop";
+  /** The model id requests are sent to. */
+  readonly model: string;
   /**
    * Given a single fully-built prompt string, returns the provider's text
-   * response (or "" on any failure/degradation — see each adapter's own
-   * try/catch). Never throws.
+   * response ("" when it declined). REJECTS on transport/API failure — the
+   * enricher catches that per finding and reports it as a diagnostic.
    */
   generate(prompt: string): Promise<string>;
 }
 
+/** Providers `IMMUNOGEN_PROVIDER` accepts, with the env var holding each one's key. */
+const PROVIDER_KEYS: ReadonlyMap<string, "ANTHROPIC_API_KEY" | "OPENAI_API_KEY"> = new Map([
+  ["anthropic", "ANTHROPIC_API_KEY"],
+  ["openai", "OPENAI_API_KEY"],
+]);
+
 /**
- * Pure factory: reads `env.IMMUNOGEN_PROVIDER` and the matching provider's
- * API key from the injected `env` object only (never `process.env`
- * directly — that is what lets tests pass a plain literal with no global
- * mutation/restoration needed).
- *
- * Selection rule (mirrors STACK.md's "LLM Fix-Prompt Layer" provider-
- * selection pattern):
- *   - `IMMUNOGEN_PROVIDER === "anthropic"` AND `ANTHROPIC_API_KEY` is a
- *     non-empty string -> AnthropicAdapter
- *   - `IMMUNOGEN_PROVIDER === "openai"` AND `OPENAI_API_KEY` is a
- *     non-empty string -> OpenAIAdapter (OPENAI_BASE_URL passed through,
- *     may be undefined)
- *   - anything else (provider absent, unknown provider, or the matching
- *     key missing) -> NoopAdapter
+ * Pure factory over the injected `env`:
+ *   - `IMMUNOGEN_PROVIDER=anthropic` + non-empty `ANTHROPIC_API_KEY` -> AnthropicAdapter
+ *   - `IMMUNOGEN_PROVIDER=openai` + non-empty `OPENAI_API_KEY` -> OpenAIAdapter
+ *     (`OPENAI_BASE_URL` passed through for OpenAI-compatible servers)
+ *   - anything else -> NoopAdapter
+ * `IMMUNOGEN_MODEL`, when non-empty, overrides the adapter's default model.
  */
 export function selectAdapter(env: NodeJS.ProcessEnv): ProviderAdapter {
+  const model = isNonEmptyString(env.IMMUNOGEN_MODEL) ? env.IMMUNOGEN_MODEL : undefined;
+
   if (env.IMMUNOGEN_PROVIDER === "anthropic" && isNonEmptyString(env.ANTHROPIC_API_KEY)) {
-    return new AnthropicAdapter(env.ANTHROPIC_API_KEY);
+    return new AnthropicAdapter(env.ANTHROPIC_API_KEY, model);
   }
 
   if (env.IMMUNOGEN_PROVIDER === "openai" && isNonEmptyString(env.OPENAI_API_KEY)) {
-    return new OpenAIAdapter(env.OPENAI_API_KEY, env.OPENAI_BASE_URL);
+    return new OpenAIAdapter(env.OPENAI_API_KEY, env.OPENAI_BASE_URL, model);
   }
 
   return new NoopAdapter();
 }
 
-/** True when `value` is a defined, non-empty string (a usable API key). */
+/**
+ * A warning when `IMMUNOGEN_PROVIDER` is set but cannot be honored (unknown
+ * provider, or its API key is missing) — otherwise the user asked for LLM fix
+ * prompts and silently got none. `undefined` when the configuration is
+ * coherent (including "no provider requested").
+ */
+export function providerConfigDiagnostic(env: NodeJS.ProcessEnv): Diagnostic | undefined {
+  const provider = env.IMMUNOGEN_PROVIDER;
+  if (!isNonEmptyString(provider)) {
+    return undefined;
+  }
+  const keyVar = PROVIDER_KEYS.get(provider);
+  if (keyVar === undefined) {
+    return {
+      level: "warn",
+      code: "LLM_CONFIG",
+      message: `IMMUNOGEN_PROVIDER="${provider}" is not a supported provider (use "anthropic" or "openai"); LLM fix prompts are disabled.`,
+    };
+  }
+  // eslint-disable-next-line security/detect-object-injection -- keyVar is one of two literal env var names from PROVIDER_KEYS
+  if (!isNonEmptyString(env[keyVar])) {
+    return {
+      level: "warn",
+      code: "LLM_CONFIG",
+      message: `IMMUNOGEN_PROVIDER="${provider}" is set but ${keyVar} is empty; LLM fix prompts are disabled.`,
+    };
+  }
+  return undefined;
+}
+
+/** True when `value` is a defined, non-empty string. */
 function isNonEmptyString(value: string | undefined): value is string {
   return typeof value === "string" && value.length > 0;
 }

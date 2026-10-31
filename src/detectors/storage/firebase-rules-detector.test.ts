@@ -123,8 +123,8 @@ describe("firebaseRulesDetector — config", () => {
     expect(firebaseRulesDetector.config.category).toBe("storage");
   });
 
-  it("declares requiresStack including 'firebase'", () => {
-    expect(firebaseRulesDetector.config.requiresStack).toContain("firebase");
+  it("declares no registry-level requiresStack (Firebase-named rules files are checked without a Firebase dependency)", () => {
+    expect(firebaseRulesDetector.config.requiresStack).toBeUndefined();
   });
 
   it("declares globs covering firestore.rules, storage.rules, and database.rules.json", () => {

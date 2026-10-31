@@ -16,11 +16,7 @@
  * signature families documented as NVIDIA SkillSpector's LP1
  * "Underdeclared Capability" and LP2 "Wildcard Permission" patterns
  * ($HOME/.claude/skills/safety/skillspector/docs/B.3.1-mcp-least-privilege.md),
- * adapted to this plan's own scope (this plan's own must_haves +
- * REQUIREMENTS.md AILAYER-04 checklist text, authoritative over
- * FEATURES.md's older row split — same "plan's literal naming is
- * authoritative" precedent used in 05-02/05-03/05-05/mcp-poisoning-detector.ts):
- * ONE finding fires per server, at MEDIUM/MEDIUM, for EITHER (a) missing
+ * narrowed to one rule: ONE finding fires per server, at MEDIUM/MEDIUM, for EITHER (a) missing
  * `permissions` while a shell/network/fs-capable tool is present
  * (SkillSpector's LP3 "Missing Permission Declaration" shape — MEDIUM, not
  * LP1's HIGH, because absence of a field is weaker evidence than a
@@ -29,8 +25,7 @@
  * pattern logic into a new TypeScript expression requires the exact
  * two-line SPDX header above, copied character-for-character.
  *
- * CONFIDENCE DISCIPLINE (.planning/research/PITFALLS.md Pitfall 1, this
- * plan's own non-negotiable): every finding here is MEDIUM severity /
+ * CONFIDENCE DISCIPLINE: every finding here is MEDIUM severity /
  * MEDIUM confidence and NEVER escalates. Missing-permissions is an
  * ABSENCE-based signal (the field simply isn't there — could be an
  * oversight, not necessarily malice) and wildcard is a TRANSPARENCY
@@ -40,7 +35,7 @@
  * contrasting deliberately with the sibling mcp-poisoning-detector.ts's
  * CRITICAL/HIGH tiering.
  *
- * PARSE-AS-DATA INVARIANT (ENG-05, threat T-06-02-01): `JSON.parse` is the
+ * PARSE-AS-DATA INVARIANT (ENG-05): `JSON.parse` is the
  * ONLY operation ever applied to `ctx.content`. A server's declared
  * `command`/`args`/tool strings are read ONLY as inert text for
  * capability-keyword classification — this detector never invokes,
@@ -49,12 +44,12 @@
  * serialized JSON text CONTAIN a shell/network/fs/env-flavored keyword",
  * nothing more.
  *
- * SHAPE TOLERANCE (threat T-06-02-03): mirrors mcp-poisoning-detector.ts's
+ * SHAPE TOLERANCE: mirrors mcp-poisoning-detector.ts's
  * defensive typeof-guarded walk — `mcpServers`/`servers`/top-level variants
  * are all tolerated; an unrecognized shape contributes zero servers to
  * evaluate (zero findings), never a throw.
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): same
+ * FP allowlist: same
  * `__tests__`/`fixtures`/`mocks`/`examples` + `.test.`/`.stories.` guard as
  * mcp-poisoning-detector.ts's `isAllowlistedPath`.
  *
@@ -63,32 +58,16 @@
  * `JSON.parse` failure on malformed/hostile JSON.
  */
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
-
-/** Path segments that suppress every finding in this file (FP allowlist — PITFALLS.md Pitfall 1). */
-const FP_ALLOWLIST_SEGMENTS = new Set(["__tests__", "fixtures", "mocks", "examples"]);
+import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Maximum length of a `matchedText` snippet — bounds output even for a pathologically long value. */
 const MATCHED_TEXT_MAX_LENGTH = 120;
 
 /**
- * True when `filePath` falls inside a test/fixture/mock/example directory,
- * or its basename marks it as a test or story file (`.test.` / `.stories.`).
- * Mirrors mcp-poisoning-detector.ts `isAllowlistedPath`.
- */
-function isAllowlistedPath(filePath: string): boolean {
-  const segments = filePath.split("/");
-  if (segments.some((segment) => FP_ALLOWLIST_SEGMENTS.has(segment))) {
-    return true;
-  }
-  const basename = segments.at(-1) ?? "";
-  return basename.includes(".test.") || basename.includes(".stories.");
-}
-
-/**
  * Capability keyword sets, mapped from SkillSpector's Python/shell-side
  * regex categories (B.3.1 doc §3) onto their JS/TS/Node ecosystem
  * equivalents. Case-insensitive substring membership against the server's
- * OWN stringified JSON is enough signal at this plan's MEDIUM/MEDIUM
+ * OWN stringified JSON is enough signal at this rule's MEDIUM/MEDIUM
  * ceiling — no regex needed, `String.prototype.includes` on a
  * lower-cased haystack is O(n) per keyword and immune to backtracking.
  *
@@ -119,7 +98,7 @@ const CAPABILITY_KEYWORDS: ReadonlyMap<string, readonly string[]> = new Map([
  * from at least one capability category — i.e. the server exhibits SOME
  * shell/network/fs/env-flavored capability, regardless of which specific
  * category. Plain `.includes()` calls only — no regex, no backtracking
- * risk (threat T-06-02-02 applies project-wide, even though this
+ * risk (applies project-wide, even though this
  * detector's own capability check was never regex-based to begin with).
  */
 function hasAnyCapability(haystackLowercase: string): boolean {
@@ -183,8 +162,8 @@ function resolveLine(rawContent: string, needle: string): number {
 }
 
 /**
- * Truncates `text` to `MATCHED_TEXT_MAX_LENGTH` characters (threat
- * T-06-02-04 discipline, applied project-wide even though this
+ * Truncates `text` to `MATCHED_TEXT_MAX_LENGTH` characters (bounded-snippet
+ * discipline, applied project-wide even though this
  * detector's matchedText values are already short by construction).
  */
 function truncateMatchedText(text: string): string {
@@ -197,7 +176,7 @@ function truncateMatchedText(text: string): string {
  * pair found under `mcpServers` OR `servers`. Any other top-level shape
  * (or a non-object root, or a non-object server map) contributes zero
  * entries — the defensive "unknown shape yields no servers to evaluate"
- * contract (threat T-06-02-03), never a throw.
+ * contract, never a throw.
  */
 function collectServerEntries(parsed: unknown): Array<[string, unknown]> {
   if (typeof parsed !== "object" || parsed === null) {
@@ -223,13 +202,13 @@ export const mcpLeastPrivilegeDetector: Detector = {
   // mcp-poisoning-detector.ts's convention.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
-      if (isAllowlistedPath(ctx.filePath)) {
+      if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 
-      // Parse-as-DATA only (ENG-05, threat T-06-02-01): JSON.parse is the
+      // Parse-as-DATA only (ENG-05): JSON.parse is the
       // ONLY operation applied to ctx.content. A parse failure on
       // malformed/hostile JSON falls through to the outer catch -> [].
       const parsed: unknown = JSON.parse(ctx.content);

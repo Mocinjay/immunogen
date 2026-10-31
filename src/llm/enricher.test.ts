@@ -11,7 +11,7 @@ import type { Finding, Severity } from "../core/types.js";
  * A verbatim, fabricated Anthropic-shaped API key — used ONLY as test input
  * data, never a real credential. Its absence from the captured prompt is
  * this suite's redaction-before-send proof (mirrors src/llm/redactor.test.ts's
- * fixture style, per the plan's read_first list).
+ * fixture style).
  */
 const FAKE_ANTHROPIC_KEY = "sk-ant-api03-FAKE0000000000000000000000TESTONLY";
 
@@ -35,6 +35,7 @@ function makeFakeAdapter(response: string): ProviderAdapter & { calls: string[] 
   const calls: string[] = [];
   return {
     name: "anthropic",
+    model: "test-model",
     calls,
     generate(prompt: string): Promise<string> {
       calls.push(prompt);
@@ -144,7 +145,7 @@ describe("enrichFindings — selection is HIGH/CRITICAL only", () => {
   });
 });
 
-describe("enrichFindings — redaction-before-send proof (T-07-07, SAFE-01)", () => {
+describe("enrichFindings — redaction-before-send proof", () => {
   it("the captured prompt for a finding whose matchedText contains a verbatim Anthropic key does NOT contain that verbatim key", async () => {
     const fake = makeFakeAdapter("FIX: rotate the key");
     const findings = [
@@ -199,6 +200,7 @@ describe("enrichFindings — per-finding adapter failure does not abort the pass
     let callCount = 0;
     const flakyAdapter: ProviderAdapter = {
       name: "anthropic",
+      model: "test-model",
       generate(prompt: string): Promise<string> {
         calls.push(prompt);
         callCount += 1;
@@ -223,6 +225,7 @@ describe("enrichFindings — per-finding adapter failure does not abort the pass
   it("reports enriched:false when every call throws", async () => {
     const throwingAdapter: ProviderAdapter = {
       name: "anthropic",
+      model: "test-model",
       generate(): Promise<string> {
         return Promise.reject(new Error("always fails"));
       },
@@ -233,11 +236,46 @@ describe("enrichFindings — per-finding adapter failure does not abort the pass
 
     expect(result.enriched).toBe(false);
     expect(result.findings[0]?.fixPrompt).toBeUndefined();
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]?.code).toBe("LLM_FAILED");
+    expect(result.diagnostics[0]?.message).toContain("always fails");
+    expect(result.diagnostics[0]?.message).toContain("test-model");
+  });
+
+  it("emits no diagnostic when every call succeeds", async () => {
+    const fake = makeFakeAdapter("FIX: rotate the key");
+
+    const result = await enrichFindings([makeFinding({ severity: "CRITICAL" })], fake);
+
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("never runs more than 4 provider calls at once", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const slowAdapter: ProviderAdapter = {
+      name: "anthropic",
+      model: "test-model",
+      async generate(): Promise<string> {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight -= 1;
+        return "FIX";
+      },
+    };
+    const findings = Array.from({ length: 12 }, (_, i) => makeFinding({ severity: "HIGH", file: `f${String(i)}.ts` }));
+
+    const result = await enrichFindings(findings, slowAdapter);
+
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(result.findings.every((finding) => finding.fixPrompt === "FIX")).toBe(true);
   });
 
   it("also degrades gracefully when generate resolves to an empty string", async () => {
     const emptyAdapter: ProviderAdapter = {
       name: "anthropic",
+      model: "test-model",
       generate(): Promise<string> {
         return Promise.resolve("");
       },

@@ -3,13 +3,12 @@
  *
  * Informational absence check: no privacy-policy or terms-of-service route
  * or static file anywhere in the repo. Rated MEDIUM/LOW (never CRITICAL —
- * per .planning/research/PITFALLS.md, absence-of-evidence findings must
- * stay informational, not alarming) because the check has real FP risk
- * (internal tooling with no public users legitimately has neither) — see
- * .planning/research/FEATURES.md CAT-9 LEGAL-01 row: "FP if app is internal
- * tooling with no public users; note as 'required if collecting user data'".
+ * absence-of-evidence findings stay informational, not alarming) because the
+ * check has real FP risk: internal tooling with no public users
+ * legitimately has neither, so the finding is worded as "required if
+ * collecting user data".
  *
- * WHOLE-REPO FIRES-ONCE PATTERN (see this plan's <whole_repo_detector_note>):
+ * WHOLE-REPO FIRES-ONCE PATTERN:
  * the detector registry calls detect() once per matching file, but this is a
  * whole-repo absence check that must fire exactly once total, not once per
  * file. The fix: declare `globs: ["package.json"]` so detect() is invoked on
@@ -39,8 +38,7 @@ import type { Detector, DetectorContext, Finding } from "../../core/types.js";
  * evidence. Matched against individual path segments AND basenames
  * (without extension) so `app/privacy/page.tsx` (segment `privacy`),
  * `pages/terms.tsx` (basename `terms`), and `public/privacy-policy.html`
- * (basename `privacy-policy`) all count as present, per
- * .planning/research/FEATURES.md CAT-9 LEGAL-01's named vocabulary.
+ * (basename `privacy-policy`) all count as present.
  */
 const PRIVACY_TERMS_VOCABULARY = new Set([
   "privacy",

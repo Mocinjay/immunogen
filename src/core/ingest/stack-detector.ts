@@ -9,8 +9,8 @@
  * Stripe, Prisma, MCP JSON, Claude skills, and Cursor rules.
  *
  * These hints gate which framework-specific detectors run later in the
- * pipeline (ARCHITECTURE.md Pattern 4: a Supabase RLS detector should
- * never run on a plain Express API). ENG-04 — stack detection is the
+ * pipeline (a Supabase RLS detector should never run on a plain Express
+ * API). ENG-04 — stack detection is the
  * primary false-positive control for framework-specific rules, so
  * detection here deliberately errs toward eager activation: a missed
  * hint silently disables a whole detector category, which is worse than
@@ -158,7 +158,7 @@ const VITE_CONFIG_BASENAMES = ["vite.config.js", "vite.config.ts", "vite.config.
  * Reads `fileSet` (the FileWalker's `Map<relativePath, rawText>` output)
  * and returns the detected `StackHints` for the scanned repo.
  *
- * Per-signal rules (ARCHITECTURE.md "Stack Detection Signals" table):
+ * Per-signal rules:
  * - nextjs: `next` in deps, OR a `next.config.*` file, OR an `app/` or
  *   `pages/` directory (App Router or Pages Router) — directory signal
  *   alone is sufficient even with no `next` dependency.
@@ -264,6 +264,9 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
   }
   if (isPrisma) {
     frameworks.add("prisma");
+  }
+  if (hasStripe) {
+    frameworks.add("stripe");
   }
 
   const hasEnvFiles = hasEnvFile(fileSet);

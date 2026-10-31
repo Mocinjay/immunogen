@@ -28,7 +28,15 @@
  *
  * A probe with any status other than 200 contributes no finding: a 3xx/4xx/
  * 5xx on any of these paths just means "not exposed here" and is the
- * expected, non-vulnerable outcome — most of these paths SHOULD 404.
+ * expected, non-vulnerable outcome — most of these paths SHOULD 404. Probes
+ * never follow redirects (scan-url.ts), so a redirect to a login or home
+ * page is a 3xx here, not a 200.
+ *
+ * Catch-all routes: single-page apps and many hosts answer EVERY path with
+ * `200 index.html`. A 200 whose content-type is HTML, or whose body is an
+ * HTML document, is therefore treated as "not exposed" for every path except
+ * security.txt — a real `.env`, git file, JSON config or source map is never
+ * HTML. `/config.json` additionally has to look like JSON.
  *
  * No-throw contract (mirrors src/core/types.ts `Detector.detect`).
  */
@@ -45,9 +53,31 @@ function looksLikeGitConfig(body: string): boolean {
   return /\[core\]/.test(body);
 }
 
+/** True when the probe answered with an HTML page — the signature of a catch-all route, not of the file asked for. */
+function isHtmlResponse(probe: ProbeResult): boolean {
+  if (probe.contentType !== undefined && /\btext\/html\b/i.test(probe.contentType)) {
+    return true;
+  }
+  return probe.bodySnippet !== undefined && /^\s*(?:<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>])/i.test(probe.bodySnippet);
+}
+
+/** True when `body` plausibly starts a JSON document. */
+function looksLikeJson(body: string): boolean {
+  return /^\s*[{[]/.test(body);
+}
+
 /** True when `body` looks like a genuine source map: contains the `"mappings"` key every source map JSON carries. */
 function looksLikeSourceMap(body: string): boolean {
   return /"mappings"\s*:/.test(body);
+}
+
+/** The absolute URL of `probePath` on the target's origin (no `//` when the target ends in `/`). */
+function probeUrl(targetUrl: string, probePath: string): string {
+  try {
+    return new URL(probePath, targetUrl).toString();
+  } catch {
+    return `${targetUrl.replace(/\/+$/, "")}${probePath}`;
+  }
 }
 
 function buildFinding(
@@ -62,7 +92,7 @@ function buildFinding(
     ruleId: "WEB-EXPOSED",
     category: "web",
     detectorName: "exposed-files",
-    file: `${targetUrl}${probePath}`,
+    file: probeUrl(targetUrl, probePath),
     line: 1,
     severity,
     confidence,
@@ -99,8 +129,11 @@ function detectGitLeak(targetUrl: string, probe: ProbeResult): Finding | undefin
   );
 }
 
-/** Handles the `/config.json` probe path. */
-function detectConfigJsonLeak(targetUrl: string, probe: ProbeResult): Finding {
+/** Handles the `/config.json` probe path — only a JSON body counts. */
+function detectConfigJsonLeak(targetUrl: string, probe: ProbeResult): Finding | undefined {
+  if (probe.bodySnippet !== undefined && !looksLikeJson(probe.bodySnippet)) {
+    return undefined;
+  }
   return buildFinding(
     targetUrl,
     probe.path,
@@ -117,7 +150,7 @@ function detectSecurityTxt(targetUrl: string, probe: ProbeResult): Finding {
     ruleId: "WEB-EXPOSED",
     category: "web",
     detectorName: "exposed-files",
-    file: `${targetUrl}${probe.path}`,
+    file: probeUrl(targetUrl, probe.path),
     line: 1,
     severity: "INFO",
     confidence: "LOW",
@@ -151,6 +184,10 @@ export const exposedFilesDetector: WebDetector = {
         if (probe.status !== 200) {
           continue;
         }
+        if (probe.path !== "/.well-known/security.txt" && isHtmlResponse(probe)) {
+          // A catch-all route answering with the app shell — not the file.
+          continue;
+        }
 
         if (probe.path === "/.env") {
           const finding = detectEnvLeak(ctx.target.url, probe);
@@ -163,7 +200,8 @@ export const exposedFilesDetector: WebDetector = {
           continue;
         }
         if (probe.path === "/config.json") {
-          findings.push(detectConfigJsonLeak(ctx.target.url, probe));
+          const finding = detectConfigJsonLeak(ctx.target.url, probe);
+          if (finding) findings.push(finding);
           continue;
         }
         if (probe.path === "/.well-known/security.txt") {

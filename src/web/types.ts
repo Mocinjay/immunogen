@@ -1,5 +1,5 @@
 /**
- * Web-probe detector contracts (Pass 2) — the seam every `src/web/detectors/**`
+ * Web-probe detector contracts — the seam every `src/web/detectors/**`
  * detector implements, and the shape `scan-url.ts`'s orchestration hands them.
  *
  * Deliberately separate from `src/core/types.ts`'s `Detector`/`DetectorContext`
@@ -31,6 +31,8 @@ export interface ProbeResult {
   status: number;
   /** A bounded snippet of the probe response body, when one was read — used to raise/lower confidence (e.g. does a 200 for `/.env` actually look like an env file?). */
   bodySnippet?: string;
+  /** The response `content-type`, when sent — an HTML page at `/.env` is a catch-all route, not a leak. */
+  contentType?: string;
 }
 
 /**

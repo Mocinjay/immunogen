@@ -2,7 +2,7 @@
  * Skill-parity proof — asserts the Claude Code skill wrapper
  * (.claude/skills/immunogen/scan.mjs's `runScanSkill`) reports the SAME
  * Ship Score and finding count as the library `scan()` export on the same
- * target directory (DIST-03, T-08-13).
+ * target directory.
  *
  * This is a standalone node script, NOT a vitest test (mirrors
  * tests/dist/dual-import.test.mjs's convention): it imports the real BUILT

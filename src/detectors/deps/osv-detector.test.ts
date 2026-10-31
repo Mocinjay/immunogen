@@ -6,9 +6,8 @@ import type { DetectorContext, StackHints } from "../../core/types.js";
 import type { OsvResult } from "./osv-client.js";
 
 // queryOsvBatch is mocked at the module boundary so this test suite NEVER
-// performs a real network call (per the project's offline-deterministic
-// test mandate and the plan's pattern_analog note: "queryOsvBatch is a
-// separate module import so the test can stub it").
+// performs a real network call (tests are offline and deterministic;
+// queryOsvBatch lives in its own module so it can be stubbed).
 const queryOsvBatchMock = vi.fn<(queries: Array<{ name: string; version: string }>) => Promise<OsvResult[]>>();
 
 const fetchVulnSeveritiesMock = vi.fn<(ids: string[]) => Promise<Map<string, string>>>(() => Promise.resolve(new Map()));
@@ -398,6 +397,35 @@ describe("osvDetector — lockfiles", () => {
 
     expect(findings.map((finding) => [finding.file, finding.line, finding.message])).toEqual([
       ["pyproject.toml", 3, "Vulnerable dependency: flask@2.0.1 (OSV advisory PYSEC-1)."],
+    ]);
+  });
+});
+
+describe("osvDetector — npm specifiers are normalized before they reach OSV", () => {
+  it("queries the lower bound of ranges, resolves npm: aliases, and skips non-registry specifiers", async () => {
+    queryOsvBatchMock.mockImplementation((queries) => Promise.resolve(queries.map(() => ({}))));
+    const content = JSON.stringify({
+      dependencies: {
+        a: "^1.2.3",
+        b: ">=2.0.0 <3.0.0",
+        c: "1.x",
+        d: "~4",
+        e: "npm:@scope/real@^5.1.0",
+        f: "github:owner/repo",
+        g: "owner/repo#main",
+        h: "https://example.com/pkg.tgz",
+        i: "next",
+      },
+    });
+
+    await osvDetector.detect(makeContext(content));
+
+    expect(queryOsvBatchMock.mock.calls[0]?.[0]).toEqual([
+      { name: "a", version: "1.2.3", ecosystem: "npm" },
+      { name: "b", version: "2.0.0", ecosystem: "npm" },
+      { name: "c", version: "1.0.0", ecosystem: "npm" },
+      { name: "d", version: "4.0.0", ecosystem: "npm" },
+      { name: "@scope/real", version: "5.1.0", ecosystem: "npm" },
     ]);
   });
 });

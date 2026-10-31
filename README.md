@@ -186,7 +186,7 @@ const result = await scan("./my-app");
 console.log(result.score, result.findings);
 ```
 
-`scan(path, options?)` returns a `ScanResult`: `{ target, scannedAt, stackHints, findings, score, llmEnriched, scanIncomplete }`. `score` is a `ShipScore` (`{ score, grade, gradeLabel, band, verdict, criticalCount, highCount }`); `findings` is a severity-sorted `Finding[]` with `file`/`line`/`ruleId`/`category`/`confidence`.
+`scan(path, options?)` returns a `ScanResult`: `{ target, scannedAt, stackHints, findings, score, llmEnriched, scanIncomplete, diagnostics }`. `diagnostics` lists every non-fatal warning (unparseable files, files over the size cap, a truncated walk, LLM misconfiguration or failures, failed URL probes); every output format shows them, and `scanIncomplete` is `true` whenever coverage was reduced. `score` is a `ShipScore` (`{ score, grade, gradeLabel, band, verdict, criticalCount, highCount }`); `findings` is a severity-sorted `Finding[]` with `file`/`line`/`ruleId`/`category`/`confidence`.
 
 ### Optional LLM fix prompts
 
@@ -198,6 +198,7 @@ By default, immunogen never calls an LLM. To enable Claude- or OpenAI-generated 
 | `ANTHROPIC_API_KEY` | Required when `IMMUNOGEN_PROVIDER=anthropic` |
 | `OPENAI_API_KEY` | Required when `IMMUNOGEN_PROVIDER=openai` |
 | `OPENAI_BASE_URL` | Optional override for OpenAI-compatible endpoints (e.g. a local Ollama server) |
+| `IMMUNOGEN_MODEL` | Optional model override. Defaults: `claude-haiku-5-5` (Anthropic), `gpt-4o-mini` (OpenAI). Required for OpenAI-compatible servers, which serve their own model names (e.g. `llama3.1`) |
 
 If neither an env-configured provider nor the matching key is present, immunogen silently stays offline (no network call, no error). Every finding snippet is redacted before it is sent to any provider — no full source, no matched secret text ever leaves your machine unredacted.
 
@@ -217,7 +218,7 @@ What it checks on the live target:
 - **Secrets in served bundles** — live-looking Stripe/AWS/OpenAI keys found in same-origin script bundles or inline `<script>` blocks, redacted before they ever appear in output (`WEB-SEC`).
 - **Cookie flags** — session-shaped cookies missing `Secure`, `HttpOnly`, or a strong `SameSite` (`WEB-COOKIE`).
 
-`--allow-private` is a separate escape hatch for the SSRF guard, only needed to point live-URL screening at a loopback/private/link-local host (e.g. `localhost`) during local dev/test — it is refused by default. Live-URL screening is fully deterministic and never invokes an LLM, regardless of your provider env vars.
+`--allow-private` is a separate escape hatch for the SSRF guard, only needed to point live-URL screening at a loopback/private/link-local host (e.g. `localhost`) during local dev/test — it is refused by default. The guard resolves the host's DNS and re-checks before every request, including each redirect hop, so neither a public name that resolves to an internal address nor a redirect into your network is followed. Each connection is also pinned to the addresses that passed the check, so a DNS-rebinding server cannot swap in an internal address between the check and the connect. Exposed-file probes never follow redirects, and an HTML app shell served for `/.env` (an SPA catch-all) is not reported as a leak. Live-URL screening is fully deterministic and never invokes an LLM, regardless of your provider env vars.
 
 ## Use as a Claude Code skill
 

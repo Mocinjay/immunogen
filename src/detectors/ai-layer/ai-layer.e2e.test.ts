@@ -1,9 +1,8 @@
 /**
- * AI-layer end-to-end integration test — Phase 6 (Plan 06-04) success
- * criteria 1, 2, 3, and 4-fire.
+ * AI-layer end-to-end integration test.
  *
  * Calls the real, public `scan()` (src/index.ts) over the on-disk fixture
- * directories created by this plan and asserts that AILAYER-01, AILAYER-03,
+ * directories under tests/fixtures and asserts that AILAYER-01, AILAYER-03,
  * and AILAYER-04 each fire with the expected file/line/severity shape, that
  * the clean fixture stays silent, and that `sarifReporter`/`getReporter`
  * render a criteria-4-valid SARIF 2.1.0 document from that live scan output.
