@@ -54,7 +54,7 @@ import { fileURLToPath } from "node:url";
  *    on-disk path, so this covers both).
  * 2. the bare specifier `immunogen` — the case where this skill folder was
  *    copied standalone and immunogen is installed as an ordinary package
- *    (`npm i immunogen` / a future npm publish), resolved via Node's normal
+ *    (`npm i <release tarball URL>` / a future npm publish), resolved via Node's normal
  *    module resolution from this file's location.
  *
  * If neither resolves, throws ONE clear, actionable error rather than
@@ -74,7 +74,8 @@ async function loadScan() {
     throw new Error(
       "immunogen: could not find a built or installed immunogen. " +
         "Run this skill from inside the immunogen repo after `pnpm build`, " +
-        "or install the package (`npm i immunogen`).",
+        "or install the package " +
+        "(`npm i https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz`).",
     );
   }
 }

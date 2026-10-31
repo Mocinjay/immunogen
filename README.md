@@ -4,7 +4,7 @@
 
 **Your AI agent shipped the code. immunogen makes sure it didn't ship an infection.**
 
-[![npm version](https://img.shields.io/npm/v/immunogen.svg)](https://www.npmjs.com/package/immunogen)
+[![Latest release](https://img.shields.io/github/v/release/Mocinjay/immunogen)](https://github.com/Mocinjay/immunogen/releases/latest)
 [![CI](https://github.com/Mocinjay/immunogen/actions/workflows/ci.yml/badge.svg)](https://github.com/Mocinjay/immunogen/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node >=22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
@@ -19,17 +19,30 @@ A clean bill of health for AI-built apps, before you ship. immunogen is a static
 
 ## Quickstart
 
+Requires Node.js 22 or newer. Install the latest release from GitHub:
+
 ```sh
-npx immunogen
+npm install -g https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz
 ```
 
-Run it in your project directory — it scans the current folder, no API key required, and prints a terminal report with a Ship Score. Point it elsewhere with `npx immunogen ./path/to/app`. The only network call it ever makes is a dependency-vulnerability lookup against OSV.dev (package names + versions only); add `--offline` to skip that too.
-
-Requires Node.js 22 or newer. Other ways to install:
+Then run it in your project directory:
 
 ```sh
-npm install -g immunogen           # global CLI
-npm install --save-dev immunogen   # per-project (CI gate / library use)
+immunogen
+```
+
+It scans the current folder, no API key required, and prints a terminal report with a Ship Score. Point it elsewhere with `immunogen ./path/to/app`. The only network call it ever makes is a dependency-vulnerability lookup against OSV.dev (package names + versions only); add `--offline` to skip that too.
+
+One-off run without a global install:
+
+```sh
+npx --yes --package=https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz immunogen
+```
+
+Per-project (CI gate / library use):
+
+```sh
+npm install --save-dev https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz
 ```
 
 Or run it in Docker with no Node toolchain at all:
@@ -235,7 +248,7 @@ ln -s "$PWD/.claude/skills/immunogen" ~/.claude/skills/immunogen
 
 The wrapper resolves the built library automatically — from the repo when the
 skill lives inside it (a symlink follows the real path), or from an installed
-`immunogen` package once you `npm i immunogen`. Live-URL screening stays
+`immunogen` package (see [Quickstart](#quickstart)). Live-URL screening stays
 consent-gated: a URL without `--authorize` is refused before any request is
 made.
 
@@ -263,7 +276,7 @@ jobs:
           node-version: "22"
 
       - name: Screen with immunogen
-        run: npx --yes immunogen . --format sarif > results.sarif
+        run: npx --yes --package=https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz immunogen . --format sarif > results.sarif
 
       - name: Upload SARIF
         if: always()

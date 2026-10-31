@@ -12,22 +12,22 @@ upgrade before reporting an issue against an older release.
 
 ## Reporting a vulnerability
 
-**Please do not open a public issue for a security problem in immunogen
-itself.**
+**Please do not post details of a security problem in immunogen itself in a
+public issue.**
 
-Report it privately through GitHub's private vulnerability reporting:
-[**Report a vulnerability**](https://github.com/Mocinjay/immunogen/security/advisories/new).
+Open an issue titled **"Security contact request"** with no technical
+details, and the maintainer will reply with a private channel for the
+report.
 
-Include as much of the following as you can:
+Include as much of the following as you can in the private report:
 
 - the immunogen version (`immunogen --version`) and Node.js version
 - the command you ran and the input that triggers the problem (a minimal
   repo, ZIP, or URL — never include real secrets)
 - what happened, and what you expected to happen
 
-You should get an acknowledgement within a few days. Once a fix is ready it
-is released and the advisory is published with credit to the reporter,
-unless you ask to stay anonymous.
+Once a fix is ready it is released and the advisory is published with credit
+to the reporter, unless you ask to stay anonymous.
 
 ## Scope
 

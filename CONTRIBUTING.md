@@ -34,7 +34,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:
 
 1. Bump `version` in `package.json` and move the `Unreleased` notes in `CHANGELOG.md` under the new version.
 2. Merge to `main`, then tag and push: `git tag v<version> && git push origin v<version>`.
-3. The `Release` workflow re-runs the checks, publishes to npm with provenance (needs the `NPM_TOKEN` repository secret), and creates the GitHub Release.
+3. The `Release` workflow re-runs the checks, packs the npm tarball, and creates the GitHub Release with the tarball attached (`immunogen.tgz` always points at the latest release). If an `NPM_TOKEN` repository secret is set, it also publishes the same tarball to npm with provenance.
 
 ## Security issues
 
