@@ -16,10 +16,11 @@
  * any IPv4-mapped / NAT64 address whose embedded IPv4 is blocked; plus the
  * names `localhost`, `*.localhost`, `*.local`, `*.internal`.
  *
- * Residual risk (documented, not closed): the check resolves the name and
- * `fetch` then resolves it again, so a DNS-rebinding server can answer
- * differently between the two lookups. Closing that requires pinning the
- * connection to the checked address with a custom dispatcher.
+ * DNS rebinding: this check resolves the name and the request would resolve
+ * it again, so a rebinding server could answer differently between the two.
+ * `scanUrl` therefore sends every request through pinned-fetch.ts, which
+ * applies `isBlockedAddress` inside the socket's own lookup — the connection
+ * only ever reaches an address that passed this policy.
  *
  * DNS resolution lives in dns-resolve.ts so tests can stub it at the module
  * boundary without touching the network.

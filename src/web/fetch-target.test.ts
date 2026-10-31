@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { fetchTarget } from "./fetch-target.js";
+import { VERSION } from "../version.js";
 
 import type { FetchDeps } from "./fetch-target.js";
 
@@ -280,7 +281,7 @@ describe("fetchTarget — user agent", () => {
     await fetchTarget("https://example.com", {}, deps);
 
     const headerRecord = sawHeaders as Record<string, string>;
-    expect(headerRecord["user-agent"]).toContain("immunogen/0.1");
+    expect(headerRecord["user-agent"]).toContain(`immunogen/${VERSION}`);
   });
 });
 

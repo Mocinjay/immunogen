@@ -55,8 +55,9 @@ blast radius or a maintainability hazard that is already causing drift;
   address against a `net.BlockList` covering all special-purpose ranges
   (v4, v6, v4-mapped); follow redirects manually with per-hop validation and
   a real hop limit; probes never follow redirects.
-- **Residual:** DNS-rebinding between check and connect is not closed
-  (would need a pinned-IP dispatcher). Documented.
+- **Residual (closed in the follow-up):** DNS rebinding between check and
+  connect — now closed by pinning connections to vetted addresses (see
+  Follow-up below).
 
 ## High
 
@@ -192,7 +193,7 @@ https://github.com/...` fails. **Fix:** install git in the runtime stage.
   process (library/MCP use). Acceptable for the CLI; noted.
 - **L5.** Documentation comments are heavily process-oriented ("Plan 05-08",
   "Pass 2", threat IDs) and in places now false (e.g. "requiresStack ...
-  closed by 05-08"). Fixed where touched; a wider pass is recommended.
+  closed by 05-08"). Fixed across the codebase in the follow-up.
 
 ---
 
@@ -250,14 +251,14 @@ tests (`test:dist`: ESM + CJS import, skill parity, symlinked CLI) pass.
   it) and adapters expose `model`.
 - `.spec.` files and `tests/` / `testdata/` directories are now treated as
   test code by every detector.
-- SARIF `partialFingerprints.primaryLocationLineHash` is still derived from
-  rule + file + line. It churns when lines shift; moving it to a
-  content-stable fingerprint is the main remaining SARIF improvement.
+- SARIF `partialFingerprints.primaryLocationLineHash` values changed once
+  (see Follow-up): existing GitHub code-scanning alerts are re-keyed on the
+  first upload after upgrading, then stay stable.
 
-### Not done (recommended next)
+## Follow-up (items previously listed as not done)
 
-- Pin URL-mode connections to the checked IP (custom undici dispatcher) to
-  close the DNS-rebinding window documented in `host-guard.ts`.
-- Content-stable SARIF fingerprints (see above).
-- Trim the process-history comments (plan IDs, "Pass 2", threat IDs) across
-  the codebase; several still describe superseded designs.
+| Item | Result | Where |
+|---|---|---|
+| DNS rebinding | Guarded URL-mode requests go through an undici `Agent` whose socket `lookup` applies the same `isBlockedAddress` policy: the connection only ever reaches an address that passed the check, so a second, different DNS answer cannot redirect it. Proven against a real local server. `undici@7.30.1` (Node ≥20.18.1) is now a dependency. | `src/web/pinned-fetch.ts`, `src/web/scan-url.ts` |
+| SARIF fingerprints | `primaryLocationLineHash` hashes rule + file + message + masked snippet, never the line; same-key findings in a file get an occurrence index in line order. Alerts survive unrelated edits that move them. | `src/reporters/sarif.ts` |
+| Process-history comments | Every reference to internal planning documents, plan/phase/pass labels and threat IDs removed or rewritten (~230 sites, 70 files); comments describing superseded designs (manifest-only dependency checks, the shared AST cache) corrected. | codebase-wide |

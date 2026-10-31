@@ -1,11 +1,11 @@
 /**
- * scanUrl — Pass 2 orchestration for live URL / website screening.
+ * scanUrl — orchestration for live URL / website screening.
  *
- * Wires together the Pass 1 foundation (`resolveUrlTarget`, `fetchTarget`)
- * with the Pass 2 web-probe detectors (`WEB_DETECTORS`) into the same public
+ * Wires together `resolveUrlTarget` and `fetchTarget` with the web-probe
+ * detectors (`WEB_DETECTORS`) into the same public
  * shape the static file/AST pipeline returns from `scan()` — a `ScanResult`.
- * `src/index.ts`'s `scan()` delegates here whenever `isUrl(input)` is true
- * (Task 3 wiring); this module has no knowledge of that routing decision.
+ * `src/index.ts`'s `scan()` delegates here whenever `isUrl(input)` is true;
+ * this module has no knowledge of that routing decision.
  *
  * Pipeline (fixed order):
  *   1. `resolveUrlTarget(input, options)` — consent gate + SSRF guard. Lets
@@ -36,9 +36,8 @@
  * possesses) — keeping URL-mode scanning fully deterministic and 100%
  * offline-after-the-initial-fetch avoids ever forwarding a live target's
  * data to an LLM provider as a side effect of a security screen. This is a
- * deliberate scope boundary for Pass 2, not an oversight; Pass 1's own
- * `ScanOptions` doc comments already frame `authorize`/`allowPrivate` as the
- * sole new URL-mode inputs, with no LLM-provider option in that set.
+ * deliberate scope boundary, not an oversight: `authorize`/`allowPrivate`
+ * are the only URL-mode inputs, with no LLM-provider option among them.
  *
  * `scanIncomplete` is `true` when: the main document fetch returned a
  * non-2xx status (the detectors' own findings are already scoped/gated for
@@ -52,6 +51,7 @@
 import { fetchTarget, readBoundedBody } from "./fetch-target.js";
 import { runWebDetectors } from "./detectors/registry.js";
 import { assertPublicUrl } from "./host-guard.js";
+import { createPinnedFetch } from "./pinned-fetch.js";
 import { resolveUrlTarget } from "./url-resolver.js";
 
 import { computeScore } from "../core/scoring.js";
@@ -205,7 +205,9 @@ export async function scanUrl(
   const scannedAt = new Date().toISOString();
   const guardOptions = options.allowPrivate === true ? { allowPrivate: true } : {};
   const fetchDeps: FetchDeps = {
-    fetch: deps.fetch ?? fetch,
+    // Guarded runs connect only to addresses that pass the SSRF policy at
+    // connect time (pinned-fetch.ts), closing the DNS-rebinding window.
+    fetch: deps.fetch ?? (options.allowPrivate === true ? fetch : createPinnedFetch()),
     // Every request — main document, redirect hops, scripts, probes — is
     // re-checked against the resolved addresses of its host.
     assertAllowed: deps.assertAllowed ?? ((url: URL) => assertPublicUrl(url, guardOptions)),

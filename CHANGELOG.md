@@ -6,8 +6,20 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-31
+
+### Security
+
+- Live-URL screening pins every connection to the addresses that passed the
+  SSRF check (the check runs inside the socket's own DNS lookup), closing
+  the DNS-rebinding window between checking a host and connecting to it.
+
 ### Fixed
 
+- SARIF fingerprints no longer include the line number, so GitHub
+  code-scanning alerts keep their identity when unrelated edits move a
+  finding. Existing alerts are re-keyed once on the first upload after
+  upgrading.
 - Scanning a mid-size repository no longer runs out of memory: files are
   parsed one at a time and their syntax trees freed, instead of every tree
   being held for the whole scan (10,000 files: crash at 2 GB heap before,
@@ -54,6 +66,12 @@ follows [Semantic Versioning](https://semver.org/).
 - Test, fixture, mock, example and story code is recognized by one shared
   rule set across all detectors (`.spec.` files and `tests/` / `testdata/`
   directories were previously honored by only some of them).
+- Library API (breaking): `ScanResult.diagnostics` is a new required field,
+  and `ProviderAdapter.generate()` now rejects on failure instead of
+  resolving to an empty string.
+- `undici` is now a runtime dependency (used for the pinned live-URL
+  connections).
+- Code comments no longer reference internal planning documents.
 
 ## [0.1.0] - 2026-10-31
 
@@ -95,5 +113,6 @@ First public release.
 - The offline advisory list no longer flags patched backport releases on
   older lines (e.g. `semver@5.7.2`, `ws@7.5.10`, `minimist@0.2.4`).
 
-[Unreleased]: https://github.com/Mocinjay/immunogen/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Mocinjay/immunogen/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Mocinjay/immunogen/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Mocinjay/immunogen/releases/tag/v0.1.0

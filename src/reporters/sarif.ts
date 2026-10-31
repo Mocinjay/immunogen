@@ -13,15 +13,15 @@
  * `ruleId` present in `result.findings` (first-seen order preserved) so
  * GitHub Code Scanning's alert pages show rule NAMES, not bare IDs.
  * `partialFingerprints.primaryLocationLineHash` is set on EVERY result (a
- * sha256 of `ruleId + file + line`, computed via the `node:crypto` builtin)
- * so GitHub can dedupe the same finding across repeated scans.
+ * line-independent sha256, see `computeFingerprints`) so GitHub tracks the
+ * same alert across scans even when unrelated edits move it.
  *
  * Findings arrive ALREADY masked and ALREADY sorted from the detector layer
  * (see `json.ts`'s precedent) — this reporter never unmasks, re-sorts, or
- * copies raw `matchedText` into the emitted document (T-06-03-01: only
+ * copies raw `matchedText` into the emitted document (only
  * `message` + `remediation` flow into `result.message.text`).
  *
- * ENG-05 / T-06-03-02: this module only reads plain `ScanResult` fields and
+ * ENG-05: this module only reads plain `ScanResult` fields and
  * calls `JSON.stringify` + `crypto.createHash` on the scanner's OWN finding
  * metadata — it never imports a parser, never evals/requires/spawns, and
  * never re-decodes scanned content.
@@ -127,16 +127,41 @@ function deriveRuleName(category: Category, detectorName: string): string {
   return `${CATEGORY_LABELS[category]} (${detectorName})`;
 }
 
+/** The finding fields that identify "the same problem" independent of where in the file it sits. */
+function fingerprintKey(finding: Finding): string {
+  return JSON.stringify([finding.ruleId, finding.file, finding.message, finding.matchedText ?? ""]);
+}
+
 /**
- * Computes a deterministic sha256 hex digest over a finding's stable logical
- * location (`ruleId + " " + file + " " + line`) using the `node:crypto`
- * builtin. This hashes only the scanner's OWN finding metadata — never
- * scanned file content — satisfying ENG-05 / T-06-03-02. The same tuple
- * always yields the same hash, letting GitHub Code Scanning dedupe the same
- * finding across repeated scans.
+ * `partialFingerprints.primaryLocationLineHash` for every finding, in
+ * `findings` order. The hash covers rule, file, message and the (masked)
+ * matched snippet — never the line number — so an alert keeps its identity
+ * when unrelated edits shift it up or down the file. Findings that share all
+ * of those get an occurrence index (counted in line order) mixed in, so they
+ * stay distinct. Only the scanner's own finding metadata is hashed.
  */
-function computePrimaryLocationLineHash(ruleId: string, file: string, line: number): string {
-  return createHash("sha256").update(`${ruleId} ${file} ${line}`).digest("hex");
+function computeFingerprints(findings: readonly Finding[]): string[] {
+  const indicesByKey = new Map<string, number[]>();
+  for (const [index, finding] of findings.entries()) {
+    const key = fingerprintKey(finding);
+    const indices = indicesByKey.get(key);
+    if (indices === undefined) {
+      indicesByKey.set(key, [index]);
+    } else {
+      indices.push(index);
+    }
+  }
+
+  const fingerprints = new Map<number, string>();
+  for (const [key, indices] of indicesByKey) {
+    const byLine = indices
+      .map((index) => ({ index, line: findings.at(index)?.line ?? 0 }))
+      .sort((a, b) => a.line - b.line || a.index - b.index);
+    for (const [occurrence, { index }] of byLine.entries()) {
+      fingerprints.set(index, createHash("sha256").update(`${key}\n${String(occurrence)}`).digest("hex"));
+    }
+  }
+  return findings.map((_, index) => fingerprints.get(index) ?? "");
 }
 
 /**
@@ -217,9 +242,9 @@ function buildLocation(finding: Finding): SarifLocation {
  * Maps a single `Finding` to a `SarifResult`. `message.text` is built from
  * `finding.message` + `finding.remediation` only — `matchedText` is never
  * copied in, since it may carry (already-masked, but still best kept out of
- * a shared alert surface) matched content (T-06-03-01).
+ * a shared alert surface) matched content.
  */
-function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>): SarifResult {
+function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>, fingerprint: string): SarifResult {
   const ruleIndex = ruleIndexByRuleId.get(finding.ruleId);
 
   return {
@@ -228,13 +253,7 @@ function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>): 
     level: mapSeverityToLevel(finding.severity),
     message: { text: `${finding.message} ${finding.remediation}`.trim() },
     locations: [buildLocation(finding)],
-    partialFingerprints: {
-      primaryLocationLineHash: computePrimaryLocationLineHash(
-        finding.ruleId,
-        finding.file,
-        finding.line,
-      ),
-    },
+    partialFingerprints: { primaryLocationLineHash: fingerprint },
   };
 }
 
@@ -247,6 +266,7 @@ function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>): 
  */
 function buildRun(result: ScanResult): SarifRun {
   const { rules, ruleIndexByRuleId } = buildRules(result.findings);
+  const fingerprints = computeFingerprints(result.findings);
 
   return {
     tool: {
@@ -264,7 +284,7 @@ function buildRun(result: ScanResult): SarifRun {
         ...(result.diagnostics.length > 0 ? { toolExecutionNotifications: result.diagnostics.map(buildNotification) } : {}),
       },
     ],
-    results: result.findings.map((finding) => buildResult(finding, ruleIndexByRuleId)),
+    results: result.findings.map((finding, index) => buildResult(finding, ruleIndexByRuleId, fingerprints.at(index) ?? "")),
     properties: {
       grade: result.score.grade,
       gradeLabel: result.score.gradeLabel,

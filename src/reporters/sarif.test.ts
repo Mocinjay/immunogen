@@ -394,6 +394,41 @@ describe("sarifReporter.render — Test 6: fingerprint stability + uniqueness", 
       secondResult.partialFingerprints.primaryLocationLineHash,
     );
   });
+
+  /** Renders `findings` and returns each result's fingerprint, in order. */
+  function fingerprintsOf(findings: Finding[]): string[] {
+    const parsed = JSON.parse(sarifReporter.render(makeScanResult({ findings }))) as ParsedSarifLog;
+    return (parsed.runs[0]?.results ?? []).map((sarifResult) => sarifResult.partialFingerprints.primaryLocationLineHash);
+  }
+
+  it("keeps the same fingerprint when unrelated edits shift the finding to another line", () => {
+    const [before] = fingerprintsOf([CRITICAL_FINDING]);
+    const [after] = fingerprintsOf([{ ...CRITICAL_FINDING, line: CRITICAL_FINDING.line + 7 }]);
+
+    expect(before).toBeDefined();
+    expect(after).toBe(before);
+  });
+
+  it("gives two otherwise-identical findings in one file distinct fingerprints, stable under a shared shift", () => {
+    const upper = { ...CRITICAL_FINDING, line: 10 };
+    const lower = { ...CRITICAL_FINDING, line: 30 };
+
+    const original = fingerprintsOf([upper, lower]);
+    const shifted = fingerprintsOf([
+      { ...upper, line: 15 },
+      { ...lower, line: 35 },
+    ]);
+
+    expect(new Set(original).size).toBe(2);
+    expect(shifted).toEqual(original);
+  });
+
+  it("changes the fingerprint when the problem itself changes (different matched snippet)", () => {
+    const [original] = fingerprintsOf([CRITICAL_FINDING]);
+    const [changed] = fingerprintsOf([{ ...CRITICAL_FINDING, matchedText: "sk_t****" }]);
+
+    expect(changed).not.toBe(original);
+  });
 });
 
 describe("sarifReporter.render — Test 8: headline A-F grade surfaced in run.properties", () => {

@@ -1,5 +1,5 @@
 /**
- * Live URL screening end-to-end test — Pass 2 Task 4.
+ * Live URL screening end-to-end test.
  *
  * Calls the real, public `scan()` (src/index.ts), which routes an
  * `http(s)://` input to `scanUrl()` (src/web/scan-url.ts). Since `scan()`'s
@@ -38,6 +38,13 @@ vi.mock("../../src/web/dns-resolve.js", () => ({
     Promise.resolve(hostname.endsWith(".internal-test") ? ["10.0.0.5"] : ["93.184.216.34"]),
 }));
 
+// Guarded scans normally connect through the pinned (connect-time checked)
+// fetch; route it to the stubbed global so these tests stay hermetic. The
+// pin itself is covered by src/web/pinned-fetch.test.ts.
+vi.mock("../../src/web/pinned-fetch.js", () => ({
+  createPinnedFetch: () => (input: string | URL | Request, init?: RequestInit) => globalThis.fetch(input, init),
+}));
+
 import { scan } from "../../src/index.js";
 
 /** Builds a fake `Response`, mirroring fetch-target.test.ts's own helper. */
@@ -67,7 +74,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("scan() — live URL screening: vulnerable site (Pass 2 Task 4 e2e)", () => {
+describe("scan() — live URL screening: vulnerable site (e2e)", () => {
   beforeEach(() => {
     stubGlobalFetch((url) => {
       const urlStr = url.toString();
@@ -126,7 +133,7 @@ describe("scan() — live URL screening: vulnerable site (Pass 2 Task 4 e2e)", (
   });
 });
 
-describe("scan() — live URL screening: clean site (Pass 2 Task 4 e2e)", () => {
+describe("scan() — live URL screening: clean site (e2e)", () => {
   beforeEach(() => {
     stubGlobalFetch((url) => {
       const urlStr = url.toString();
@@ -160,7 +167,7 @@ describe("scan() — live URL screening: clean site (Pass 2 Task 4 e2e)", () => 
   });
 });
 
-describe("scan() — consent gate and SSRF guard (Pass 2 Task 4 e2e)", () => {
+describe("scan() — consent gate and SSRF guard (e2e)", () => {
   it("rejects a URL scanned without authorize, with the actionable message, and never calls fetch", async () => {
     const fetchSpy = vi.fn();
     stubGlobalFetch(fetchSpy as unknown as typeof fetch);
