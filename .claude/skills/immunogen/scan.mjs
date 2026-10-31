@@ -5,9 +5,8 @@
  * resolves the single `scan()` export from the BUILT immunogen package (see
  * `loadScan()` below) and does exactly one thing beyond that: it formats the
  * returned `ScanResult` into markdown for a Claude Code conversation to
- * present verbatim (.planning/research/ARCHITECTURE.md "Pattern 3:
- * Library-First, CLI-as-Thin-Wrapper" — the skill and the CLI are siblings,
- * both thin callers of the same `scan()`). The markdown leads with the
+ * present verbatim (the skill and the CLI are siblings, both thin callers of
+ * the same `scan()`). The markdown leads with the
  * headline A-F health grade (`score.grade`/`score.gradeLabel`) before the
  * existing Ship Score/band/verdict/counts lines — an additive headline, not
  * a replacement for the numeric score already presented below it.
@@ -17,7 +16,7 @@
  * cannot rely on a fixed repo-relative path to `dist/index.js` — see
  * `loadScan()`.
  *
- * Determinism / offline-by-default (T-08-12, T-08-13): when `runScanSkill`
+ * Determinism / offline-by-default: when `runScanSkill`
  * is called with no `options` (the parity test's usage), it forwards NO
  * options object to `scan()` at all — it never reads or forwards any
  * provider/LLM environment variable itself, and never passes `noLlm` either
@@ -161,7 +160,7 @@ function formatMarkdown(result) {
  * on the exact `score`/`count` numbers directly instead of parsing rendered
  * text. `score` is `result.score.score` (the 0-100 Ship Score); `count` is
  * `result.findings.length` (total finding count) — the two numbers parity
- * is defined over (see PLAN.md critical_facts #3).
+ * is defined over.
  */
 export async function runScanSkill(target, options = {}) {
   const scan = await loadScan();

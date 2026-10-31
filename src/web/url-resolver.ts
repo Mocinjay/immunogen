@@ -1,5 +1,5 @@
 /**
- * url-resolver — Pass 1 foundation for live URL / website screening.
+ * url-resolver — input classification and gating for live URL / website screening.
  *
  * This module classifies and normalizes a caller-supplied string into an
  * absolute URL, then enforces the two hard gates a live-target screen must
@@ -51,7 +51,7 @@ export const AUTHORIZATION_REQUIRED_MESSAGE =
 /**
  * True when `input` begins with the `http://` or `https://` scheme
  * (case-insensitive). This is the sole classification signal
- * `resolveInput` (Pass 2) will use to route a caller's input string to the
+ * `scan()` uses to route a caller's input string to the
  * URL branch instead of the dir/git/zip branches — it deliberately does NOT
  * attempt to guess "looks like a domain" from a bare hostname (e.g.
  * `example.com` with no scheme), since that is ambiguous with a relative

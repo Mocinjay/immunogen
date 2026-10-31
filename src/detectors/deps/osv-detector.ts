@@ -1,22 +1,18 @@
 /**
  * osvDetector — CAT-5 DEP-01: OSV.dev dependency vulnerability detector.
  *
- * Reads every `package.json` in a scanned repo — the root manifest AND any
- * nested app/package manifest (`app/`, `apps/web/`, `packages/*`), since
+ * Reads every dependency manifest and lockfile in a scanned repo — the root
+ * AND any nested app/package (`app/`, `apps/web/`, `packages/*`), since
  * AI-built projects routinely keep the real app in a subdirectory — but
- * never one under `node_modules/` or a test/fixture/mock/example directory
- * (never a
- * lockfile — PITFALLS.md Integration Gotchas: "parse only the lockfile's
- * top-level resolved versions, not the installed tree"; this detector
- * intentionally scopes to direct manifest-declared `dependencies` +
- * `devDependencies`, mirroring `stack-detector.ts`'s `readMergedDeps`
- * defensive parse pattern), batches them through `queryOsvBatch`
+ * never one under `node_modules/` or a test/fixture/mock/example directory.
+ * When a lockfile resolves a manifest, its exact (including transitive)
+ * versions are checked; otherwise the manifest's declared versions are.
+ * Dependencies are batched through `queryOsvBatch`
  * (`osv-client.ts`), and on ANY network failure falls back to the bundled
  * `FALLBACK_VULNERABLE_NPM` list (`osv-fallback.ts`).
  *
- * DEP-OFFLINE sentinel contract (the non-negotiable load-bearing trust
- * property — PITFALLS.md Pitfall 10, this plan's `<scaninclomplete_handoff>`
- * note):
+ * DEP-OFFLINE sentinel contract (the load-bearing trust property — an
+ * outage must never read as "no vulnerabilities"):
  *
  *   Whenever the OSV query fails and this detector falls back to offline
  *   mode, it appends EXACTLY ONE additional Finding to whatever DEP-01
@@ -68,7 +64,7 @@ const DEP_RULE_ID = "DEP-01";
 /** Stable ruleId for the offline-degradation sentinel (see module header — the 05-08 handoff contract). */
 const DEP_OFFLINE_RULE_ID = "DEP-OFFLINE";
 
-/** Fixed message for the DEP-OFFLINE sentinel — verbatim per the scaninclomplete_handoff contract. */
+/** Fixed message for the DEP-OFFLINE sentinel (see the module header). */
 const DEP_OFFLINE_MESSAGE =
   "OSV.dev unreachable; dependency scan ran in offline fallback mode (results may be incomplete).";
 
@@ -418,7 +414,7 @@ function buildFallbackFinding(
   };
 }
 
-/** Builds the DEP-OFFLINE sentinel Finding (see module header — the scaninclomplete_handoff contract for 05-08). */
+/** Builds the DEP-OFFLINE sentinel Finding (see the module header). */
 function buildOfflineSentinel(filePath: string): Finding {
   return {
     ruleId: DEP_OFFLINE_RULE_ID,
@@ -500,7 +496,7 @@ export const osvDetector: Detector = {
         return [];
       }
 
-      // Privacy contract (threat T-05-07-01): the OSV query payload is
+      // Privacy contract: the OSV query payload is
       // reduced to ONLY {name, version, ecosystem} here — nothing else from
       // the parsed manifest (scripts, author, etc.) is ever passed to
       // queryOsvBatch, which itself only accepts this exact shape.
@@ -549,7 +545,7 @@ export const osvDetector: Detector = {
         // ANY OSV failure (a typed OsvUnavailableError from osv-client.ts,
         // OR any other unexpected throw/rejection) triggers the offline
         // fallback branch uniformly — never silently treated as "zero
-        // vulnerabilities found" (PITFALLS.md Pitfall 10). This catch
+        // vulnerabilities found". This catch
         // deliberately does not branch on the error's type or message: no
         // failure mode is special-cased back into a clean pass.
         const fallbackFindings = runFallbackCheck(ctx.filePath, dependencies);

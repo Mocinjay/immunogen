@@ -11,7 +11,7 @@ import type { Finding, Severity } from "../core/types.js";
  * A verbatim, fabricated Anthropic-shaped API key — used ONLY as test input
  * data, never a real credential. Its absence from the captured prompt is
  * this suite's redaction-before-send proof (mirrors src/llm/redactor.test.ts's
- * fixture style, per the plan's read_first list).
+ * fixture style).
  */
 const FAKE_ANTHROPIC_KEY = "sk-ant-api03-FAKE0000000000000000000000TESTONLY";
 
@@ -145,7 +145,7 @@ describe("enrichFindings — selection is HIGH/CRITICAL only", () => {
   });
 });
 
-describe("enrichFindings — redaction-before-send proof (T-07-07, SAFE-01)", () => {
+describe("enrichFindings — redaction-before-send proof", () => {
   it("the captured prompt for a finding whose matchedText contains a verbatim Anthropic key does NOT contain that verbatim key", async () => {
     const fake = makeFakeAdapter("FIX: rotate the key");
     const findings = [

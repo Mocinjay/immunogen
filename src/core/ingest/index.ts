@@ -8,14 +8,14 @@
  * registry parses each JS/TS file on demand and frees the tree afterwards,
  * because holding every AST at once does not fit in memory on real repos.
  *
- * Cleanup contract (T-03-12): the resolver's `cleanup()` — which removes
+ * Cleanup contract: the resolver's `cleanup()` — which removes
  * any temp directory created for git/zip modes — runs inside a `finally`
  * so it executes even if a downstream step (walk/detect/parse) throws. The
  * assembled `ScanContext` holds only in-memory data (the walker already
  * read every file's content into `fileSet` before this function returns),
  * so removing the temp dir after assembly never invalidates the result.
  *
- * Library-first (ARCHITECTURE.md Pattern 3): this module never calls
+ * Library-first: this module never calls
  * `console.*` or `process.exit` — it is pure data-in/data-out. It never
  * imports child_process and never evals/requires scanned content (ENG-05);
  * it only calls the components below and constructs an object.

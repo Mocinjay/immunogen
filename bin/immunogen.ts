@@ -7,9 +7,8 @@
  * `runCli()` is the entire CLI action: it calls `scan()` exactly once,
  * selects a `Reporter` via `getReporter()`, prints `reporter.render(result)`,
  * and derives the exit code purely from `result.score.verdict` — it
- * contains no detection, scoring, or AST-parsing logic of its own
- * (.planning/research/ARCHITECTURE.md "Pattern 3: Library-First,
- * CLI-as-Thin-Wrapper").
+ * contains no detection, scoring, or AST-parsing logic of its own (the
+ * library is the product; the CLI is a thin wrapper).
  *
  * `scan()` is wrapped in try/catch: any ingestion throw (nonexistent path,
  * file-as-path, non-ZIP `.zip`, unreachable git host, etc.) is caught here,
@@ -63,7 +62,7 @@ const FORMATS = ["terminal", "json", "sarif"] as const;
  * unset/false option must be omitted entirely rather than set to
  * `undefined`/`false`.
  *
- * `authorize`/`allowPrivate` (Pass 2) flow straight through to `scan()`,
+ * `authorize`/`allowPrivate` flow straight through to `scan()`,
  * which routes a `https?://`-prefixed `path` to `scanUrl()` — the consent
  * gate and SSRF guard both live in `src/web/url-resolver.ts`, not here; this
  * function only forwards the flags.

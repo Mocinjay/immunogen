@@ -1,8 +1,7 @@
 /**
  * Materializes a temp directory tree from a flat spec object, for ingest()
- * end-to-end tests. Mirrors `make-repo-tree.ts` (the Plan 02 helper used by
- * FileWalker's tests) but is owned by this plan to avoid cross-plan file
- * contention — both are the same trivial spec-to-disk-tree builder over a
+ * end-to-end tests. Mirrors `make-repo-tree.ts` (used by FileWalker's
+ * tests) — both are the same trivial spec-to-disk-tree builder over a
  * `Record<string, string>` shape.
  *
  * Lives under tests/helpers/ (not tests/**\/*.test.ts) so vitest does not

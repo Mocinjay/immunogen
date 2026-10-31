@@ -1,9 +1,8 @@
 /**
  * Self-contained SARIF 2.1.0 type surface (OUT-03).
  *
- * DISCREPANCY NOTE: the planning brief assumed `@types/sarif` was already a
- * dependency — it is NOT present in package.json or node_modules (verified
- * during Plan 06-03). To preserve immunogen's zero-extra-dependency,
+ * `@types/sarif` is deliberately not a dependency. To preserve immunogen's
+ * zero-extra-dependency,
  * offline-first philosophy (the same rationale as the dependency-free glob
  * matcher in `src/detectors/registry.ts`), this module hand-rolls the
  * minimal subset of the SARIF 2.1.0 object model that `sarif.ts` actually

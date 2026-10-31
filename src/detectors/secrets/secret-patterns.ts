@@ -27,9 +27,8 @@ export const MIN_ENTROPY_CANDIDATE_LENGTH = 40;
 
 /**
  * Case-insensitive keyword family that must co-occur on the same line as a
- * high-entropy literal before it is flagged/redacted (FP-management keyword
- * anchor — .planning/research/FEATURES.md "False Positive Management
- * Strategy").
+ * high-entropy literal before it is flagged/redacted (the false-positive
+ * keyword anchor).
  */
 export const ANCHOR_KEYWORDS = [
   "secret",
@@ -78,7 +77,7 @@ export interface ProviderKeyPattern {
 /**
  * Provider-key regex table — rigid, low-FP key formats (Stripe `sk_live_`,
  * AWS `AKIA...`, OpenAI `sk-...`, Supabase `sb_secret_...`, Anthropic
- * `sk-ant-...`) per FEATURES.md CAT-1's "V1 PICK". This is the shared source
+ * `sk-ant-...`). This is the shared source
  * `entropy-detector.ts`'s Pass A and `redactor.ts`'s fixed-format pass both
  * read from — the ruleId is only meaningful to the detector side; the
  * redactor ignores it and matches on `regex` alone.
@@ -186,7 +185,7 @@ export function hasAnchorKeyword(line: string): boolean {
 /**
  * Returns true when `jwt`'s middle (payload) segment, once base64url
  * decoded, contains the compact `"role":"service_role"` marker. Decoding
- * happens inside its own try/catch (T-05-01-02): a malformed/non-JSON
+ * happens inside its own try/catch: a malformed/non-JSON
  * payload segment yields `false` for that match rather than throwing,
  * keeping one hostile JWT-shaped string from aborting the whole scan.
  */

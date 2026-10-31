@@ -2,15 +2,14 @@
  * committedEnvDetector — text-only CAT-1 (Leaked Secrets) detector, SEC-05.
  *
  * The finding here is about a FILE's existence in the scanned tree, not a
- * string pattern inside it (.planning/research/FEATURES.md CAT-1 SEC-05:
- * "`.env`, `.env.local`, `.env.production`, `.env.staging` present in git
- * tree (not in .gitignore)"). The registry (src/detectors/registry.ts)
+ * string pattern inside it (`.env`, `.env.local`, `.env.production`,
+ * `.env.staging` present in the tree and not ignored). The registry (src/detectors/registry.ts)
  * calls `detect()` once per file matching `config.globs`, so this detector
  * keys entirely off `ctx.filePath` — `ctx.content` is never read.
  *
  * Two guards run in sequence before a Finding is ever pushed:
  *   1. FP allowlist — test/fixture/mock/example directories never fire
- *      (.planning/research/PITFALLS.md Pitfall 1).
+ *.
  *   2. Template exclusion — `.env.example`/`.env.sample`/etc. carry no real
  *      secrets by convention and are excluded outright.
  *

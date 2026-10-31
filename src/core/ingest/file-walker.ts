@@ -19,10 +19,8 @@
  * git work tree, `.gitignore` is the only signal. A gitignored, untracked
  * `.env.local` holding real keys is the correct local setup and is never
  * scanned. Tracked paths come from `readTrackedFiles` (git-index.ts), which
- * parses `.git/index` directly instead of running git. See
- * .planning/research/ARCHITECTURE.md ("File Walker Rules") and
- * .planning/research/PITFALLS.md (Pitfall 2, Pitfall 11) for the rationale
- * behind each rule below.
+ * parses `.git/index` directly instead of running git. Each rule's
+ * rationale is noted where it is applied below.
  *
  * Total-repo bounds (belt-and-suspenders alongside the per-file size cap):
  * once either `maxTotalBytes` or `maxTotalFiles` is exceeded, the walker
@@ -30,8 +28,8 @@
  * single `SCAN_TRUNCATED` `Diagnostic` (`diagnostics`, alongside `fileSet`)
  * so callers can surface a degraded/partial scan — this never throws.
  *
- * Security-critical: `followSymbolicLinks: false` is load-bearing (T-03-05 —
- * a symlink pointing at /etc/shadow must never be followed or read). This
+ * Security-critical: `followSymbolicLinks: false` is load-bearing (a
+ * symlink pointing at /etc/shadow must never be followed or read). This
  * module never imports child_process and never exec/spawn/eval/requires a
  * scanned file (ENG-05).
  */
@@ -263,7 +261,7 @@ async function readIfEligible(
 /**
  * Walks `rootDir` and returns a `Map<relativePath, rawText>` of exactly the
  * files a detector should see, plus any `Diagnostic[]` warnings. Order of
- * rules applied per candidate path (ARCHITECTURE.md "File Walker Rules"):
+ * rules applied per candidate path:
  *
  * 1. Hard-coded blocklist directories never visited (glob-level `ignore`).
  * 2. `.gitignore` applied via the `ignore` package — UNLESS the path is in
@@ -277,7 +275,7 @@ async function readIfEligible(
  *    whatever was already accumulated, plus a single `SCAN_TRUNCATED`
  *    diagnostic. This never throws.
  *
- * Never follows symlinks (`followSymbolicLinks: false` — T-03-05).
+ * Never follows symlinks (`followSymbolicLinks: false`).
  */
 export async function walkFiles(
   rootDir: string,

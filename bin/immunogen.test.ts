@@ -1,5 +1,5 @@
 /**
- * Unit test for the CLI action (bin/immunogen.ts, Plan 04-04). Imports only
+ * Unit test for the CLI action (bin/immunogen.ts). Imports only
  * `runCli` — the module-scope commander wiring + `parseAsync()` is guarded
  * by an entry-script check (realpath of `process.argv[1]` === realpath of this module)
  * so importing this module under vitest never triggers real argv parsing.
@@ -54,7 +54,7 @@ describe("runCli — --format json produces valid, parseable ScanResult JSON (cr
   });
 });
 
-describe("runCli — --format sarif produces valid SARIF 2.1.0 through the CLI seam (Plan 06-04 criterion 4)", () => {
+describe("runCli — --format sarif produces valid SARIF 2.1.0 through the CLI seam", () => {
   it("writes output that JSON.parse-es to a SARIF 2.1.0 document with rules[] and partialFingerprints on every result", async () => {
     await runCli(MCP_TOOL_POISONING_FIXTURE, { format: "sarif" });
 
@@ -119,7 +119,7 @@ describe("runCli — --no-llm forces llmEnriched:false (07-03 CLI flag path)", (
   });
 });
 
-describe("runCli — live-URL screening consent gate (Pass 2 --authorize wiring)", () => {
+describe("runCli — live-URL screening consent gate (--authorize wiring)", () => {
   it("resolves to 2 and writes a clean actionable stderr line for a URL with no --authorize (no stack trace)", async () => {
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 

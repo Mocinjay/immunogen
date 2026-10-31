@@ -58,17 +58,13 @@ import { isParseable, parseSource } from "../core/parse/ast-cache.js";
 import type { Detector, DetectorContext, Finding, ScanContext, Severity } from "../core/types.js";
 
 /**
- * Every detector registered by default. Phase 5 (Wave 1) appended 12
- * detector families to the original `secretsDetector` — 13 `Detector`
- * instances, covering all 17 REQUIREMENTS.md requirement ids (some single
- * detector files emit two ruleIds, e.g. `firebaseRulesDetector` covers both
- * AUTH-02 and STORAGE-01; `supabaseDetector` covers AUTH-03 and STORAGE-02;
- * `configDebugDetector` covers CONFIG-01 and CONFIG-02). Phase 6 (Plan
- * 06-04) appends the four CAT-11 (AI Layer) detectors —
+ * Every detector registered by default. Some detector files emit more than
+ * one ruleId (e.g. `firebaseRulesDetector` covers AUTH-02 and STORAGE-01;
+ * `supabaseDetector` covers AUTH-03 and STORAGE-02; `configDebugDetector`
+ * covers CONFIG-01 and CONFIG-02). The AI-layer family is
  * `promptInjectionDetector` (AILAYER-01), `exfiltrationDetector`
  * (AILAYER-02), `mcpPoisoningDetector` (AILAYER-03), and
- * `mcpLeastPrivilegeDetector` (AILAYER-04) — bringing the total to 17
- * `Detector` instances.
+ * `mcpLeastPrivilegeDetector` (AILAYER-04).
  */
 export const DEFAULT_DETECTORS: Detector[] = [
   secretsDetector,

@@ -6,9 +6,8 @@ import type { DetectorContext, StackHints } from "../../core/types.js";
 import type { OsvResult } from "./osv-client.js";
 
 // queryOsvBatch is mocked at the module boundary so this test suite NEVER
-// performs a real network call (per the project's offline-deterministic
-// test mandate and the plan's pattern_analog note: "queryOsvBatch is a
-// separate module import so the test can stub it").
+// performs a real network call (tests are offline and deterministic;
+// queryOsvBatch lives in its own module so it can be stubbed).
 const queryOsvBatchMock = vi.fn<(queries: Array<{ name: string; version: string }>) => Promise<OsvResult[]>>();
 
 const fetchVulnSeveritiesMock = vi.fn<(ids: string[]) => Promise<Map<string, string>>>(() => Promise.resolve(new Map()));

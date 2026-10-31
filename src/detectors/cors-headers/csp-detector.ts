@@ -4,22 +4,20 @@
  * This is an ABSENCE check, not a pattern match: a Next.js `next.config.*`
  * file that never mentions the `Content-Security-Policy` header anywhere in
  * its text — whether inside a `headers()` export or missing a `headers()`
- * export entirely — is reported. Per
- * .planning/research/FEATURES.md CAT-7's HEADER-01 row and
- * .planning/research/PITFALLS.md Pitfall 1, absence evidence is
+ * export entirely — is reported. Absence evidence is
  * low-certainty by nature (the CSP could legitimately be set elsewhere —
  * custom middleware, a reverse proxy, platform-level headers — so the file
  * alone cannot prove its absence with certainty). The finding is therefore
  * always MEDIUM severity / LOW confidence, never CRITICAL.
  *
- * STACK GATE (T-05-03-01 — see plan threat register): a missing or
+ * STACK GATE: a missing or
  * incorrect "nextjs" stack hint must silently disable this detector rather
  * than over-report on non-Next.js repos. The gate runs first in detect(),
  * checking `ctx.stackHints.frameworks.has("nextjs")` directly. The registry
  * also enforces `DetectorConfig.requiresStack`; the in-code gate keeps direct
  * callers of detect() equally safe.
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()`
+ * FP allowlist: `detect()`
  * checks a path-segment guard against `__tests__`, `fixtures`, `mocks`,
  * `examples`, plus a `.test.`/`.stories.` basename check — matching paths
  * short-circuit to `[]`, mirroring
@@ -61,7 +59,7 @@ export const cspDetector: Detector = {
         return Promise.resolve([]);
       }
 
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
       if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);

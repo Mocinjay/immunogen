@@ -48,7 +48,7 @@ describe("runDetectors — fan-out and aggregation", () => {
     expect(DEFAULT_DETECTORS).toContain(secretsDetector);
   });
 
-  it("DEFAULT_DETECTORS contains every Phase 5 + Phase 6 detector by config.name (catches a future dropped registration)", () => {
+  it("DEFAULT_DETECTORS contains every expected detector by config.name (catches a future dropped registration)", () => {
     const names = new Set(DEFAULT_DETECTORS.map((detector) => detector.config.name));
     const expectedNames = [
       "secrets",

@@ -18,7 +18,7 @@ import type { Reporter } from "./interface.js";
 
 /**
  * Selects the `Reporter` matching `format`. `"json"` returns `jsonReporter`;
- * `"sarif"` returns `sarifReporter` (SARIF 2.1.0, OUT-03 — Phase 6); every
+ * `"sarif"` returns `sarifReporter` (SARIF 2.1.0); every
  * other value — `"terminal"`, `undefined`, or any other string — falls back
  * to `terminalReporter`.
  */

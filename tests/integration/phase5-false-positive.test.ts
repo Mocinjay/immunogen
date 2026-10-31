@@ -1,13 +1,12 @@
 /**
- * Phase 5 false-positive regression test — ROADMAP Phase 5 success criteria
- * 2, 4, and 5-clean.
+ * False-positive regression test.
  *
  * Two cases, both calling the real, public `scan()` (src/index.ts):
  *
  *   1. `tests/fixtures/clean-apps/nextjs-clean/` — a realistic, SAFE Next.js
  *      app with next/stripe/@supabase/supabase-js/firebase deps (so every
  *      stack gate is ACTIVE) that deliberately exercises every FP-prone
- *      pattern the Phase 5 detector set recognizes — and must still yield
+ *      pattern the detector set recognizes — and must still yield
  *      zero findings, proving suppression is by safe-pattern recognition,
  *      not by an inactive stack gate (criteria 2, 5-clean).
  *
@@ -52,7 +51,7 @@ afterEach(() => {
   queryOsvBatchMock.mockReset();
 });
 
-describe("Phase 5 false-positive regression — clean app, full scan()", () => {
+describe("false-positive regression — clean app, full scan()", () => {
   it("yields zero findings on a realistic clean app with all stack gates active (criteria 2, 5-clean)", async () => {
     // No vulnerable dep in this fixture's package.json, so the mock never
     // needs to resolve a hit — an empty array is the correct "no advisory
@@ -77,7 +76,7 @@ describe("Phase 5 false-positive regression — clean app, full scan()", () => {
   });
 });
 
-describe("Phase 5 false-positive regression — __tests__-only path, full scan() (criterion 4)", () => {
+describe("false-positive regression — __tests__-only path, full scan()", () => {
   it("yields zero findings when the only JS/TS file lives under __tests__/, despite containing patterns that would otherwise fire SEC-01/BUNDLE-01/INJECT-01", async () => {
     queryOsvBatchMock.mockResolvedValue([]);
 

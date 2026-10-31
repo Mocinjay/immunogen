@@ -1,5 +1,5 @@
 /**
- * Web-probe detector contracts (Pass 2) — the seam every `src/web/detectors/**`
+ * Web-probe detector contracts — the seam every `src/web/detectors/**`
  * detector implements, and the shape `scan-url.ts`'s orchestration hands them.
  *
  * Deliberately separate from `src/core/types.ts`'s `Detector`/`DetectorContext`

@@ -1,8 +1,8 @@
 /**
  * Redactor — the SAFE-01 secret-redaction gate.
  *
- * This module is the network-boundary control for the LLM enrichment stage
- * introduced in Phase 7. `Finding.matchedText`, `Finding.message`, and
+ * This module is the network-boundary control for the LLM enrichment
+ * stage. `Finding.matchedText`, `Finding.message`, and
  * `Finding.remediation` can all contain fragments of real secrets pulled
  * straight from a scanned repo
  * (the deterministic detectors only mask to first-4-chars — see
@@ -164,7 +164,7 @@ function redactSnippet(text: string): string {
   return redactAnchoredEntropy(afterFixedPatterns);
 }
 
-/** The `Redactor` gate. Exposes `redactSnippet` as a namespaced object per the plan's export contract. */
+/** The `Redactor` gate. Exposes `redactSnippet` as a namespaced object. */
 export const Redactor = {
   redactSnippet,
 };

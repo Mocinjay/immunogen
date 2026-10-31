@@ -188,7 +188,7 @@ describe("terminalReporter.render — per-finding rendering", () => {
   });
 });
 
-describe("terminalReporter.render — secret safety (threat T-04-02)", () => {
+describe("terminalReporter.render — secret safety", () => {
   it("echoes the masked matchedText verbatim", () => {
     const result = makeScanResult();
     const output = stripAnsi(terminalReporter.render(result));
@@ -216,7 +216,7 @@ describe("terminalReporter.render — secret safety (threat T-04-02)", () => {
   });
 });
 
-describe("terminalReporter.render — fixPrompt rendering (Phase 7, LLM-01)", () => {
+describe("terminalReporter.render — fixPrompt rendering", () => {
   it("contains the fixPrompt text when present on a finding", () => {
     const enrichedFinding: Finding = { ...SAMPLE_FINDING, fixPrompt: "FIX: rotate the leaked key immediately" };
     const result = makeScanResult({ findings: [enrichedFinding, SECOND_FINDING] });

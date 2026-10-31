@@ -37,11 +37,10 @@ export interface CleanFixture {
 }
 
 /**
- * Vulnerable fixtures the golden suite snapshots. `osvMock` is chosen per
- * critical_facts in 08-01-PLAN.md: "reject" exercises the OSV
- * offline-fallback path (deterministic DEP-01/DEP-OFFLINE), "resolveEmpty"
- * is used for AI-layer-only fixtures (and scan/with-secret per the plan)
- * where no live vuln data is needed to reach a deterministic result.
+ * Vulnerable fixtures the golden suite snapshots. `osvMock`: "reject"
+ * exercises the OSV offline-fallback path (deterministic
+ * DEP-01/DEP-OFFLINE), "resolveEmpty" is used for AI-layer-only fixtures
+ * (and scan/with-secret) where no live vuln data is needed to reach a deterministic result.
  */
 export const VULNERABLE_FIXTURES: VulnerableFixture[] = [
   {
@@ -75,7 +74,7 @@ export const VULNERABLE_FIXTURES: VulnerableFixture[] = [
  * Clean fixtures the golden suite asserts are genuinely ZERO findings.
  * These are only zero under the OSV mock resolving `[]` — a real/absent
  * network call injects a spurious DEP-OFFLINE (and, for scan/clean,
- * LEGAL-01) that would break this assumption (critical_facts item 2).
+ * LEGAL-01) that would break this assumption.
  */
 export const CLEAN_FIXTURES: CleanFixture[] = [
   { name: "nextjs-clean", dir: "tests/fixtures/clean-apps/nextjs-clean" },

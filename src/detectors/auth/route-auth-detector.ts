@@ -2,7 +2,7 @@
  * routeAuthDetector — CAT-3 AUTH-01 (unprotected Next.js server entry point)
  * detector, AST-based and stack-gated.
  *
- * AUTH-01 (FEATURES.md CAT-3): a server entry point with no
+ * AUTH-01: a server entry point with no
  * authentication/authorization check is the single most-reproduced AI-app
  * vulnerability class (CVE-2025-48757 / CVE-2025-29927). Three Next.js entry
  * point shapes are covered, all reachable by anyone on the internet:
@@ -13,18 +13,17 @@
  *     each one is a public POST endpoint, whatever the UI that calls it.
  * A text regex cannot reliably tell an EXPORTED handler from an internal
  * helper of the same name, so this detector walks the pre-built `ctx.ast`
- * (ARCHITECTURE.md Pattern 1: parse once, share many) via @babel/traverse.
+ * via @babel/traverse.
  *
  * Decision flow inside `detect()` (cheap gates first):
  *   1. STACK GATE — if `frameworks.has("nextjs")` is false, return [] (ENG-04).
- *   2. FP ALLOWLIST — test/fixture/mock/example paths return [] (PITFALLS.md
- *      Pitfall 1); a file that is none of the three entry-point shapes
+ *   2. FP ALLOWLIST — test/fixture/mock/example paths return []; a file that is none of the three entry-point shapes
  *      returns [].
  *   3. PUBLIC-PATH SUPPRESSION — a route whose path has a `public` segment,
  *      or is public by its nature (health checks, OG images, sitemaps, and
  *      sign-in/sign-up/OAuth-callback endpoints), returns [].
- *   4. AST GUARD — `if (!isBabelFile(ctx.ast)) return []` (PITFALLS.md
- *      Pitfall 3: a parse-failed file has no AST; emit nothing, never throw).
+ *   4. AST GUARD — `if (!isBabelFile(ctx.ast)) return []` (a parse-failed
+ *      file has no AST; emit nothing, never throw).
  *   5. WALK — collect file-scoped auth evidence and every exported handler,
  *      then emit one finding per handler with no auth evidence and no
  *      `// public` comment near it.
@@ -46,8 +45,8 @@
  * "verify the matcher covers this route" message — a middleware matcher
  * that skips `/api` is exactly the bug that still needs a human look.
  *
- * Confidence is MEDIUM, not HIGH, exactly per FEATURES.md CAT-3 AUTH-01 (FP
- * risk = MEDIUM: a genuinely public route is a real false-positive source).
+ * Confidence is MEDIUM, not HIGH: a genuinely public route is a real
+ * false-positive source.
  *
  * AST-only (ENG-05): reads `ctx.ast` and walks nodes. Never imports a
  * process/exec primitive, never evaluates/requires/spawns scanned source.
@@ -65,7 +64,7 @@ import { isTestOrFixturePath } from "../shared/test-paths.js";
 /** HTTP-method export names that mark a Next.js App Router route handler. */
 const HTTP_METHOD_NAMES = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 
-/** Route-path segment marking a deliberately public endpoint (FEATURES.md CAT-3 FP note). */
+/** Route-path segment marking a deliberately public endpoint. */
 const PUBLIC_SEGMENT = "public";
 
 /** Comment fragment a developer adds to opt a handler out of AUTH-01. */
@@ -187,8 +186,7 @@ function isDefaultHandlerExport(node: ExportDefaultDeclaration): boolean {
 
 /**
  * True when a `// public` endpoint comment sits on the handler's own line or
- * the line directly above it (the per-handler opt-out — FEATURES.md CAT-3
- * FP note).
+ * the line directly above it (the per-handler opt-out).
  */
 function hasPublicCommentNear(contentLines: string[], handlerLine: number): boolean {
   const sameLine = contentLines.at(handlerLine - 1) ?? "";

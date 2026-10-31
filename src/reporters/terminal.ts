@@ -8,9 +8,9 @@
  * rating layered above the existing Ship Score line — the score line, band,
  * and verdict are unchanged.
  *
- * Secret safety (threat T-04-02, T-07-10): `matchedText` arrives already
- * masked from the detector layer (Plan 01), and `fixPrompt` — when present —
- * arrives already redacted from the enricher (Phase 7, SAFE-01 gate). This
+ * Secret safety: `matchedText` arrives already
+ * masked from the detector layer, and `fixPrompt` — when present —
+ * arrives already redacted from the enricher. This
  * module echoes both verbatim and NEVER transforms, expands, or un-masks
  * either — there is no un-masking/un-redaction logic anywhere in this file.
  *

@@ -7,9 +7,8 @@
  * along the way.
  *
  * Security-critical: this module is the single place Zip-Slip path
- * traversal (ROADMAP criterion 1) and CVE-2024-32002-style recursive-clone
- * symlink RCE are mitigated. See .planning/research/PITFALLS.md Pitfall 6
- * and this plan's <threat_model> (T-03-01, T-03-02, T-03-03).
+ * traversal and CVE-2024-32002-style recursive-clone
+ * symlink RCE are mitigated.
  *
  * ENG-05 invariant: this module never directly executes a subprocess or
  * the dynamic-evaluation primitive, and it never requires/imports/evals an
@@ -209,7 +208,7 @@ async function resolveGit(url: string): Promise<ResolvedInput> {
  * / "absolute path" error before the `onEntry` callback ever runs for that
  * entry — see yauzl's `validateFileName`. This guard is defense-in-depth:
  * it catches traversal forms yauzl's check might miss and guards against
- * future yauzl relaxations, per this plan's threat model (T-03-01).
+ * future yauzl relaxations.
  */
 function assertEntryWithinRoot(entryFileName: string, extractRoot: string): void {
   const dest = resolve(extractRoot, entryFileName);

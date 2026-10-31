@@ -126,7 +126,7 @@ describe("resolveInput — malicious ZIP rejection (Zip-Slip)", () => {
 
     // ANY error is acceptable here — whichever layer fires first (yauzl's
     // "invalid relative path" check, or our own onEntry containment guard)
-    // — per this plan's instruction not to pin a message substring.
+    // — so no message substring is pinned.
     await expect(resolveInput(zipPath)).rejects.toThrow();
 
     // Structural property: the traversal target must never have been created
@@ -178,7 +178,7 @@ describe("resolveInput — malicious ZIP rejection (Zip-Slip)", () => {
 describe("resolveInput — git URL classification", () => {
   // No live-network clone test here (network-dependent, flaky in CI). The
   // git-mode behavior contract (shallow clone, isolated temp dir, cleanup)
-  // is covered by the source implementation and this plan's threat model;
+  // is covered by the source implementation;
   // these cases assert only that URL-shaped inputs are classified as git
   // mode by attempting a clone (which will fail fast against an
   // unreachable/invalid host) rather than being treated as a local

@@ -1,8 +1,8 @@
 /**
  * Shared Reporter contract — the seam every output format implements.
  *
- * `terminalReporter` and `jsonReporter` (this plan) both implement `Reporter`;
- * the SARIF reporter (Phase 6) implements the same interface so
+ * `terminalReporter` and `jsonReporter` both implement `Reporter`;
+ * the SARIF reporter implements the same interface so
  * `src/reporters/index.ts`'s `getReporter` selector can return any of the
  * three behind one type. A `Reporter` is pure data-in/string-out: `render`
  * performs no I/O of its own (no direct terminal writes, no file writes) —

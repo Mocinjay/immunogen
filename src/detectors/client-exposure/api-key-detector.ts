@@ -13,8 +13,7 @@
  * API key to every visitor's browser.
  *
  * Every one of these frameworks documents its prefix as an explicit "inline
- * this value into the client bundle" instruction (see
- * .planning/research/PITFALLS.md Pitfall 1 / FEATURES.md CAT-2): the prefix
+ * this value into the client bundle" instruction: the prefix
  * itself is not the bug — pairing it with a secret-named variable is. A
  * secret-named env var behind the prefix gets baked verbatim into the
  * publicly-downloadable browser bundle.
@@ -28,8 +27,7 @@
  *      appears on the line, so no separate regex is required; documented
  *      here for clarity since the plan calls it out explicitly.
  *
- * CRITICAL FP exclusion (PITFALLS.md Pitfall 1 / FEATURES.md "False Positive
- * Management Strategy" CAT-2 row): many keys are public BY DESIGN and are
+ * CRITICAL FP exclusion: many keys are public BY DESIGN and are
  * documented to be shipped to the client — Stripe's `..._PUBLISHABLE_KEY`,
  * Supabase's `..._ANON_KEY`, the Firebase web config's `..._FIREBASE_API_KEY`,
  * reCAPTCHA/Turnstile site keys, analytics write keys (PostHog, Segment,
@@ -40,7 +38,7 @@
  * immunogen-ignore BUNDLE-01 — the next line names the pattern as documentation
  * PRIVATE / PASSWORD / ADMIN (`NEXT_PUBLIC_FIREBASE_PRIVATE_KEY` still fires).
  *
- * FP allowlist (PITFALLS.md Pitfall 1): `detect()` opens with the same
+ * FP allowlist: `detect()` opens with the same
  * path-segment + basename check used across this codebase's other text
  * detectors (`__tests__`/`fixtures`/`mocks`/`examples` segments, or a
  * `.test.`/`.stories.` basename) — matching paths short-circuit to `[]`.
@@ -52,7 +50,7 @@
  * No-throw contract (src/core/types.ts `Detector.detect`): the entire body
  * runs inside a try/catch returning `[]` on any failure.
  *
- * Information-disclosure mitigation (T-05-02-01): `Finding.matchedText` is
+ * Information-disclosure mitigation: `Finding.matchedText` is
  * always the variable NAME only — never the secret's runtime value (which
  * this static scanner never even reads, since it only sees the identifier
  * referencing `process.env`/`import.meta.env`, not its resolved value).
@@ -67,7 +65,7 @@ const CLIENT_PREFIXES = ["NEXT_PUBLIC_", "VITE_", "EXPO_PUBLIC_", "REACT_APP_", 
 const PUBLIC_PREFIX_VAR_RE = /\b(?:NEXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP|NUXT_PUBLIC|GATSBY)_[A-Z0-9_]+\b/g;
 
 /**
- * Case-insensitive secret-family keywords (FEATURES.md CAT-2 BUNDLE-01 row).
+ * Case-insensitive secret-family keywords.
  * Checked against the suffix portion of the matched identifier (the part
  * after the `NEXT_PUBLIC_`/`VITE_` prefix), not the whole identifier — so a
  * prefix containing one of these substrings cannot itself trigger a match.
@@ -80,7 +78,7 @@ const ALWAYS_SECRET_KEYWORDS = ["SECRET", "SERVICE_ROLE", "PRIVATE", "PASSWORD",
 /**
  * Name fragments of keys that are public by design — documented by their
  * provider to be embedded in client code (Stripe's `..._PUBLISHABLE_KEY` is
- * the headline false positive called out in PITFALLS.md Pitfall 1).
+ * the headline false positive).
  */
 const PUBLIC_BY_DESIGN_MARKERS = [
   "PUBLISHABLE",
@@ -154,7 +152,7 @@ export const clientExposureDetector: Detector = {
   // Detector interface still requires returning `Promise<Finding[]>`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
       if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);

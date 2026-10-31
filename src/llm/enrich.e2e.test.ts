@@ -1,5 +1,5 @@
 /**
- * End-to-end proof harness for Phase 7 (llm-fix-prompts): drives the REAL
+ * End-to-end proof harness for LLM fix prompts: drives the REAL
  * public surface — `scan()` and `enrichFindings()` — against the real,
  * on-disk `tests/fixtures/scan/with-secret` fixture, with an INJECTED fake
  * `ProviderAdapter` standing in for the network-backed provider. Never
@@ -9,9 +9,9 @@
  * boundary stubbed at the module/injection seam) and `src/scan.test.ts`
  * (real on-disk fixture, no temp-dir helper).
  *
- * Re-proves all five ROADMAP Phase-7 criteria:
+ * Proves five properties:
  *   1. A verbatim fixture secret never reaches the captured provider prompt
- *      (redaction-before-send, T-07-07/SAFE-01) — proven against a REAL
+ *      (redaction-before-send) — proven against a REAL
  *      finding set produced by `scan()`, not just enricher.test.ts's
  *      hand-built literals.
  *   2. `scan()` with no provider env (and/or `--no-llm`) returns

@@ -17,15 +17,12 @@
  * "Unicode Deception" patterns
  * ($HOME/.claude/skills/safety/skillspector/docs/B.3.2-mcp-tool-poisoning.md),
  * delegating the actual character/pattern scanning to the shared
- * `src/detectors/ai-layer/unicode.ts` helper (Plan 06-02 Task 1). Per
+ * `src/detectors/ai-layer/unicode.ts` helper. Per
  * docs/LICENSING.md §2, adapting SkillSpector's pattern logic into a new
  * TypeScript expression requires the exact two-line SPDX header above,
  * copied character-for-character.
  *
- * SEVERITY TIERING (this plan's own must_haves + REQUIREMENTS.md AILAYER-03
- * checklist text, authoritative over FEATURES.md's older AILAYER-03/04 row
- * split — same "plan's literal naming is authoritative" precedent already
- * used in 05-02/05-03/05-05): TP1 hidden-content hits (comments, zero-width,
+ * SEVERITY TIERING: TP1 hidden-content hits (comments, zero-width,
  * data-URI, base64 blob) are CRITICAL — an agent-readable directive hiding
  * in plain sight is the strongest, least-ambiguous signal. TP2
  * deceptive-unicode hits (homoglyph, RTL-override, invisible-formatting)
@@ -35,7 +32,7 @@
  * AILAYER-04's MEDIUM/MEDIUM absence-evidence discipline in the sibling
  * mcp-least-privilege-detector.ts).
  *
- * PARSE-AS-DATA INVARIANT (ENG-05, threat T-06-02-01): `JSON.parse` is the
+ * PARSE-AS-DATA INVARIANT (ENG-05): `JSON.parse` is the
  * ONLY operation ever applied to `ctx.content`. The parsed object's string
  * fields are read and pattern-matched; the parsed data is never evaluated,
  * dynamically imported, wrapped in a constructed function body, or handed
@@ -44,18 +41,18 @@
  * executed — this detector doesn't even read those fields (that's
  * mcp-least-privilege-detector.ts's job).
  *
- * SHAPE TOLERANCE (threat T-06-02-03): the parsed JSON's shape is walked
+ * SHAPE TOLERANCE: the parsed JSON's shape is walked
  * defensively with `typeof` guards at every step. The canonical shape is
  * `{ mcpServers: { [serverName]: { tools: [{ name, description,
  * parameters }] } } }`, but a top-level `tools`/`servers` variant is also
  * tolerated. Any unexpected shape yields "no strings found" (zero
  * findings), never a throw.
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): same
+ * FP allowlist: same
  * `__tests__`/`fixtures`/`mocks`/`examples` + `.test.`/`.stories.` guard as
  * firebase-rules-detector.ts's `isAllowlistedPath`.
  *
- * Information-disclosure safety (threat T-06-02-04): `matchedText` never
+ * Information-disclosure safety: `matchedText` never
  * echoes a decoded payload — it names the technique kind plus the shared
  * helper's own already-bounded/masked snippet (unicode.ts's
  * `SNIPPET_MAX_LENGTH` truncation), further capped here.
@@ -83,7 +80,7 @@ interface MetadataString {
  * only when `value` is a non-empty string — every call site below reads an
  * `unknown`-typed property off a freshly `JSON.parse`d object, so this is
  * the single point where the "collect strings defensively" contract
- * (threat T-06-02-03) is enforced.
+ * is enforced.
  */
 function collectIfString(out: MetadataString[], value: unknown, field: string): void {
   if (typeof value === "string" && value.length > 0) {
@@ -162,7 +159,7 @@ function collectServerStrings(server: unknown, serverLabel: string): MetadataStr
  *      `{ tools: [...] }`
  * Any other top-level shape (or a non-object root) contributes zero
  * strings — the defensive "unknown shape yields no strings found"
- * contract (threat T-06-02-03), never a throw.
+ * contract, never a throw.
  */
 function collectMetadataStrings(parsed: unknown): MetadataString[] {
   const strings: MetadataString[] = [];
@@ -191,7 +188,7 @@ function collectMetadataStrings(parsed: unknown): MetadataString[] {
 /**
  * Truncates `text` to `MATCHED_TEXT_MAX_LENGTH` characters — a second,
  * detector-level cap on top of unicode.ts's own already-bounded snippet
- * output (threat T-06-02-04).
+ * output.
  */
 function truncateMatchedText(text: string): string {
   return text.length > MATCHED_TEXT_MAX_LENGTH ? text.slice(0, MATCHED_TEXT_MAX_LENGTH) : text;
@@ -207,7 +204,7 @@ function truncateMatchedText(text: string): string {
  * literals). Falls back to line 1 if the value cannot be located (e.g. a
  * pretty-printer wrapped it across lines, or minified JSON puts everything
  * on one line — the line-1 fallback keeps the finding meaningful either
- * way, per this plan's own line-resolution spec).
+ * way).
  */
 function resolveLine(rawContent: string, value: string): number {
   const lines = rawContent.split("\n");
@@ -219,7 +216,7 @@ function resolveLine(rawContent: string, value: string): number {
   return 1;
 }
 
-/** De-dup key: one finding per (field-string, technique-tier) pair (this plan's own de-dup spec). */
+/** De-dup key: one finding per (field-string, technique-tier) pair. */
 function dedupeKey(fieldValue: string, tier: "hidden-content" | "deceptive-unicode"): string {
   return `${tier}:${fieldValue}`;
 }
@@ -236,13 +233,13 @@ export const mcpPoisoningDetector: Detector = {
   // firebase-rules-detector.ts's convention.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
       if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
       }
 
-      // Parse-as-DATA only (ENG-05, threat T-06-02-01): JSON.parse is the
+      // Parse-as-DATA only (ENG-05): JSON.parse is the
       // ONLY operation applied to ctx.content. A parse failure on
       // malformed/hostile JSON falls through to the outer catch -> [].
       const parsed: unknown = JSON.parse(ctx.content);

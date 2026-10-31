@@ -1,12 +1,11 @@
 /**
  * fetch-target — bounded, injectable fetcher for a live URL screen target.
  *
- * Pass 1 foundation only (see this file's sibling `url-resolver.ts` header
- * for the overall Pass 1/Pass 2 split): fetches the main document at a
+ * Fetches the main document at a
  * caller-resolved URL plus its same-origin `<script src>` assets, all under
  * hard bounds — a byte cap per response, a timeout per request, a redirect
  * cap, and a count cap on how many scripts are followed. This is the raw
- * material a Pass 2 web-probe detector will scan; this module does no
+ * material the web-probe detectors scan; this module does no
  * detection itself.
  *
  * Injectable IO (this codebase's established pattern — see

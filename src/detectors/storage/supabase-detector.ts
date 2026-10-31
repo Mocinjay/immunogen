@@ -3,29 +3,27 @@
  * emitting two ruleIds: AUTH-03 and STORAGE-02. Both are Supabase
  * absence/structural signals — neither one observes a literal bug in the
  * scanned text, only the ABSENCE of corroborating evidence elsewhere in the
- * repo — so both are calibrated LOW/MEDIUM confidence and NEVER CRITICAL,
- * per .planning/research/PITFALLS.md Pitfall 1's confidence-discipline rule
+ * repo — so both are calibrated LOW/MEDIUM confidence and NEVER CRITICAL
  * (contrast with src/detectors/storage/firebase-rules-detector.ts's
  * AUTH-02/STORAGE-01, where the exact `if true` string IS unambiguous and
  * correctly CRITICAL).
  *
  * AUTH-03 (RLS absence — HIGH severity, LOW confidence, "verify manually"):
- * .planning/research/FEATURES.md CAT-3's row: a Supabase anon-client table
+ * a Supabase anon-client table
  * query (`supabase.from(...).select/insert/update/delete`) with no
  * corresponding RLS policy file anywhere in `supabase/migrations/` or
  * `supabase/schema.sql` is the single most common root cause of the
  * CVE-2025-48757-class AI-app breach (the anon key — the only key most
  * AI-generated frontends ever see — can read/write every row in a table
- * with no RLS policy enabled). Per FEATURES.md: "Absence evidence; FP if
- * policies exist in OTHER migration files" — so the policy check MUST be
+ * with no RLS policy enabled). This is absence evidence, and policies may
+ * live in OTHER migration files — so the policy check MUST be
  * computed once across the WHOLE repo's `ctx.fileSet`, not just the current
  * file, before deciding to fire (mirrors src/detectors/legal/legal-detector.ts's
  * whole-repo-fact pattern, but this detector keeps its per-file glob/anchor
  * since the query SITE — not a fixed singleton file — is what's reported).
  *
  * STORAGE-02 (public bucket no policy — MEDIUM severity, LOW/MEDIUM
- * confidence, "verify access policy"): FEATURES.md CAT-8's row: a public
- * bucket is "not inherently wrong (CDN assets) but combined with no policy
+ * confidence, "verify access policy"): a public bucket is "not inherently wrong (CDN assets) but combined with no policy
  * is high-risk" — so this, too, is calibrated below CRITICAL and reuses the
  * same repo-wide policy-evidence computation.
  *
@@ -34,7 +32,7 @@
  * hasStripe gate. The registry enforces config.requiresStack ("supabase");
  * the in-code gate repeats it for direct callers of detect().
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` also
+ * FP allowlist: `detect()` also
  * opens with the same path-segment check against `__tests__`, `fixtures`,
  * `mocks`, `examples`, plus a `.test.`/`.stories.` basename check, mirroring
  * src/detectors/secrets/entropy-detector.ts's `isAllowlistedPath`.
@@ -127,13 +125,13 @@ export const supabaseDetector: Detector = {
   // the body is plain synchronous work wrapped in `Promise.resolve()`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // STACK GATE FIRST (per this plan's contract): a repo with no Supabase
+      // STACK GATE FIRST: a repo with no Supabase
       // dependency/config never runs the rest of the scan.
       if (!ctx.stackHints.hasSupabase) {
         return Promise.resolve([]);
       }
 
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths.
       if (isTestOrFixturePath(ctx.filePath)) {
         return Promise.resolve([]);
@@ -151,8 +149,7 @@ export const supabaseDetector: Detector = {
         const lineNumber = index + 1; // 1-indexed per src/core/types.ts Finding.line
 
         // AUTH-03: anon-client query with NO RLS-policy evidence anywhere
-        // in the repo. NEVER CRITICAL — absence evidence (PITFALLS.md
-        // Pitfall 1) — HIGH severity but LOW confidence, explicitly worded
+        // in the repo. NEVER CRITICAL — absence evidence — HIGH severity but LOW confidence, explicitly worded
         // "verify manually" so the report reads as a flag, not a verdict.
         if (!hasPolicyEvidence && SUPABASE_QUERY_RE.test(line)) {
           findings.push({
@@ -174,7 +171,7 @@ export const supabaseDetector: Detector = {
         // STORAGE-02: public bucket created with NO storage-policy evidence
         // anywhere in the repo. NEVER CRITICAL — same absence-evidence
         // discipline — MEDIUM severity, LOW confidence, "verify access
-        // policy" wording per FEATURES.md CAT-8's row.
+        // policy" wording.
         if (!hasPolicyEvidence && PUBLIC_CREATE_BUCKET_RE.test(line)) {
           findings.push({
             ruleId: "STORAGE-02",

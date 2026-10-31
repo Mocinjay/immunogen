@@ -7,7 +7,7 @@ import { providerConfigDiagnostic, selectAdapter } from "../provider.js";
 /**
  * selectAdapter is a pure function of an injected env object — these tests
  * use ONLY plain literals, never `process.env`, and import no SDK. This
- * proves the offline-default contract (T-07-06) entirely at the factory
+ * proves the offline-default contract entirely at the factory
  * level: Noop unless a provider AND its matching key are both present.
  */
 describe("selectAdapter — offline-default factory (LLM-01)", () => {

@@ -174,7 +174,7 @@ describe("jsonReporter.render — pure JSON, no mixed-in prose or color", () => 
     expect(parsed.findings[0]?.matchedText).toBe("sk_l****");
   });
 
-  it("round-trips fixPrompt when present on a finding (Phase 7, LLM-01)", () => {
+  it("round-trips fixPrompt when present on a finding", () => {
     const enrichedFinding: Finding = { ...SAMPLE_FINDING, fixPrompt: "FIX: rotate the leaked key immediately" };
     const result = makeScanResult({ findings: [enrichedFinding] });
     const parsed = JSON.parse(jsonReporter.render(result)) as {

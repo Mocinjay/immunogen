@@ -1,10 +1,10 @@
 /**
  * ast-utils — shared @babel/traverse primitives for AST-based detectors.
  *
- * Phase 5's structural detectors (AUTH-01 route-auth, INJECT-01 xss, and any
- * future AST rule) all consume the pre-built `ctx.ast` produced by
- * `buildAstCache` (src/core/parse/ast-cache.ts) — the realization of
- * ARCHITECTURE.md Pattern 1 ("Parse Once, Share Many"). No detector calls a
+ * The structural detectors (AUTH-01 route-auth, INJECT-01 xss, and any
+ * future AST rule) all consume `ctx.ast`, parsed once per file by the
+ * registry (src/core/parse/ast-cache.ts) and shared by every AST detector
+ * for that file. No detector calls a
  * parser itself; instead they read `ctx.ast` and walk it. This module owns the
  * two primitives every such detector needs:
  *
@@ -13,9 +13,8 @@
  *     `File` node. The runtime check is a pure structural shape test (object,
  *     `type === "File"`, has a `program`), so it NEVER throws on `undefined`,
  *     `null`, or arbitrary garbage — a detector can safely guard with
- *     `if (!isBabelFile(ctx.ast)) return Promise.resolve([])` (PITFALLS.md
- *     Pitfall 3: a parse-failed file has no AST and must yield zero findings,
- *     not a crash).
+ *     `if (!isBabelFile(ctx.ast)) return Promise.resolve([])` (a parse-failed
+ *     file has no AST and must yield zero findings, not a crash).
  *
  *   - `traverseAst(ast, visitors)` — a thin wrapper over @babel/traverse that
  *     handles the package's ESM/CJS default-export interop. Under this
@@ -39,7 +38,7 @@ export type { NodePath };
 /**
  * Structural narrowing guard: true when `ast` is a non-null object that looks
  * like a @babel/types `File` node (its `type` is the literal `"File"` and it
- * carries a `program`). This is exactly the shape `buildAstCache` stores —
+ * carries a `program`). This is exactly the shape `parseSource` produces —
  * the value returned by `@babel/parser`'s `parse(...)` is a `ParseResult<File>`
  * whose root node `type` is `"File"`. Implemented as a defensive shape test
  * (no field access that could throw on a non-object) so it doubles as the

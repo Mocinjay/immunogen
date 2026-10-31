@@ -1,6 +1,6 @@
 /**
  * End-to-end test for `scan()` — proves the real ingest -> runDetectors ->
- * computeScore pipeline (src/index.ts, Plan 04-04) against two committed,
+ * computeScore pipeline (src/index.ts) against two committed,
  * on-disk fixtures: tests/fixtures/scan/with-secret (a fabricated CRITICAL
  * secret) and tests/fixtures/scan/clean (no secrets). Mirrors
  * src/core/ingest/ingest.test.ts's style, but uses repo-relative on-disk

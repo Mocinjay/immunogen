@@ -9,9 +9,7 @@
  *
  *   CONFIG-02 (whole-file): a route handler living under a `debug`, `env`,
  *   or `healthz` path segment whose body returns `process.env` or a
- *   config-object literal to the caller. FEATURES.md lists this requirement
- *   as CONFIG-03; per this plan's own read_first note it is emitted here as
- *   the CONFIG-02 ruleId (05-02-PLAN.md Task 2 read_first).
+ *   config-object literal to the caller.
  *
  * IMPORTANT — self-gate hygiene: this file's own target pattern (the thing
  * CONFIG-01 is looking FOR) must never appear in this source as a literal
@@ -21,7 +19,7 @@
  * written as a literal call — see LOG_CALL_FRAGMENT below. Do not "simplify"
  * this back into a literal token.
  *
- * FP allowlist (.planning/research/PITFALLS.md Pitfall 1): `detect()` opens
+ * FP allowlist: `detect()` opens
  * with the same path-segment + basename check used across this codebase's
  * other text detectors — matching paths short-circuit to `[]` for both
  * CONFIG-01 and CONFIG-02.
@@ -74,7 +72,7 @@ function isDebugRoutePath(filePath: string): boolean {
 
 /**
  * Matches either of two ways a handler hands the whole environment object
- * back to its caller, per 05-02-PLAN.md Task 2's `<action>` spec:
+ * back to its caller:
  *
  *   (a) a `return` statement whose expression references `process.env`
  *       directly (e.g. `return Response.json(process.env)`), OR
@@ -225,7 +223,7 @@ export const configDebugDetector: Detector = {
   // Detector interface still requires returning `Promise<Finding[]>`.
   detect(ctx: DetectorContext): Promise<Finding[]> {
     try {
-      // FP allowlist (PITFALLS.md Pitfall 1): suppress every finding for
+      // FP allowlist: suppress every finding for
       // test/fixture/mock/example/story paths — applies to both CONFIG-01
       // and CONFIG-02.
       if (isTestOrFixturePath(ctx.filePath)) {

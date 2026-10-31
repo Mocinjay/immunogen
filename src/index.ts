@@ -11,11 +11,10 @@
  * `scan()` is the single source of truth for the pipeline: ingest -> detect
  * -> score -> enrich -> assemble. The CLI (`bin/immunogen.ts`), and
  * eventually the Claude Code skill and MCP server, all call this one
- * function rather than reimplementing any step of it
- * (.planning/research/ARCHITECTURE.md "Pattern 3: Library-First,
- * CLI-as-Thin-Wrapper").
+ * function rather than reimplementing any step of it (library-first; the
+ * CLI is a thin wrapper).
  *
- * The enrichment stage (Phase 7, LLM-01/SAFE-01) is a no-op whenever
+ * The enrichment stage is a no-op whenever
  * `options.noLlm` is `true` OR no provider+key is configured via
  * `selectAdapter(process.env)` — in both cases a `NoopAdapter` is used and
  * `enrichFindings` short-circuits with zero provider calls, so the offline
@@ -84,7 +83,7 @@ import type { ProviderAdapter } from "./llm/provider.js";
  * never terminates the host process — exit-code/printing concerns belong to
  * the CLI layer only.
  *
- * URL routing (Pass 2): when `isUrl(path)` is true — i.e. `path` begins with
+ * URL routing: when `isUrl(path)` is true — i.e. `path` begins with
  * `http://` or `https://` — and the URL does not name a git repository
  * (`isGitRepoUrl`: a github.com / gitlab.com / bitbucket.org / codeberg.org
  * repo URL, or any `.git` URL, which is cloned and scanned statically like a
@@ -93,7 +92,7 @@ import type { ProviderAdapter } from "./llm/provider.js";
  * static ingest/detect/score/enrich pipeline below. `scanUrl` returns the
  * same `ScanResult` shape but is a fully separate, deterministic pipeline
  * (no LLM enrichment — see that module's own header comment) built on the
- * Pass 1 `resolveUrlTarget`/`fetchTarget` foundation. This is a pure routing
+ * `resolveUrlTarget`/`fetchTarget` foundation. This is a pure routing
  * decision: `scan()`'s signature and return type are unchanged either way.
  */
 export async function scan(

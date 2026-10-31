@@ -208,9 +208,8 @@ describe("configDebugDetector — CONFIG-02 (debug endpoint returning env/config
 
 describe("configDebugDetector — self-gate hygiene", () => {
   it("the detector module source never contains a literal log-call token", () => {
-    // This is also enforced at the file-content level by the plan's grep
-    // acceptance criterion; this test exists to keep the intent visible
-    // in the suite itself without re-reading the source from disk here.
+    // Keeps the intent visible in the suite without re-reading the source
+    // from disk here.
     expect(LOG_CALL).toBe("console.log");
   });
 });

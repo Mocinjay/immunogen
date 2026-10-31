@@ -2,7 +2,7 @@
  * xssDetector — CAT-6 INJECT-01 (dangerouslySetInnerHTML with a non-literal
  * value and no DOMPurify sanitizer in the same file) detector, AST-based.
  *
- * INJECT-01 (FEATURES.md CAT-6): the canonical React XSS sink is a
+ * INJECT-01: the canonical React XSS sink is a
  * dangerouslySetInnerHTML attribute whose __html receives a VARIABLE (an
  * identifier, member access, call result, or a template literal carrying
  * expressions) when the file performs no DOMPurify.sanitize() anywhere. A
@@ -12,20 +12,18 @@
  * elsewhere in the file.
  *
  * Decision flow inside detect() (cheap gates first):
- *   1. FP ALLOWLIST — test/fixture/mock/example paths return [] (PITFALLS.md
- *      Pitfall 1).
- *   2. AST GUARD — if (!isBabelFile(ctx.ast)) return [] (PITFALLS.md Pitfall 3:
- *      a parse-failed file has no AST; emit nothing, never throw).
+ *   1. FP ALLOWLIST — test/fixture/mock/example paths return [].
+ *   2. AST GUARD — if (!isBabelFile(ctx.ast)) return [] (a parse-failed
+ *      file has no AST; emit nothing, never throw).
  *   3. SANITIZER PASS — walk the File once to compute a file-scoped boolean:
  *      does it contain a DOMPurify.sanitize(...) member call, or a bare
  *      sanitize(...) call? If so the file is treated as sanitized and emits
- *      nothing (FEATURES.md: "no DOMPurify.sanitize in the same file").
+ *      nothing.
  *   4. SINK PASS — find every dangerouslySetInnerHTML JSX attribute carrying a
  *      __html property; flag the ones whose __html value is non-literal.
  *
- * Confidence is MEDIUM, not HIGH, per FEATURES.md CAT-6 INJECT-01 (FP risk =
- * LOW-MEDIUM: sanitization may legitimately happen in a caller; the finding's
- * remediation says to verify it).
+ * Confidence is MEDIUM, not HIGH: sanitization may legitimately happen in a
+ * caller, so the finding's remediation says to verify it.
  *
  * AST-only (ENG-05): reads ctx.ast and walks nodes. Never imports a
  * process/exec primitive, never evaluates/requires/spawns scanned source.
@@ -51,7 +49,7 @@ const SANITIZE_METHOD = "sanitize";
 /**
  * True when `call` is a sanitizer call: either a member call whose method is
  * `sanitize` (matches DOMPurify.sanitize, purify.sanitize, etc. by terminal
- * method name — file-scoped presence is sufficient per FEATURES.md), or a
+ * method name — file-scoped presence is sufficient), or a
  * bare `sanitize(...)` call (covers an imported `{ sanitize }`).
  */
 function isSanitizerCall(call: CallExpression): boolean {
@@ -170,7 +168,7 @@ export const xssDetector: Detector = {
       });
 
       // A same-file sanitizer is treated as covering the file's sinks
-      // (FEATURES.md "no DOMPurify.sanitize in the same file").
+      //.
       if (fileHasSanitizer) {
         return Promise.resolve([]);
       }

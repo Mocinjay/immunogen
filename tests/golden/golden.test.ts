@@ -1,6 +1,5 @@
 /**
- * The release-gating golden-file suite (TEST-01, ROADMAP Phase 8
- * criterion 1).
+ * The release-gating golden-file suite.
  *
  * Consolidates the finding-set contract for the whole scan pipeline into
  * ONE suite:
@@ -13,8 +12,8 @@
  *      drift in ruleIds or counts breaks CI.
  *
  *   2. Clean fixtures (CLEAN_FIXTURES) — each asserts `result.findings`
- *      is exactly `[]` under the OSV mock resolving `[]` (critical_facts
- *      item 2: without the mock these are NOT genuinely zero).
+ *      is exactly `[]` under the OSV mock resolving `[]` (without the mock
+ *      these are NOT genuinely zero).
  *
  *   3. Zip-Slip rejection — a ZIP whose entry name is `../../etc/passwd`
  *      must make `scan()` reject, and the literal escape target under
@@ -52,7 +51,7 @@ vi.mock("../../src/detectors/deps/osv-client.js", () => ({
 
 const { scan } = await import("../../src/index.js");
 
-/** ROADMAP criterion-1 spot-check ruleIds — each must carry file/line/severity. */
+/** Headline spot-check ruleIds — each must carry file/line/severity. */
 const CRITERION_1_RULE_IDS = ["SEC-01", "SEC-05", "BUNDLE-01", "AUTH-01", "PAY-01"];
 
 const tempDirsToClean: string[] = [];
@@ -82,7 +81,7 @@ describe("golden suite — vulnerable fixtures assert exact ruleId/count summari
     });
   }
 
-  it("kitchen-sink: ROADMAP criterion-1 ruleIds (SEC-01, SEC-05, BUNDLE-01, AUTH-01, PAY-01) each carry file + line + severity", async () => {
+  it("kitchen-sink: headline ruleIds (SEC-01, SEC-05, BUNDLE-01, AUTH-01, PAY-01) each carry file + line + severity", async () => {
     queryOsvBatchMock.mockRejectedValue(new Error("network unavailable (test stub — never a real call)"));
 
     const kitchenSink = VULNERABLE_FIXTURES.find((fixture) => fixture.name === "nextjs-kitchen-sink");

@@ -1,10 +1,9 @@
 /**
  * osv-fallback — bundled offline "known critical" npm version list (DEP-01).
  *
- * PITFALLS.md Pitfall 10 ("OSV.dev Offline Fallback Correctness") requires a
- * baseline check that still works when OSV.dev is unreachable: "Bundle a
- * small static 'known critical' list for the 20-30 most prevalent vulnerable
- * versions seen in vibe-coded apps (lodash < 4.17.21, minimist < 1.2.6,
+ * A baseline check that still works when OSV.dev is unreachable: a small
+ * static "known critical" list of the most prevalent vulnerable versions
+ * seen in vibe-coded apps (lodash < 4.17.21, minimist < 1.2.6,
  * axios < 1.6.0, etc.)". This module IS that curated list, plus a
  * dependency-free comparator (`checkFallback`) that the offline branch of
  * `osv-detector.ts` calls per dependency when the network query fails.
@@ -24,8 +23,7 @@
  * `undefined` rather than guessing — a wrong "no hit" here is recoverable
  * (the OSV path is still attempted first in normal operation), but a wrong
  * "hit" on an unparseable string would be a false positive. No `semver`
- * package dependency is introduced (CLAUDE.md stack guidance: avoid new
- * deps when a compact comparator suffices).
+ * package dependency is introduced (a compact comparator suffices).
  */
 import type { Severity } from "../../core/types.js";
 
@@ -53,8 +51,7 @@ export interface FallbackEntry {
  * in AI-coding-agent-generated ("vibe-coded") apps. Each entry's
  * `vulnerableBelow` is the package's officially fixed version per its public
  * advisory; `advisoryId` is the representative GHSA/CVE id for that fix.
- * Sourced from PITFALLS.md Pitfall 10's named examples plus other
- * widely-reported npm advisories for packages frequently pulled in by
+ * Sourced from widely-reported npm advisories for packages frequently pulled in by
  * scaffolding tools and AI agents.
  */
 export const FALLBACK_VULNERABLE_NPM: readonly FallbackEntry[] = [
