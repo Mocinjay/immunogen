@@ -65,15 +65,15 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.104.2",
-    "@babel/parser": "7.29.7",
-    "@babel/traverse": "7.29.7",
-    "@babel/types": "7.29.7",
+    "@anthropic-ai/sdk": "0.137.0",
+    "@babel/parser": "7.29.11",
+    "@babel/traverse": "7.29.10",
+    "@babel/types": "7.29.11",
     "commander": "15.0.0",
     "extract-zip": "2.0.1",
     "fast-glob": "3.3.3",
     "ignore": "7.0.14",
-    "openai": "6.44.0",
+    "openai": "6.49.0",
     "picocolors": "1.1.1",
     "simple-git": "3.36.0"
   },
