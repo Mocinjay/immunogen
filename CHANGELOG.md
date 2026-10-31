@@ -6,6 +6,12 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- README: the one-off `npx` and CI examples pin the release URL. npx caches
+  whatever a URL first downloaded, so the unpinned `latest` URL kept
+  serving the first version a user ran.
+
 ## [0.2.0] - 2026-10-31
 
 ### Security

@@ -32,7 +32,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:
 
 ## Releasing (maintainers)
 
-1. Bump `version` in `package.json` and move the `Unreleased` notes in `CHANGELOG.md` under the new version.
+1. Bump `version` in `package.json`, update the version-pinned install URLs in `README.md` (a test fails until they match), and move the `Unreleased` notes in `CHANGELOG.md` under the new version.
 2. Merge to `main`. The `Release` workflow notices the unreleased version, re-runs the checks, packs the npm tarball, and creates the `v<version>` tag and GitHub Release with the tarball attached (`immunogen.tgz` always points at the latest release). Release notes come from the version's `CHANGELOG.md` section.
 3. If an `NPM_TOKEN` repository secret is set, the workflow also publishes the same tarball to npm with provenance.
 

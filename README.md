@@ -33,10 +33,10 @@ immunogen
 
 It scans the current folder, no API key required, and prints a terminal report with a Ship Score. Point it elsewhere with `immunogen ./path/to/app`. The only network call it ever makes is a dependency-vulnerability lookup against OSV.dev (package names + versions only); add `--offline` to skip that too.
 
-One-off run without a global install:
+One-off run without a global install (pinned to a release, because npx caches whatever a URL first downloaded):
 
 ```sh
-npx --yes --package=https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz immunogen
+npx --yes --package=https://github.com/Mocinjay/immunogen/releases/download/v0.2.0/immunogen-0.2.0.tgz immunogen
 ```
 
 Per-project (CI gate / library use):
@@ -277,7 +277,7 @@ jobs:
           node-version: "22"
 
       - name: Screen with immunogen
-        run: npx --yes --package=https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz immunogen . --format sarif > results.sarif
+        run: npx --yes --package=https://github.com/Mocinjay/immunogen/releases/download/v0.2.0/immunogen-0.2.0.tgz immunogen . --format sarif > results.sarif
 
       - name: Upload SARIF
         if: always()
