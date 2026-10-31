@@ -5,6 +5,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    # Major versions carry breaking changes (Babel AST shape, SDK APIs, build
+    # output) and need a human-driven upgrade, not an automated bump.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: development
