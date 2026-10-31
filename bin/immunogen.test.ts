@@ -9,7 +9,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "./immunogen.js";
 
+import type { OsvResult } from "../src/detectors/deps/osv-client.js";
 import type { SarifLog } from "../src/reporters/sarif-types.js";
+
+// OSV.dev is stubbed at the module boundary (same seam as the golden suite):
+// the with-secret fixture has a package.json, and a live lookup can outlast
+// the 5 s test timeout whenever OSV is slow.
+vi.mock("../src/detectors/deps/osv-client.js", () => ({
+  queryOsvBatch: (queries: Array<{ name: string; version: string }>): Promise<OsvResult[]> =>
+    Promise.resolve(queries.map(() => ({}))),
+}));
 
 const WITH_SECRET_FIXTURE = "tests/fixtures/scan/with-secret";
 const CLEAN_FIXTURE = "tests/fixtures/scan/clean";
