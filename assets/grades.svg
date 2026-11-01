@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 124" width="880" height="124" role="img" aria-label="Grade scale on the 0 to 100 Ship Score: F Critical 0 to 34, D Infected 35 to 54, C Symptomatic 55 to 74, B Healthy 75 to 89, A Immune 90 to 100. Any CRITICAL finding is an automatic F.">
+  <defs>
+    <clipPath id="bar"><rect x="20" y="26" width="840" height="62" rx="10"/></clipPath>
+  </defs>
+
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+    <text x="20" y="15" font-size="11" font-weight="600" letter-spacing="1.4" fill="#7d8590">SHIP SCORE → GRADE</text>
+    <text x="860" y="15" font-size="11.5" font-weight="600" fill="#cf222e" text-anchor="end">Any CRITICAL finding is an automatic F</text>
+
+    <g clip-path="url(#bar)">
+      <rect x="20" y="26" width="293" height="62" fill="#cf222e"/>
+      <rect x="315" y="26" width="166" height="62" fill="#bc4c00"/>
+      <rect x="483" y="26" width="166" height="62" fill="#9a6700"/>
+      <rect x="651" y="26" width="124" height="62" fill="#3f8f3a"/>
+      <rect x="777" y="26" width="83" height="62" fill="#1a7f37"/>
+    </g>
+
+    <g fill="#ffffff" text-anchor="middle">
+      <g font-size="22" font-weight="800">
+        <text x="167" y="56">F</text>
+        <text x="398" y="56">D</text>
+        <text x="566" y="56">C</text>
+        <text x="713" y="56">B</text>
+        <text x="818" y="56">A</text>
+      </g>
+      <g font-size="12" font-weight="600" fill-opacity="0.92">
+        <text x="167" y="76">Critical</text>
+        <text x="398" y="76">Infected</text>
+        <text x="566" y="76">Symptomatic</text>
+        <text x="713" y="76">Healthy</text>
+        <text x="818" y="76">Immune</text>
+      </g>
+    </g>
+
+    <g stroke="#7d8590" stroke-width="1">
+      <line x1="20.5" y1="92" x2="20.5" y2="98"/>
+      <line x1="314" y1="92" x2="314" y2="98"/>
+      <line x1="482" y1="92" x2="482" y2="98"/>
+      <line x1="650" y1="92" x2="650" y2="98"/>
+      <line x1="776" y1="92" x2="776" y2="98"/>
+      <line x1="859.5" y1="92" x2="859.5" y2="98"/>
+    </g>
+    <g font-family="ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace" font-size="12" fill="#7d8590">
+      <text x="20" y="114">0</text>
+      <text x="314" y="114" text-anchor="middle">35</text>
+      <text x="482" y="114" text-anchor="middle">55</text>
+      <text x="650" y="114" text-anchor="middle">75</text>
+      <text x="776" y="114" text-anchor="middle">90</text>
+      <text x="860" y="114" text-anchor="end">100</text>
+    </g>
+  </g>
+</svg>

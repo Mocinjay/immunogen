@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 698" width="980" height="698" role="img" aria-label="Terminal running immunogen ./my-app: grade F, Ship Score 0 of 100, verdict blocked, with findings for a committed .env file, a hardcoded Stripe live key, a hardcoded Supabase service-role key, an unverified Stripe webhook and an unauthenticated route.">
+  <defs>
+    <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d1117" stop-opacity="0"/>
+      <stop offset="1" stop-color="#0d1117" stop-opacity="1"/>
+    </linearGradient>
+    <clipPath id="window"><rect width="980" height="698" rx="12"/></clipPath>
+  </defs>
+  <g clip-path="url(#window)">
+    <rect width="980" height="698" fill="#0d1117"/>
+    <rect width="980" height="44" fill="#161b22"/>
+    <line x1="0" y1="44" x2="980" y2="44" stroke="#30363d"/>
+    <circle cx="24" cy="22" r="6.5" fill="#ff5f57"/>
+    <circle cx="46" cy="22" r="6.5" fill="#febc2e"/>
+    <circle cx="68" cy="22" r="6.5" fill="#28c840"/>
+    <text x="490" y="27" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" fill="#7d8590">immunogen — ~/projects</text>
+    <g font-family="ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace" font-size="14" xml:space="preserve" style="white-space:pre">
+      <text x="28" y="84"><tspan fill="#3fdd86">$</tspan><tspan fill="#f0f6fc"> immunogen ./my-app</tspan></text>
+      <text x="28" y="126"><tspan fill="#f0f6fc" font-weight="700">Scanned</tspan><tspan fill="#c9d1d9">: ./my-app</tspan></text>
+      <text x="28" y="147"><tspan fill="#f0f6fc" font-weight="700">GRADE:</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#ff7b72" font-weight="700">F</tspan><tspan fill="#c9d1d9"> — Critical</tspan></text>
+      <text x="28" y="168"><tspan fill="#f0f6fc" font-weight="700">Ship Score:</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#f0f6fc" font-weight="700">0</tspan><tspan fill="#c9d1d9">/100 — </tspan><tspan fill="#ff7b72">High risk</tspan></text>
+      <text x="28" y="189"><tspan fill="#f0f6fc" font-weight="700">Verdict:</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#ff7b72">blocked</tspan></text>
+      <text x="28" y="210"><tspan fill="#f0f6fc" font-weight="700">Critical:</tspan><tspan fill="#c9d1d9"> 13  </tspan><tspan fill="#f0f6fc" font-weight="700">High:</tspan><tspan fill="#c9d1d9"> 5</tspan></text>
+      <text x="28" y="252"><tspan fill="#c9d1d9">  </tspan><tspan fill="#ff7b72">CRITICAL</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#f0f6fc" font-weight="700">SEC-05</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#56d4dd">.env:1</tspan></text>
+      <text x="28" y="273"><tspan fill="#c9d1d9">    Committed environment file (.env) found in the scanned tree. </tspan><tspan fill="#6e7681">[confidence: HIGH]</tspan></text>
+      <text x="28" y="315"><tspan fill="#c9d1d9">  </tspan><tspan fill="#ff7b72">CRITICAL</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#f0f6fc" font-weight="700">SEC-01</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#56d4dd">.env:2</tspan></text>
+      <text x="28" y="336"><tspan fill="#c9d1d9">    Hardcoded Stripe live secret key (sk_live_/rk_live_) found in source. </tspan><tspan fill="#6e7681">[confidence: HIGH]</tspan></text>
+      <text x="28" y="357"><tspan fill="#c9d1d9">    matched: sk_l****</tspan></text>
+      <text x="28" y="399"><tspan fill="#c9d1d9">  </tspan><tspan fill="#ff7b72">CRITICAL</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#f0f6fc" font-weight="700">SEC-04</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#56d4dd">.env:3</tspan></text>
+      <text x="28" y="420"><tspan fill="#c9d1d9">    SUPABASE_SERVICE_ROLE_KEY is assigned a hardcoded value in source. </tspan><tspan fill="#6e7681">[confidence: HIGH]</tspan></text>
+      <text x="28" y="441"><tspan fill="#c9d1d9">    matched: SUPA****</tspan></text>
+      <text x="28" y="483"><tspan fill="#c9d1d9">  </tspan><tspan fill="#ff7b72">CRITICAL</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#f0f6fc" font-weight="700">PAY-01</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#56d4dd">app/api/stripe/webhook/route.ts:3</tspan></text>
+      <text x="28" y="504"><tspan fill="#c9d1d9">    Stripe webhook handler does not verify the signature (missing constructEvent). </tspan><tspan fill="#6e7681">[confidence: HIGH]</tspan></text>
+      <text x="28" y="546"><tspan fill="#c9d1d9">  </tspan><tspan fill="#ff7b72">CRITICAL</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#f0f6fc" font-weight="700">AUTH-01</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#56d4dd">app/api/stripe/webhook/route.ts:8</tspan></text>
+      <text x="28" y="567"><tspan fill="#c9d1d9">    Exported Next.js route handler POST has no authentication or authorization check. </tspan><tspan fill="#6e7681">[confidence: MEDIUM]</tspan></text>
+      <text x="28" y="588"><tspan fill="#c9d1d9">    matched: POST</tspan></text>
+      <text x="28" y="630"><tspan fill="#c9d1d9">  </tspan><tspan fill="#ff7b72">CRITICAL</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#f0f6fc" font-weight="700">CONFIG-02</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#56d4dd">app/debug/route.ts:6</tspan></text>
+      <text x="28" y="651"><tspan fill="#c9d1d9">    Debug endpoint 'app/debug/route.ts' returns the environment/config object to the caller. </tspan><tspan fill="#6e7681">[confidence: HIGH]</tspan></text>
+    </g>
+    <rect x="0" y="578" width="980" height="120" fill="url(#fade)"/>
+  </g>
+  <rect x="0.5" y="0.5" width="979" height="697" rx="12" fill="none" stroke="#30363d"/>
+</svg>
