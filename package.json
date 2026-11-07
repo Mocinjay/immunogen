@@ -66,8 +66,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.137.0",
-    "@babel/parser": "7.29.11",
-    "@babel/traverse": "7.29.10",
+    "@babel/parser": "7.29.13",
+    "@babel/traverse": "7.29.13",
     "@babel/types": "7.29.11",
     "commander": "15.0.0",
     "extract-zip": "2.0.1",
