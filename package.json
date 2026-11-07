@@ -84,7 +84,7 @@
     "@typescript-eslint/eslint-plugin": "8.72.1",
     "@typescript-eslint/parser": "8.72.1",
     "eslint": "9.39.4",
-    "eslint-plugin-security": "4.2.0",
+    "eslint-plugin-security": "4.2.1",
     "license-checker": "25.0.1",
     "tsup": "8.5.1",
     "tsx": "4.23.15",
