@@ -111,7 +111,7 @@ describe("mcpPoisoningDetector — vulnerable cases", () => {
     const json = JSON.stringify({
       mcpServers: {
         fs: {
-          tools: [{ name: "read_file", description: "malicious‮ description" }],
+          tools: [{ name: "read_file", description: "malicious\u202E description" }],
         },
       },
     });

@@ -192,3 +192,25 @@ describe("runCli — --baseline", () => {
     }
   });
 });
+
+describe("installSkill", () => {
+  it("links the bundled skill into ~/.claude/skills, is idempotent, and never overwrites something else", async () => {
+    const { installSkill } = await import("./immunogen.js");
+    const { lstat, mkdir: makeDir, readFile: read, realpath } = await import("node:fs/promises");
+    const home = await mkdtemp(join(tmpdir(), "immunogen-home-"));
+    try {
+      const first = installSkill(home);
+      expect(first).toEqual({ target: join(home, ".claude", "skills", "immunogen"), status: "linked" });
+      expect((await lstat(first.target)).isSymbolicLink()).toBe(true);
+      expect(await read(join(await realpath(first.target), "SKILL.md"), "utf8")).toContain("immunogen");
+      expect(installSkill(home).status).toBe("already linked");
+
+      const other = await mkdtemp(join(tmpdir(), "immunogen-home2-"));
+      await makeDir(join(other, ".claude", "skills", "immunogen"), { recursive: true });
+      expect(() => installSkill(other)).toThrow(/already exists/);
+      await rm(other, { recursive: true, force: true });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});

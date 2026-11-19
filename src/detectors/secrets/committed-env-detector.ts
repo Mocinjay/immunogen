@@ -59,7 +59,12 @@ const EXPORT_PREFIX_RE = /^\s*export\s+/;
 const ENV_LINE_RE = /^\s*([A-Za-z_][\w.-]*)\s*=(.*)$/;
 
 /** Variable-name fragments that mark a value as sensitive. */
-const SECRET_NAME_RE = /SECRET|KEY|TOKEN|PASSWORD|PASSWD|PWD|PRIVATE|CREDENTIAL|AUTH|DSN|SERVICE_ROLE|DATABASE_URL|DB_URL|CONNECTION|_URI$/i;
+const SECRET_NAME_RE = /SECRET|KEY|TOKEN|PASSWORD|PASSWD|PWD|PRIVATE|CREDENTIAL|AUTH|DSN|SERVICE_ROLE|DATABASE_URL|DB_URL|CONNECTION/i;
+
+/** True when an env var name marks its value as sensitive (a fragment above, or a `*_URI` connection setting). */
+function isSecretName(name: string): boolean {
+  return SECRET_NAME_RE.test(name) || name.toUpperCase().endsWith("_URI");
+}
 
 /** Client-bundle prefixes: the framework inlines these into public code by design. */
 const CLIENT_PUBLIC_PREFIX_RE = /^(?:NEXT_PUBLIC_|VITE_|EXPO_PUBLIC_|REACT_APP_|NUXT_PUBLIC_|GATSBY_|PUBLIC_)/i;
@@ -105,7 +110,7 @@ function isSecretEntry(name: string, value: string): boolean {
     return true;
   }
   const clientPublic = CLIENT_PUBLIC_PREFIX_RE.test(name) && !NEVER_PUBLIC_RE.test(name);
-  if (!SECRET_NAME_RE.test(name) || clientPublic || PUBLIC_BY_DESIGN_RE.test(name)) {
+  if (!isSecretName(name) || clientPublic || PUBLIC_BY_DESIGN_RE.test(name)) {
     return false;
   }
   if (

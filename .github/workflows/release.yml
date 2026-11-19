@@ -9,8 +9,11 @@ name: Release
 # Pushing a v<version> tag by hand, or running the workflow manually, does the
 # same. The tarball is attached twice: as immunogen-<version>.tgz and as
 # immunogen.tgz, so .../releases/latest/download/immunogen.tgz always installs
-# the newest release. If an npm automation token is stored as the NPM_TOKEN
-# repository secret, the same tarball is also published to npm.
+# the newest release. The same tarball is then published to npm through npm
+# trusted publishing (OIDC): no npm token is stored anywhere, and npm attaches
+# a provenance attestation linking the package to this workflow run. Set up
+# once with `npm trust github immunogen --file release.yml --repo
+# Mocinjay/immunogen` after the package exists on npm.
 
 on:
   push:
@@ -36,8 +39,9 @@ jobs:
       release: ${{ steps.version.outputs.release }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
-
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Is this version unreleased?
         id: version
         run: |
@@ -63,19 +67,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the tag and GitHub Release
-      id-token: write # npm provenance attestation
+      id-token: write # npm trusted publishing (OIDC) + provenance
     env:
       VERSION: ${{ needs.check.outputs.version }}
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
-
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: pnpm
@@ -118,8 +121,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Publish to npm
-        if: env.NPM_TOKEN != ''
-        run: npm publish "immunogen-${VERSION}.tgz" --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
+      - name: Publish to npm (trusted publishing)
+        run: |
+          # Trusted publishing needs npm >= 11.5.1; Node 22 bundles npm 10.
+          npm install -g npm@11.11.0 --silent
+          if ! npm view immunogen version > /dev/null 2>&1; then
+            echo "::notice::immunogen is not on npm yet. Publish this first version by hand, then run: npm trust github immunogen --file release.yml --repo Mocinjay/immunogen"
+            exit 0
+          fi
+          if npm view "immunogen@${VERSION}" version > /dev/null 2>&1; then
+            echo "immunogen@${VERSION} is already on npm."
+            exit 0
+          fi
+          npm publish "immunogen-${VERSION}.tgz" --access public

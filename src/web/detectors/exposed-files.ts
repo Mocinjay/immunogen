@@ -76,7 +76,11 @@ function probeUrl(targetUrl: string, probePath: string): string {
   try {
     return new URL(probePath, targetUrl).toString();
   } catch {
-    return `${targetUrl.replace(/\/+$/, "")}${probePath}`;
+    let base = targetUrl;
+    while (base.endsWith("/")) {
+      base = base.slice(0, -1); // A loop, not /\/+$/ (quadratic on a long run of slashes).
+    }
+    return `${base}${probePath}`;
   }
 }
 

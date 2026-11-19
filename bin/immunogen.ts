@@ -32,7 +32,9 @@
  * `process.argv[1]` keeps the link path — a plain URL comparison would make
  * every installed `immunogen` invocation silently print nothing and exit 0.
  */
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Command, Option } from "commander";
@@ -136,6 +138,38 @@ function loadBaseline(file: string): NonNullable<ScanOptions["baseline"]> {
   return findings as NonNullable<ScanOptions["baseline"]>;
 }
 
+/**
+ * Links the Claude Code skill that ships inside this package into
+ * `<home>/.claude/skills/immunogen`, so `/immunogen` works in Claude Code and
+ * always runs the installed version. Idempotent; never overwrites anything
+ * that is not already this link.
+ */
+/* eslint-disable security/detect-non-literal-fs-filename -- paths are this package's own install folder and the user's ~/.claude, never scanned content */
+export function installSkill(home: string = homedir()): { target: string; status: "linked" | "already linked" } {
+  const here = dirname(realpathSync(fileURLToPath(import.meta.url)));
+  const source = resolve(here, "..", ".claude", "skills", "immunogen");
+  if (!existsSync(join(source, "SKILL.md"))) {
+    throw new Error(`the bundled skill was not found at ${source}`);
+  }
+  const target = join(home, ".claude", "skills", "immunogen");
+  let existing: ReturnType<typeof lstatSync> | undefined;
+  try {
+    existing = lstatSync(target);
+  } catch {
+    existing = undefined;
+  }
+  if (existing !== undefined) {
+    if (existing.isSymbolicLink() && realpathSync(target) === realpathSync(source)) {
+      return { target, status: "already linked" };
+    }
+    throw new Error(`${target} already exists and is not this install's skill — move it away first, then re-run --install-skill`);
+  }
+  mkdirSync(dirname(target), { recursive: true });
+  symlinkSync(source, target, "dir");
+  return { target, status: "linked" };
+}
+/* eslint-enable security/detect-non-literal-fs-filename */
+
 /** True when this module is the process entry script, following symlinks (see module doc comment). */
 function isEntryScript(): boolean {
   const entry = process.argv[1];
@@ -166,6 +200,7 @@ if (isEntryScript()) {
     )
     .addOption(new Option("--format <format>", "output format (prompt = a fix-it prompt to paste into your coding agent)").choices(FORMATS).default("terminal"))
     .addOption(new Option("--min-severity <level>", "leave out (and do not score) findings below this severity").choices(MIN_SEVERITIES))
+    .option("--install-skill", "link the bundled Claude Code skill into ~/.claude/skills/immunogen (then use /immunogen in Claude Code) and exit")
     .option("--baseline <file>", "an earlier --format json report: findings already in it are not scored, so only new ones can fail the build")
     .option(
       "--no-llm",
@@ -199,6 +234,7 @@ if (isEntryScript()) {
           minSeverity?: (typeof MIN_SEVERITIES)[number];
           baseline?: string;
           dataProbes: boolean;
+          installSkill?: boolean;
           llm: boolean;
           ignore: boolean;
           offline?: boolean;
@@ -206,6 +242,17 @@ if (isEntryScript()) {
           allowPrivate?: boolean;
         },
       ) => {
+        if (options.installSkill === true) {
+          try {
+            const { target, status } = installSkill();
+            process.stdout.write(`immunogen: Claude Code skill ${status} at ${target} — use /immunogen in Claude Code.\n`);
+            process.exitCode = 0;
+          } catch (err) {
+            process.stderr.write(`immunogen: ${err instanceof Error ? err.message : String(err)}\n`);
+            process.exitCode = 2;
+          }
+          return;
+        }
         process.exitCode = await runCli(path, {
           format: options.format,
           noLlm: options.llm === false,

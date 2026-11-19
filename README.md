@@ -4,7 +4,7 @@
 
 ### Your AI agent shipped the code. immunogen makes sure it didn't ship an infection.
 
-[![Latest release](https://img.shields.io/github/v/release/Mocinjay/immunogen?style=flat-square&color=2ea043&label=release)](https://github.com/Mocinjay/immunogen/releases/latest)
+[![npm](https://img.shields.io/npm/v/immunogen?style=flat-square&color=2ea043)](https://www.npmjs.com/package/immunogen)
 [![CI](https://img.shields.io/github/actions/workflow/status/Mocinjay/immunogen/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Mocinjay/immunogen/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
 [![Node ≥ 22](https://img.shields.io/badge/node-%E2%89%A5%2022-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
@@ -33,15 +33,16 @@ Works on JavaScript / TypeScript, Python and Go.
 
 ## Quickstart
 
-Requires **Node.js 22+**. Install the latest release:
+Requires **Node.js 22+**. Run it in your project folder, no install needed:
 
 ```sh
-npm install -g https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz
+npx immunogen
 ```
 
-Run it in your project folder:
+Or install it once:
 
 ```sh
+npm install -g immunogen
 immunogen
 ```
 
@@ -49,21 +50,23 @@ That's it — no account, no API key. Scan another folder with `immunogen ./path
 
 Fixing with an AI coding agent? `immunogen --format prompt` prints a numbered, ready-to-paste brief — every problem with its `file:line` and fix.
 
+Using Claude Code? `immunogen --install-skill` adds the `/immunogen` skill, linked to the installed version.
+
 <details>
-<summary><b>Other ways to run it</b> — npx, per-project, Docker</summary>
+<summary><b>Other ways to run it</b> — per-project, GitHub release, Docker</summary>
 
 <br />
-
-One-off run without installing (pinned to a release, because npx caches whatever a URL first downloaded):
-
-```sh
-npx --yes --package=https://github.com/Mocinjay/immunogen/releases/download/v0.3.0/immunogen-0.3.0.tgz immunogen
-```
 
 As a project dev dependency (CI gate or library use):
 
 ```sh
-npm install --save-dev https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz
+npm install --save-dev immunogen
+```
+
+Straight from a GitHub release (same package, no npm registry involved):
+
+```sh
+npm install -g https://github.com/Mocinjay/immunogen/releases/latest/download/immunogen.tgz
 ```
 
 In Docker, with no Node toolchain at all:
@@ -136,6 +139,7 @@ immunogen [path] [options]
 | `--authorize` | Required consent to screen a live URL. Only screen sites you own or are authorized to test. |
 | `--allow-private` | Let live-URL screening reach loopback / private hosts (local dev only). |
 | `--no-data-probes` | Live-URL screening: skip the Supabase / Firebase data-exposure check. |
+| `--install-skill` | Link the bundled Claude Code skill into `~/.claude/skills/immunogen` and exit. |
 | `-v, --version` | Print the installed version. |
 
 | Exit code | Meaning |
@@ -219,7 +223,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: Mocinjay/immunogen@v0.3.0
+      - uses: Mocinjay/immunogen@v0.3.1
 ```
 
 A `blocked` verdict fails the job, and the SARIF report is uploaded either way. Alert fingerprints don't depend on line numbers, so alerts keep their identity when unrelated edits move code around.
@@ -243,7 +247,7 @@ Outputs: `score`, `grade`, `verdict`.
 <br />
 
 ```sh
-npx --yes --package=https://github.com/Mocinjay/immunogen/releases/download/v0.3.0/immunogen-0.3.0.tgz immunogen . --format sarif > results.sarif
+npx --yes immunogen . --format sarif > results.sarif
 ```
 
 Exit code `1` means blocked.
@@ -282,13 +286,22 @@ Every request — the page, each redirect hop, each script, each probe — is ch
 
 immunogen ships a [Claude Code skill](./.claude/skills/immunogen) that runs the same deterministic scan and returns the graded report — a test checks that the skill and the library report the same Ship Score and findings count.
 
+```sh
+npm install -g immunogen
+immunogen --install-skill
+```
+
+Then, in Claude Code:
+
 ```
 /immunogen ./my-app
 /immunogen https://myapp.com --authorize
 ```
 
+`--install-skill` links `~/.claude/skills/immunogen` to the installed package, so the skill always runs the version you have installed (`npm update -g immunogen` updates both). It never overwrites an existing folder.
+
 <details>
-<summary><b>Install the skill</b></summary>
+<summary><b>From a clone instead</b></summary>
 
 <br />
 
@@ -297,8 +310,6 @@ git clone https://github.com/Mocinjay/immunogen.git
 cd immunogen && pnpm install && pnpm build
 ln -s "$PWD/.claude/skills/immunogen" ~/.claude/skills/immunogen
 ```
-
-The symlink keeps the skill in sync when you rebuild; copying the folder also works if immunogen is installed as a package (see [Quickstart](#quickstart)).
 
 </details>
 
