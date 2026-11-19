@@ -249,6 +249,12 @@ export interface ScanOptions {
    */
   allowPrivate?: boolean;
   /**
+   * Live-URL mode only: check whether the Supabase / Firebase backend the
+   * site's bundle names can be read with the public key it ships (row
+   * counts and names only). Defaults to on; `--no-data-probes` sets false.
+   */
+  dataProbes?: boolean;
+  /**
    * Per-request timeout override (milliseconds) for the URL target fetcher
    * (src/web/fetch-target.ts `fetchTarget`), applied to both the main
    * document request and each same-origin script request. Defaults to that

@@ -53,6 +53,7 @@ import { runWebDetectors } from "./detectors/registry.js";
 import { assertPublicUrl } from "./host-guard.js";
 import { createPinnedFetch } from "./pinned-fetch.js";
 import { resolveUrlTarget } from "./url-resolver.js";
+import { extractBackendConfig, hasBackend, probeDataExposure } from "./data-exposure.js";
 
 import { computeScore } from "../core/scoring.js";
 import { USER_AGENT } from "../version.js";
@@ -233,9 +234,34 @@ export async function scanUrl(
 
   const ctx: WebContext = { target, probes };
   const findings = runWebDetectors(ctx);
+  const diagnostics: Diagnostic[] = [];
+
+  if (options.dataProbes !== false) {
+    const backend = extractBackendConfig(target);
+    if (hasBackend(backend)) {
+      const exposure = await probeDataExposure(backend, fetchDeps, probeTimeoutMs);
+      findings.push(...exposure.findings);
+      const checked = [
+        backend.supabase === undefined ? "" : `Supabase (${String(backend.tables.length)} table name(s) from the bundle, plus any the project's API lists)`,
+        backend.firebaseDatabaseUrl === undefined ? "" : "the Firebase Realtime Database",
+        backend.firestoreProjectId === undefined || backend.collections.length === 0 ? "" : `${String(backend.collections.length)} Firestore collection(s)`,
+      ].filter((part) => part !== "");
+      diagnostics.push({
+        level: "info",
+        code: "DATA_PROBES",
+        message: `Checked whether ${checked.join(", ")} can be read with the public key the site ships (row counts and names only; nothing read or written). Turn off with --no-data-probes.`,
+      });
+      if (exposure.failed.length > 0) {
+        diagnostics.push({
+          level: "warn",
+          code: "DATA_PROBE_FAILED",
+          message: `${String(exposure.failed.length)} backend exposure check(s) could not be completed: ${exposure.failed.slice(0, 10).join(", ")}.`,
+        });
+      }
+    }
+  }
   const score = computeScore(findings);
 
-  const diagnostics: Diagnostic[] = [];
   if (!isSuccessStatus(target.status)) {
     diagnostics.push({
       level: "warn",
@@ -250,7 +276,7 @@ export async function scanUrl(
       message: `${String(failedPaths.length)} exposed-file probe(s) could not be completed (network error, timeout, or refused host): ${failedPaths.join(", ")}.`,
     });
   }
-  const scanIncomplete = diagnostics.length > 0;
+  const scanIncomplete = diagnostics.some((diagnostic) => diagnostic.level === "warn");
 
   return {
     target: input,

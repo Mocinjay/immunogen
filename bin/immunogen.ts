@@ -89,6 +89,7 @@ export async function runCli(
     allowPrivate?: boolean;
     offline?: boolean;
     noIgnore?: boolean;
+    noDataProbes?: boolean;
   },
 ): Promise<number> {
   const scanOptions: ScanOptions = {
@@ -99,6 +100,7 @@ export async function runCli(
     ...(opts.noIgnore === true ? { noIgnore: true } : {}),
     ...(opts.authorize === true ? { authorize: true } : {}),
     ...(opts.allowPrivate === true ? { allowPrivate: true } : {}),
+    ...(opts.noDataProbes === true ? { dataProbes: false } : {}),
   };
 
   let result;
@@ -182,6 +184,10 @@ if (isEntryScript()) {
       "required consent gate for live-URL screening: only screen sites you own or are authorized to test",
     )
     .option(
+      "--no-data-probes",
+      "live-URL mode: skip checking whether the site's Supabase / Firebase data can be read with its public key",
+    )
+    .option(
       "--allow-private",
       "escape hatch for the URL SSRF guard, permitting loopback/private/link-local hosts (local dev/test only)",
     )
@@ -192,6 +198,7 @@ if (isEntryScript()) {
           format: (typeof FORMATS)[number];
           minSeverity?: (typeof MIN_SEVERITIES)[number];
           baseline?: string;
+          dataProbes: boolean;
           llm: boolean;
           ignore: boolean;
           offline?: boolean;
@@ -204,6 +211,7 @@ if (isEntryScript()) {
           noLlm: options.llm === false,
           ...(options.minSeverity === undefined ? {} : { minSeverity: options.minSeverity }),
           ...(options.baseline === undefined ? {} : { baseline: options.baseline }),
+          ...(options.dataProbes === false ? { noDataProbes: true } : {}),
           ...(options.offline === true ? { offline: true } : {}),
           ...(options.ignore === false ? { noIgnore: true } : {}),
           ...(options.authorize === true ? { authorize: true } : {}),
