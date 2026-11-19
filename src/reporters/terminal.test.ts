@@ -318,3 +318,28 @@ describe("terminalReporter — degraded coverage is visible", () => {
     expect(terminalReporter.render(makeScanResult()).endsWith("\n")).toBe(true);
   });
 });
+
+describe("terminalReporter — grouped findings", () => {
+  it("prints one block per rule and message with every location, and a count", () => {
+    const table = (name: string, line: number): Finding => ({
+      ...SAMPLE_FINDING,
+      ruleId: "AUTH-04",
+      severity: "CRITICAL",
+      line,
+      message: `Table public.${name} is created without Row Level Security.`,
+      remediation: `Add "alter table public.${name} enable row level security;".`,
+      matchedText: name,
+    });
+    const output = stripAnsi(terminalReporter.render(makeScanResult({ findings: [table("a", 1), table("b", 2), table("c", 3)] })));
+
+    expect(output.match(/AUTH-04/g)).toHaveLength(1);
+    expect(output).toContain("AUTH-04 ×3 Table public.… is created without Row Level Security.");
+    expect(output).toContain(":3  matched: c");
+    expect(output).toContain('fix: Add "alter table public.… enable row level security;".');
+  });
+
+  it("counts every severity in the header", () => {
+    const output = stripAnsi(terminalReporter.render(makeScanResult({ findings: [{ ...SAMPLE_FINDING, severity: "MEDIUM" }] })));
+    expect(output).toContain("Medium: 1");
+  });
+});

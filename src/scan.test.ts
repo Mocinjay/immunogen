@@ -133,3 +133,23 @@ describe("scan() — suppressed findings stay visible", () => {
     }
   });
 });
+
+describe("scan() — minSeverity", () => {
+  it("drops findings below the floor, rescores, and records how many were dropped", async () => {
+    const { makeRepoTree } = await import("../tests/helpers/make-repo-tree.js");
+    const tree = await makeRepoTree({
+      "package.json": JSON.stringify({ dependencies: { vite: "5.0.0" } }),
+      "src/main.ts": "export const x = 1;",
+    });
+    try {
+      const all = await scan(tree.root, { offline: true });
+      const high = await scan(tree.root, { offline: true, minSeverity: "HIGH" });
+      expect(all.findings.some((f) => f.ruleId === "LEGAL-01")).toBe(true);
+      expect(high.findings.every((f) => f.severity === "HIGH" || f.severity === "CRITICAL")).toBe(true);
+      expect(high.score.score).toBeGreaterThanOrEqual(all.score.score);
+      expect(high.diagnostics.map((d) => d.code)).toContain("FINDINGS_FILTERED");
+    } finally {
+      await tree.cleanup();
+    }
+  });
+});

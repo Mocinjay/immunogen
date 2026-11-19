@@ -42,9 +42,13 @@ import { getReporter } from "../src/reporters/index.js";
 import { VERSION } from "../src/version.js";
 
 import type { ScanOptions } from "../src/index.js";
+import type { Severity } from "../src/core/types.js";
 
 /** Output formats `--format` accepts; anything else is a usage error, not a silent fallback. */
-const FORMATS = ["terminal", "json", "sarif"] as const;
+const FORMATS = ["terminal", "json", "sarif", "prompt"] as const;
+
+/** `--min-severity` levels, lowercase on the command line. */
+const MIN_SEVERITIES = ["info", "low", "medium", "high", "critical"] as const;
 
 /**
  * Runs one CLI scan action: calls `scan(path, { format, noLlm, authorize,
@@ -77,8 +81,9 @@ const FORMATS = ["terminal", "json", "sarif"] as const;
 export async function runCli(
   path: string,
   opts: {
-    format?: "terminal" | "json" | "sarif";
+    format?: (typeof FORMATS)[number];
     noLlm?: boolean;
+    minSeverity?: (typeof MIN_SEVERITIES)[number];
     authorize?: boolean;
     allowPrivate?: boolean;
     offline?: boolean;
@@ -87,6 +92,7 @@ export async function runCli(
 ): Promise<number> {
   const scanOptions: ScanOptions = {
     ...(opts.format === undefined ? {} : { format: opts.format }),
+    ...(opts.minSeverity === undefined ? {} : { minSeverity: opts.minSeverity.toUpperCase() as Severity }),
     ...(opts.noLlm === true ? { noLlm: true } : {}),
     ...(opts.offline === true ? { offline: true } : {}),
     ...(opts.noIgnore === true ? { noIgnore: true } : {}),
@@ -136,7 +142,8 @@ if (isEntryScript()) {
       "path to the repository to scan (default: current directory), or a live https:// URL to screen (requires --authorize)",
       ".",
     )
-    .addOption(new Option("--format <format>", "output format").choices(FORMATS).default("terminal"))
+    .addOption(new Option("--format <format>", "output format (prompt = a fix-it prompt to paste into your coding agent)").choices(FORMATS).default("terminal"))
+    .addOption(new Option("--min-severity <level>", "leave out (and do not score) findings below this severity").choices(MIN_SEVERITIES))
     .option(
       "--no-llm",
       "disable LLM fix-prompt enrichment (offline is the default)",
@@ -162,6 +169,7 @@ if (isEntryScript()) {
         path: string,
         options: {
           format: (typeof FORMATS)[number];
+          minSeverity?: (typeof MIN_SEVERITIES)[number];
           llm: boolean;
           ignore: boolean;
           offline?: boolean;
@@ -172,6 +180,7 @@ if (isEntryScript()) {
         process.exitCode = await runCli(path, {
           format: options.format,
           noLlm: options.llm === false,
+          ...(options.minSeverity === undefined ? {} : { minSeverity: options.minSeverity }),
           ...(options.offline === true ? { offline: true } : {}),
           ...(options.ignore === false ? { noIgnore: true } : {}),
           ...(options.authorize === true ? { authorize: true } : {}),

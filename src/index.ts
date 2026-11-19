@@ -51,7 +51,7 @@ import { isGitRepoUrl } from "./core/ingest/input-resolver.js";
 import { isUrl } from "./web/url-resolver.js";
 import { scanUrl } from "./web/scan-url.js";
 
-import type { ScanOptions, ScanResult } from "./core/types.js";
+import type { Diagnostic, Finding, ScanOptions, ScanResult, Severity } from "./core/types.js";
 import type { ProviderAdapter } from "./llm/provider.js";
 
 /**
@@ -100,6 +100,38 @@ export async function scan(
   path: string,
   options?: ScanOptions,
 ): Promise<ScanResult> {
+  const result = await scanUnfiltered(path, options);
+  return options?.minSeverity === undefined ? result : withMinSeverity(result, options.minSeverity);
+}
+
+/** Severity order, least to most severe. */
+const SEVERITY_ORDER: readonly Severity[] = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"];
+
+/** Drops findings below `min`, rescores, and records how many were dropped. */
+function withMinSeverity(result: ScanResult, min: Severity): ScanResult {
+  const floor = SEVERITY_ORDER.indexOf(min);
+  const keep = (finding: Finding): boolean => SEVERITY_ORDER.indexOf(finding.severity) >= floor;
+  const findings = result.findings.filter(keep);
+  const dropped = result.findings.length - findings.length;
+  if (dropped === 0) {
+    return result;
+  }
+  const diagnostic: Diagnostic = {
+    level: "info",
+    code: "FINDINGS_FILTERED",
+    message: `${String(dropped)} finding(s) below ${min} were left out by --min-severity and not scored.`,
+  };
+  return {
+    ...result,
+    findings,
+    score: computeScore(findings),
+    diagnostics: [...result.diagnostics, diagnostic],
+    ...(result.suppressed === undefined ? {} : { suppressed: result.suppressed.filter(keep) }),
+  };
+}
+
+/** `scan()` before the `minSeverity` filter. */
+async function scanUnfiltered(path: string, options?: ScanOptions): Promise<ScanResult> {
   if (isUrl(path) && !isGitRepoUrl(path)) {
     return scanUrl(path, options ?? {});
   }

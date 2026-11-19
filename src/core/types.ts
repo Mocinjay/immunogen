@@ -202,7 +202,7 @@ export interface Detector {
  */
 export interface ScanOptions {
   /** Reporter selection lives at the CLI layer, but the type belongs here. */
-  format?: "terminal" | "json" | "sarif";
+  format?: "terminal" | "json" | "sarif" | "prompt";
   /** `--no-llm`; offline is the default regardless of this flag. */
   noLlm?: boolean;
   /** Skip network-dependent detectors (OSV). */
@@ -213,6 +213,11 @@ export interface ScanOptions {
    * where those suppressions are the author's, not yours.
    */
   noIgnore?: boolean;
+  /**
+   * `--min-severity`: drop findings below this severity before scoring (a
+   * FINDINGS_FILTERED diagnostic counts them). Omitted = keep everything.
+   */
+  minSeverity?: Severity;
   /** Walker per-file size cap override, in bytes. */
   maxFileSizeBytes?: number;
   /** Walker total-repo byte cap override, across all read files (default 50MB). */
