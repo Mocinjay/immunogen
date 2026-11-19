@@ -70,17 +70,18 @@
     "@babel/traverse": "7.29.14",
     "@babel/types": "7.29.14",
     "commander": "15.1.0",
-    "extract-zip": "2.0.1",
     "fast-glob": "3.3.3",
     "ignore": "7.0.14",
     "openai": "6.49.0",
     "picocolors": "1.1.1",
-    "simple-git": "3.36.0",
-    "undici": "7.30.2"
+    "simple-git": "4.0.2",
+    "undici": "7.30.2",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@types/babel__traverse": "7.28.0",
     "@types/node": "22.20.5",
+    "@types/yauzl": "3.4.0",
     "@typescript-eslint/eslint-plugin": "8.72.2",
     "@typescript-eslint/parser": "8.72.2",
     "eslint": "9.39.4",
@@ -94,6 +95,12 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "brace-expansion@1": "1.1.21",
+      "js-yaml@4": "4.3.2",
+      "vite@8": "8.1.6",
+      "esbuild@0.27": "0.28.2"
+    }
   }
 }

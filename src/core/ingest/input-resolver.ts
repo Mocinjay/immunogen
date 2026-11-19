@@ -12,19 +12,22 @@
  *
  * ENG-05 invariant: this module never directly executes a subprocess or
  * the dynamic-evaluation primitive, and it never requires/imports/evals an
- * extracted or cloned file. extract-zip and simple-git are npm
+ * extracted or cloned file. yauzl (ZIP parsing) and simple-git are npm
  * dependencies that wrap subprocess/native behavior internally —
  * importing them does not violate ENG-05, which forbids the primitive in
  * OUR code (enforced by eslint.config.js's no-execute ruleset on src/**).
  */
-import extract from "extract-zip";
 import { simpleGit } from "simple-git";
-import { mkdtemp, rm, stat } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { openPromise } from "yauzl";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { createWriteStream, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 
-import type { ScanOptions } from "../types.js";
+import type { Entry } from "yauzl";
+
+import type { Diagnostic, ScanOptions } from "../types.js";
 
 /**
  * An input refused for a policy reason (path traversal, archive limits,
@@ -81,6 +84,8 @@ export interface ResolvedInput {
   workingDir: string;
   /** Which input mode produced `workingDir`. */
   kind: InputMode;
+  /** Non-fatal notes about the input itself (e.g. ZIP entries that were not extracted). */
+  diagnostics?: Diagnostic[];
   /**
    * Removes any temp directory created during resolution. A no-op (but
    * still awaitable) for the local-directory passthrough mode.
@@ -272,10 +277,10 @@ async function resolveGit(url: string): Promise<ResolvedInput> {
  * for `entry.fileName` against `extractRoot` and throws BEFORE any byte is
  * written if the destination would escape the extraction root.
  *
- * extract-zip@2.0.1's `yauzl` dependency already rejects any entry name
- * containing `..`, a leading `/`, or a `\` with an "invalid relative path"
- * / "absolute path" error before the `onEntry` callback ever runs for that
- * entry — see yauzl's `validateFileName`. This guard is defense-in-depth:
+ * yauzl already rejects any entry name containing `..`, a leading `/`, or a
+ * `\` with an "invalid relative path" / "absolute path" error before the
+ * entry is handed over — see yauzl's `validateFileName`. This guard is
+ * defense-in-depth:
  * it catches traversal forms yauzl's check might miss and guards against
  * future yauzl relaxations.
  */
@@ -309,38 +314,111 @@ export function chargeZipBudget(budget: ZipBudget, uncompressedSize: number, zip
   }
 }
 
+/** Unix file-type bits in a ZIP entry's external attributes (high 16 bits). */
+const S_IFMT = 0o170000;
+const S_IFREG = 0o100000;
+const S_IFDIR = 0o040000;
+
+/**
+ * Extracts one ZIP archive into `destDir`, entry by entry, with the
+ * containment check and zip-bomb budget enforced BEFORE each write.
+ *
+ * Only regular files and directories are written. Symlinks (and devices,
+ * FIFOs, ...) are skipped and counted: a symlink entry followed by a file
+ * entry "inside" it is the classic way to write outside the extraction root
+ * (extract-zip, which this replaced, is affected and unmaintained — see
+ * GHSA-7pqw-9j4j-h8q3). Because no symlink is ever created, every directory
+ * under `destDir` is real and lexical containment is sufficient. Files are
+ * created exclusively (`wx`), so a duplicate entry name fails the archive
+ * instead of overwriting. yauzl itself rejects absolute paths, `..`
+ * segments and backslashes, and verifies declared sizes.
+ */
+async function extractZip(zipPath: string, destDir: string, budget: ZipBudget): Promise<{ skippedSpecial: string[] }> {
+  const zip = await openPromise(zipPath, { lazyEntries: true, validateEntrySizes: true, decodeStrings: true });
+  const skippedSpecial: string[] = [];
+
+  const handle = async (entry: Entry): Promise<void> => {
+    assertEntryWithinRoot(entry.fileName, destDir);
+    chargeZipBudget(budget, entry.uncompressedSize, zipPath);
+    const dest = resolve(destDir, entry.fileName);
+    const fileType = (entry.externalFileAttributes >>> 16) & S_IFMT;
+    if (entry.fileName.endsWith("/") || fileType === S_IFDIR) {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- containment-checked path inside our own temp dir
+      await mkdir(dest, { recursive: true });
+      return;
+    }
+    // 0 = no Unix attributes (e.g. archives made on Windows): a plain file.
+    if (fileType !== 0 && fileType !== S_IFREG) {
+      skippedSpecial.push(entry.fileName);
+      return;
+    }
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- containment-checked path inside our own temp dir
+    await mkdir(dirname(dest), { recursive: true });
+    const stream = await zip.openReadStreamPromise(entry);
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- containment-checked path inside our own temp dir
+    await pipeline(stream, createWriteStream(dest, { flags: "wx", mode: 0o600 }));
+  };
+
+  try {
+    await new Promise<void>((resolveAll, reject) => {
+      zip.on("error", reject);
+      zip.on("end", () => {
+        resolveAll();
+      });
+      zip.on("entry", (entry: Entry) => {
+        handle(entry).then(
+          () => {
+            zip.readEntry();
+          },
+          (err: unknown) => {
+            reject(err instanceof Error ? err : new Error(String(err)));
+          },
+        );
+      });
+      zip.readEntry();
+    });
+  } finally {
+    if (zip.isOpen) {
+      zip.close();
+    }
+  }
+  return { skippedSpecial };
+}
+
 /**
  * Resolves a ZIP file path: extracts into an isolated `mkdtemp` directory
- * with a per-entry containment guard (`onEntry`) that fires before any
- * write for that entry. A malicious entry causes the extraction promise to
- * reject; `extract-zip`'s `Extractor` cancels and closes the zipfile on any
- * thrown error from `onEntry`, so no further entries are processed either.
+ * (see `extractZip` for the per-entry guards). Any failure removes the temp
+ * dir; policy refusals keep their message, anything else (a corrupt or
+ * non-ZIP file) becomes one clean error.
  */
 async function resolveZip(zipPath: string): Promise<ResolvedInput> {
   const tempDir = await makeTempDir("immunogen-zip-");
   const budget: ZipBudget = { entries: 0, uncompressedBytes: 0 };
+  let skippedSpecial: string[];
   try {
-    await extract(zipPath, {
-      dir: tempDir,
-      onEntry: (entry) => {
-        assertEntryWithinRoot(entry.fileName, tempDir);
-        chargeZipBudget(budget, entry.uncompressedSize, zipPath);
-      },
-    });
+    ({ skippedSpecial } = await extractZip(zipPath, tempDir, budget));
   } catch (err) {
-    // Re-throw our own policy errors unchanged (already clean and
-    // user-readable); wrap anything else (yauzl/extract-zip's raw parse/
-    // format errors on a corrupt or non-ZIP file) into one clean message.
     await rm(tempDir, { recursive: true, force: true });
     if (err instanceof InputRejectedError) {
       throw err;
     }
     throw new Error(`Not a valid ZIP archive: ${zipPath}`);
   }
+  const diagnostics: Diagnostic[] =
+    skippedSpecial.length === 0
+      ? []
+      : [
+          {
+            level: "warn",
+            code: "ZIP_ENTRIES_SKIPPED",
+            message: `${String(skippedSpecial.length)} symlink or special entr${skippedSpecial.length === 1 ? "y was" : "ies were"} not extracted from the ZIP (never followed, so never scanned): ${skippedSpecial.slice(0, 5).join(", ")}${skippedSpecial.length > 5 ? ", ..." : ""}.`,
+          },
+        ];
   return {
     workingDir: tempDir,
     kind: "zip",
     cleanup: makeCleanup(tempDir),
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
 }
 

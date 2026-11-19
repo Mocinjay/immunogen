@@ -292,3 +292,25 @@ describe("parseGitTarget / isGitRepoUrl — browse URLs into a repository", () =
     expect(isGitRepoUrl("https://myapp.com/tree/main/x")).toBe(false);
   });
 });
+
+describe("resolveInput — ZIP symlink entries (write-through-symlink attack)", () => {
+  it("never creates a symlink, so a file entry 'inside' it cannot land outside the extraction root", async () => {
+    const zipParentDir = await makeScratchDir("immunogen-test-zipsym-");
+    const outside = await makeScratchDir("immunogen-test-outside-");
+    const zipPath = join(zipParentDir, "evil.zip");
+    // Entry 1: `link` -> the outside dir. Entry 2: `link/pwned.txt`.
+    await writeZipFile(zipPath, { link: outside, "link/pwned.txt": "owned\n", "app/index.ts": "export {};\n" }, { link: 0o120777 });
+
+    const result = await resolveInput(zipPath);
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- asserts nothing was written into the outside scratch dir
+      expect(existsSync(join(outside, "pwned.txt"))).toBe(false);
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- asserts the benign entry was still extracted
+      expect(existsSync(join(result.workingDir, "app/index.ts"))).toBe(true);
+      expect(result.diagnostics?.map((diagnostic) => diagnostic.code)).toEqual(["ZIP_ENTRIES_SKIPPED"]);
+      expect(result.diagnostics?.[0]?.message).toContain("link");
+    } finally {
+      await result.cleanup();
+    }
+  });
+});

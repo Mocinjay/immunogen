@@ -67,10 +67,11 @@ function writeLocalFileHeader(entry: BuiltEntry): Buffer {
   return Buffer.concat([header, entry.nameBuffer]);
 }
 
-function writeCentralDirectoryHeader(entry: BuiltEntry): Buffer {
+function writeCentralDirectoryHeader(entry: BuiltEntry, unixMode?: number): Buffer {
   const header = Buffer.alloc(46);
   header.writeUInt32LE(CENTRAL_DIRECTORY_SIGNATURE, 0);
-  header.writeUInt16LE(VERSION_MADE_BY, 4);
+  // "Made by" Unix (3) when a Unix mode is recorded, so readers honor it.
+  header.writeUInt16LE(unixMode === undefined ? VERSION_MADE_BY : (3 << 8) | 20, 4);
   header.writeUInt16LE(VERSION_NEEDED, 6);
   header.writeUInt16LE(0, 8); // general purpose bit flag
   header.writeUInt16LE(METHOD_DEFLATE, 10);
@@ -84,7 +85,7 @@ function writeCentralDirectoryHeader(entry: BuiltEntry): Buffer {
   header.writeUInt16LE(0, 32); // file comment length
   header.writeUInt16LE(0, 34); // disk number start
   header.writeUInt16LE(0, 36); // internal file attributes
-  header.writeUInt32LE(0, 38); // external file attributes
+  header.writeUInt32LE(unixMode === undefined ? 0 : (unixMode << 16) >>> 0, 38); // external file attributes
   header.writeUInt32LE(entry.localHeaderOffset, 42);
   return Buffer.concat([header, entry.nameBuffer]);
 }
@@ -110,9 +111,11 @@ function writeEndOfCentralDirectory(
  * Builds a ZIP archive buffer in-memory from a map of entry name -> raw
  * file contents. Entry names are written verbatim — no sanitization, no
  * validation — so callers can construct entries with arbitrary names,
- * including path-traversal sequences like `../../etc/passwd`.
+ * including path-traversal sequences like `../../etc/passwd`. `unixModes`
+ * optionally records a Unix mode per entry name (e.g. `0o120777` makes the
+ * entry a symlink whose target is its contents).
  */
-export function buildZipBuffer(entries: ZipEntries): Buffer {
+export function buildZipBuffer(entries: ZipEntries, unixModes: Readonly<Record<string, number>> = {}): Buffer {
   const localParts: Buffer[] = [];
   const builtEntries: BuiltEntry[] = [];
   let offset = 0;
@@ -126,7 +129,8 @@ export function buildZipBuffer(entries: ZipEntries): Buffer {
   }
 
   const centralDirectoryOffset = offset;
-  const centralParts = builtEntries.map((entry) => writeCentralDirectoryHeader(entry));
+  const modes = new Map(Object.entries(unixModes));
+  const centralParts = builtEntries.map((entry) => writeCentralDirectoryHeader(entry, modes.get(entry.nameBuffer.toString("utf8"))));
   const centralDirectoryBuffer = Buffer.concat(centralParts);
 
   const endRecord = writeEndOfCentralDirectory(
@@ -142,8 +146,12 @@ export function buildZipBuffer(entries: ZipEntries): Buffer {
  * Builds a ZIP archive from a map of entry name -> raw file contents and
  * writes it to `destPath`.
  */
-export async function writeZipFile(destPath: string, entries: ZipEntries): Promise<void> {
-  const buffer = buildZipBuffer(entries);
+export async function writeZipFile(
+  destPath: string,
+  entries: ZipEntries,
+  unixModes: Readonly<Record<string, number>> = {},
+): Promise<void> {
+  const buffer = buildZipBuffer(entries, unixModes);
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- test helper writes to a caller-supplied temp path by design
   await writeFile(destPath, buffer);
 }
