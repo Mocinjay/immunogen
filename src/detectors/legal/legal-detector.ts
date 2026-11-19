@@ -42,20 +42,24 @@ import type { Detector, DetectorContext, Finding } from "../../core/types.js";
  */
 const PRIVACY_TERMS_VOCABULARY = new Set([
   "privacy",
-  "privacy-policy",
-  "privacy_policy",
+  "privacypolicy",
   "terms",
-  "terms-of-service",
-  "terms_of_service",
+  "termsofservice",
+  "termsofuse",
+  "termsandconditions",
   "tos",
+  "legal",
 ]);
 
 /**
- * Strips a trailing file extension from `basename` (the part after the
- * last `.`, if any) so `privacy-policy.html` and `terms.tsx` compare
- * against PRIVACY_TERMS_VOCABULARY the same way their bare segment form
- * would (`privacy-policy`, `terms`).
+ * Lowercases and drops separators, so `PrivacyPolicy`, `privacy-policy`,
+ * `privacy_policy` and `Terms-Of-Service` all compare equal to the
+ * vocabulary above (Lovable / Bolt generate PascalCase page components).
  */
+function normalizeName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 function stripExtension(basename: string): string {
   const lastDot = basename.lastIndexOf(".");
   if (lastDot <= 0) {
@@ -66,22 +70,27 @@ function stripExtension(basename: string): string {
   return basename.slice(0, lastDot);
 }
 
-/**
- * True when `path` (a single fileSet key) has any path segment, or its
- * extension-stripped basename, matching the PRIVACY_TERMS_VOCABULARY —
- * counts route directories (`app/privacy/page.tsx`), route files
- * (`pages/terms.tsx`), and static files (`public/privacy-policy.html`)
- * uniformly.
- */
 function pathHasPrivacyOrTermsEvidence(path: string): boolean {
-  const lower = path.toLowerCase();
-  const segments = lower.split("/");
-  if (segments.some((segment) => PRIVACY_TERMS_VOCABULARY.has(segment))) {
-    return true;
-  }
+  const segments = path.split("/");
   const basename = segments.at(-1) ?? "";
-  const basenameNoExt = stripExtension(basename);
-  return PRIVACY_TERMS_VOCABULARY.has(basenameNoExt);
+  return [...segments.slice(0, -1), stripExtension(basename)].some((segment) =>
+    PRIVACY_TERMS_VOCABULARY.has(normalizeName(segment)),
+  );
+}
+
+/** A route path or link to a privacy / terms page in source (`<Route path="/privacy">`, `href="/terms"`, a hosted policy URL). */
+const LEGAL_ROUTE_RE = /\/(?:privacy|terms|legal|tos)[\w-]{0,30}["'`/?#]/i;
+
+/** Source files whose text may route or link to a legal page. */
+const ROUTE_SOURCE_RE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|html?)$/;
+
+function contentHasLegalRoute(fileSet: ReadonlyMap<string, string>): boolean {
+  for (const [path, content] of fileSet) {
+    if (ROUTE_SOURCE_RE.test(path) && LEGAL_ROUTE_RE.test(content)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Stack hints that mark a user-facing app (see APP GATE above). */
@@ -136,13 +145,16 @@ export const legalDetector: Detector = {
         return Promise.resolve([]);
       }
 
-      // Whole-repo decision: scan every key in ctx.fileSet (not just this
-      // anchor file's own content/path) for privacy/terms evidence.
+      // Whole-repo decision: a privacy/terms page file anywhere, or a route
+      // or link to one in source, is evidence (not just this anchor file).
       for (const path of ctx.fileSet.keys()) {
         if (pathHasPrivacyOrTermsEvidence(path)) {
           // Compliance page or file exists somewhere in the repo — clean.
           return Promise.resolve([]);
         }
+      }
+      if (contentHasLegalRoute(ctx.fileSet)) {
+        return Promise.resolve([]);
       }
 
       const finding: Finding = {

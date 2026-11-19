@@ -37,6 +37,7 @@ import pc from "picocolors";
 import type { Reporter } from "./interface.js";
 
 import { isUrl } from "../web/url-resolver.js";
+import { isGitRepoUrl } from "../core/ingest/input-resolver.js";
 
 import type { Confidence, Diagnostic, Finding, Grade, ScanResult, Severity, Verdict } from "../core/types.js";
 
@@ -155,7 +156,7 @@ function renderDiagnostics(diagnostics: readonly Diagnostic[]): string {
 
 /** Renders the target line: "Screened <url>" for a live-URL scan, "Scanned <path>" otherwise. */
 function renderTargetLine(target: string): string {
-  const verb = isUrl(target) ? "Screened" : "Scanned";
+  const verb = isUrl(target) && !isGitRepoUrl(target) ? "Screened" : "Scanned";
   return `${pc.bold(verb)}: ${sanitize(target)}`;
 }
 

@@ -94,12 +94,61 @@ const GIT_URL_PATTERN = /^(https?:\/\/|git@)/i;
 const GIT_HOST_REPO_RE = /^https?:\/\/(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|codeberg\.org)\/[\w.-]+\/[\w.-]+\/?$/i;
 
 /**
+ * A browse URL into a repo on a well-known git host:
+ * `github.com/o/r/tree/<ref>/<path>`, `.../blob/<ref>/<file>`,
+ * GitLab's `.../-/tree/<ref>/...`, Bitbucket / Codeberg `.../src/<ref>/...`.
+ * Groups: 1 repo URL, 2 view kind, 3 ref, 4 path (optional).
+ */
+const GIT_HOST_BROWSE_RE =
+  // eslint-disable-next-line security/detect-unsafe-regex -- matched once against the caller's own CLI argument, never against scanned content
+  /^(https?:\/\/(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|codeberg\.org)\/[\w.-]+\/[\w.-]+?)(?:\.git)?\/(?:-\/)?(tree|blob|src)\/([^/?#]+)(?:\/([^?#]*))?(?:[?#].*)?$/i;
+
+/** A git ref safe to pass to `git clone --branch` (never option-shaped). */
+const SAFE_REF_RE = /^[\w][\w.\/-]*$/;
+
+/** What to clone for a git input, and which part of the checkout to scan. */
+export interface GitTarget {
+  cloneUrl: string;
+  /** Branch or tag to check out (`--branch`), when the URL named one. */
+  ref?: string;
+  /** Directory inside the checkout to scan, when the URL pointed into one. */
+  subdir?: string;
+}
+
+/**
+ * Splits a git input into the URL to clone plus an optional ref and
+ * subdirectory. A `/tree/<ref>/<dir>` URL scans that directory at that ref;
+ * a `/blob/<ref>/<file>` URL scans the whole repository at that ref. Refs
+ * containing `/` are ambiguous in browse URLs; the first segment is used.
+ */
+export function parseGitTarget(input: string): GitTarget {
+  const browse = input.match(GIT_HOST_BROWSE_RE);
+  if (browse === null) {
+    return { cloneUrl: input };
+  }
+  const [, repo = input, kind = "", ref = "", path = ""] = browse;
+  const target: GitTarget = { cloneUrl: repo };
+  if (SAFE_REF_RE.test(ref)) {
+    target.ref = decodeURIComponent(ref);
+  }
+  const subdir = path.replace(/\/+$/, "");
+  if (kind.toLowerCase() !== "blob" && subdir !== "") {
+    target.subdir = decodeURIComponent(subdir);
+  }
+  return target;
+}
+
+/**
  * True when `input` is an http(s) URL that names a git repository to clone
- * and scan — a repo page on a well-known git host, or any URL ending in
- * `.git` — rather than a deployed website to screen live.
+ * and scan — a repo page on a well-known git host (including a `/tree/` or
+ * `/blob/` link into it), or any URL ending in `.git` — rather than a
+ * deployed website to screen live.
  */
 export function isGitRepoUrl(input: string): boolean {
-  return /^https?:\/\//i.test(input) && (GIT_HOST_REPO_RE.test(input) || /\.git\/?$/i.test(input));
+  return (
+    /^https?:\/\//i.test(input) &&
+    (GIT_HOST_REPO_RE.test(input) || GIT_HOST_BROWSE_RE.test(input) || /\.git\/?$/i.test(input))
+  );
 }
 
 /**
@@ -179,13 +228,19 @@ async function resolveGit(url: string): Promise<ResolvedInput> {
   if (url.startsWith("-")) {
     throw new InputRejectedError(`Refusing git input that looks like a command-line option: ${url}`);
   }
+  const target = parseGitTarget(url);
+  const subdir = target.subdir;
+  if (subdir !== undefined && subdir.split("/").some((segment) => segment === ".." || segment === "")) {
+    throw new InputRejectedError(`Refusing a repository path that leaves the checkout: ${subdir}`);
+  }
   const tempDir = await makeTempDir("immunogen-git-");
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort();
   }, GIT_CLONE_TIMEOUT_MS);
   try {
-    await simpleGit({ abort: controller.signal }).env(cloneEnvironment()).clone(url, tempDir, ["--depth", "1"]);
+    const cloneArgs = ["--depth", "1", ...(target.ref === undefined ? [] : ["--branch", target.ref])];
+    await simpleGit({ abort: controller.signal }).env(cloneEnvironment()).clone(target.cloneUrl, tempDir, cloneArgs);
   } catch (err) {
     await rm(tempDir, { recursive: true, force: true });
     const reason = controller.signal.aborted
@@ -195,8 +250,18 @@ async function resolveGit(url: string): Promise<ResolvedInput> {
   } finally {
     clearTimeout(timer);
   }
+  let workingDir = tempDir;
+  if (subdir !== undefined) {
+    workingDir = resolve(tempDir, subdir);
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- a directory inside our own fresh clone, containment-checked above
+    const subdirStat = statSync(workingDir, { throwIfNoEntry: false });
+    if (!workingDir.startsWith(tempDir + sep) || subdirStat?.isDirectory() !== true) {
+      await rm(tempDir, { recursive: true, force: true });
+      throw new Error(`Path "${subdir}" is not a directory in ${target.cloneUrl}${target.ref === undefined ? "" : ` at ${target.ref}`}`);
+    }
+  }
   return {
-    workingDir: tempDir,
+    workingDir,
     kind: "git",
     cleanup: makeCleanup(tempDir),
   };
