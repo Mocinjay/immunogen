@@ -76,3 +76,49 @@ jobs:
 
       - name: List tarball contents
         run: tar -tzf immunogen-*.tgz
+
+  action:
+    name: action (dogfood)
+    runs-on: ubuntu-latest
+    needs: build-and-verify
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Clean fixture passes
+        id: clean
+        uses: ./
+        with:
+          path: tests/fixtures/scan/clean
+          upload-sarif: "false"
+
+      - name: Vulnerable fixture is blocked
+        id: vulnerable
+        uses: ./
+        with:
+          path: tests/fixtures/vulnerable-apps/nextjs-kitchen-sink
+          format: json
+          output: vulnerable.json
+          upload-sarif: "false"
+          fail-on-blocked: "false"
+
+      - name: Check the action's outputs
+        env:
+          CLEAN: ${{ steps.clean.outputs.verdict }}/${{ steps.clean.outputs.grade }}
+          VULNERABLE: ${{ steps.vulnerable.outputs.verdict }}/${{ steps.vulnerable.outputs.grade }}
+        run: |
+          echo "clean=$CLEAN vulnerable=$VULNERABLE"
+          test "$CLEAN" = "pass/A"
+          test "$VULNERABLE" = "blocked/F"
+
+      - name: immunogen scans itself
+        uses: ./
+        with:
+          path: .
+          format: terminal
+          output: self-scan.txt
+          upload-sarif: "false"
+
+      - name: Show the self-scan
+        if: always()
+        run: cat self-scan.txt || true
