@@ -9,11 +9,21 @@ name: Release
 # Pushing a v<version> tag by hand, or running the workflow manually, does the
 # same. The tarball is attached twice: as immunogen-<version>.tgz and as
 # immunogen.tgz, so .../releases/latest/download/immunogen.tgz always installs
-# the newest release. The same tarball is then published to npm through npm
-# trusted publishing (OIDC): no npm token is stored anywhere, and npm attaches
-# a provenance attestation linking the package to this workflow run. Set up
-# once with `npm trust github immunogen --file release.yml --repo
-# Mocinjay/immunogen` after the package exists on npm.
+# the newest release. The same tarball is then STAGED on npm through npm
+# trusted publishing (OIDC): no npm token is stored anywhere, npm attaches a
+# provenance attestation linking the package to this workflow run, and the
+# version goes live only after a maintainer approves it with 2FA (npmjs.com →
+# immunogen → Staged Packages, or `npm stage approve <id>`). A compromised
+# workflow or GitHub account therefore cannot ship to npm on its own. Set up
+# with `npm trust github immunogen --file release.yml --repo
+# Mocinjay/immunogen --allow-stage-publish` (npm >= 11.15) shortly before a
+# release: npm expires a trusted-publisher configuration that has not
+# completed a publish within 2 days of being created.
+#
+# The two halves are checked separately: a version already released on GitHub
+# but missing from npm is rebuilt, checked file-for-file against the release
+# tarball, and staged — so a failed or skipped npm publish is recovered by
+# running this workflow again.
 
 on:
   push:
@@ -37,6 +47,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       release: ${{ steps.version.outputs.release }}
+      publish: ${{ steps.version.outputs.publish }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,13 +68,24 @@ jobs:
           else
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
+          # Only a clear 404 means "not on npm"; any other failure stops the run rather than guessing.
+          if npm_out="$(npm view "immunogen@${version}" version 2>&1)"; then
+            echo "immunogen@${version} is already on npm."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "${npm_out}" | grep -q 'E404'; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "${npm_out}" >&2
+            echo "::error::Could not ask npm whether immunogen@${version} exists."
+            exit 1
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
 
   release:
     name: release
     needs: check
-    if: needs.check.outputs.release == 'true'
+    if: needs.check.outputs.release == 'true' || needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the tag and GitHub Release
@@ -108,6 +130,7 @@ jobs:
           cp "immunogen-${VERSION}.tgz" immunogen.tgz
 
       - name: Create GitHub Release
+        if: needs.check.outputs.release == 'true'
         run: |
           # Release notes = this version's CHANGELOG.md section (falls back to generated notes).
           awk -v heading="## [${VERSION}]" 'index($0, heading) == 1 { found = 1; next } found && /^## \[/ { exit } found' CHANGELOG.md > release-notes.md
@@ -121,16 +144,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Publish to npm (trusted publishing)
+      - name: Match the existing GitHub Release
+        if: needs.check.outputs.release != 'true'
         run: |
-          # Trusted publishing needs npm >= 11.5.1; Node 22 bundles npm 10.
-          npm install -g npm@11.11.0 --silent
-          if ! npm view immunogen version > /dev/null 2>&1; then
-            echo "::notice::immunogen is not on npm yet. Publish this first version by hand, then run: npm trust github immunogen --file release.yml --repo Mocinjay/immunogen"
-            exit 0
+          # The release was cut earlier: what goes to npm must contain exactly the released files.
+          mkdir -p released/tgz released/files built
+          gh release download "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --pattern "immunogen-${VERSION}.tgz" --dir released/tgz
+          tar -xzf "released/tgz/immunogen-${VERSION}.tgz" -C released/files
+          tar -xzf "immunogen-${VERSION}.tgz" -C built
+          if ! diff -r released/files built; then
+            echo "::error::This build of v${VERSION} differs from the GitHub Release tarball — not publishing it to npm."
+            exit 1
           fi
-          if npm view "immunogen@${VERSION}" version > /dev/null 2>&1; then
-            echo "immunogen@${VERSION} is already on npm."
-            exit 0
-          fi
-          npm publish "immunogen-${VERSION}.tgz" --access public
+          echo "Rebuilt package matches the v${VERSION} GitHub Release file for file."
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Stage on npm (trusted publishing)
+        if: needs.check.outputs.publish == 'true'
+        run: |
+          # Staged publishing needs npm >= 11.15.0; Node 22 bundles npm 10.
+          npm install -g npm@11.21.2 --silent
+          npm stage publish "./immunogen-${VERSION}.tgz" --access public --provenance
+          echo "::notice::immunogen@${VERSION} is staged on npm. It goes live once a maintainer approves it with 2FA: npmjs.com → immunogen → Staged Packages (or npm stage approve)."
