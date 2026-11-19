@@ -68,3 +68,22 @@ describe("worstSeverity", () => {
     expect(worstSeverity([])).toBeUndefined();
   });
 });
+
+describe("compareVersions / upgradeTarget", () => {
+  it("orders dotted versions numerically, ignores a leading v, and puts pre-releases first", async () => {
+    const { compareVersions } = await import("./osv-severity.js");
+    expect(compareVersions("1.2.10", "1.2.9")).toBeGreaterThan(0);
+    expect(compareVersions("v2.0.0", "2.0.0")).toBe(0);
+    expect(compareVersions("2.0.0-rc.1", "2.0.0")).toBeLessThan(0);
+  });
+
+  it("picks, across advisories, the highest of each advisory's lowest fix above the current version", async () => {
+    const { upgradeTarget } = await import("./osv-severity.js");
+    const fixes = [
+      [{ ecosystem: "npm", name: "next", fixed: ["13.5.7", "14.2.10"] }],
+      [{ ecosystem: "npm", name: "next", fixed: ["14.2.15"] }],
+    ];
+    expect(upgradeTarget("next", "npm", "14.0.0", fixes)).toBe("14.2.15");
+    expect(upgradeTarget("next", "npm", "14.0.0", [[{ ecosystem: "npm", name: "other", fixed: ["1.0.0"] }]])).toBeUndefined();
+  });
+});

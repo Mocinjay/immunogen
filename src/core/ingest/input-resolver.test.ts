@@ -209,6 +209,9 @@ describe("isGitRepoUrl", () => {
     "https://gitlab.com/group/project",
     "https://bitbucket.org/team/repo",
     "https://git.example.com/team/repo.git",
+    // A link into the repo is still the repo (cloned at that ref), never a
+    // live site to probe.
+    "https://github.com/Mocinjay/immunogen/blob/main/README.md",
   ])("treats %s as a repository to clone", (url) => {
     expect(isGitRepoUrl(url)).toBe(true);
   });
@@ -217,7 +220,6 @@ describe("isGitRepoUrl", () => {
     "https://myapp.com",
     "https://github.com",
     "https://github.com/Mocinjay",
-    "https://github.com/Mocinjay/immunogen/blob/main/README.md",
     "./local/dir",
   ])("does NOT treat %s as a repository URL", (url) => {
     expect(isGitRepoUrl(url)).toBe(false);
@@ -250,5 +252,65 @@ describe("resolveInput — hostile input limits", () => {
     const missingRepo = join(await makeScratchDir("immunogen-test-git-"), "missing.git");
 
     await expect(resolveInput(missingRepo)).rejects.toThrow(/^git clone failed for /);
+  });
+});
+
+describe("parseGitTarget / isGitRepoUrl — browse URLs into a repository", () => {
+  it("clones the repo at the ref and scans the directory for a /tree/ URL", async () => {
+    const { parseGitTarget, isGitRepoUrl } = await import("./input-resolver.js");
+    const url = "https://github.com/owner/repo/tree/main/apps/web";
+    expect(isGitRepoUrl(url)).toBe(true);
+    expect(parseGitTarget(url)).toEqual({ cloneUrl: "https://github.com/owner/repo", ref: "main", subdir: "apps/web" });
+  });
+
+  it("scans the whole repo at the ref for a /blob/ URL", async () => {
+    const { parseGitTarget } = await import("./input-resolver.js");
+    expect(parseGitTarget("https://github.com/owner/repo/blob/v1.2.0/src/index.ts")).toEqual({
+      cloneUrl: "https://github.com/owner/repo",
+      ref: "v1.2.0",
+    });
+  });
+
+  it("handles GitLab's /-/tree/ and Bitbucket's /src/ forms", async () => {
+    const { parseGitTarget } = await import("./input-resolver.js");
+    expect(parseGitTarget("https://gitlab.com/group/proj/-/tree/dev/backend")).toEqual({
+      cloneUrl: "https://gitlab.com/group/proj",
+      ref: "dev",
+      subdir: "backend",
+    });
+    expect(parseGitTarget("https://bitbucket.org/team/repo/src/main/").cloneUrl).toBe("https://bitbucket.org/team/repo");
+  });
+
+  it("never passes an option-shaped ref to git", async () => {
+    const { parseGitTarget } = await import("./input-resolver.js");
+    expect(parseGitTarget("https://github.com/owner/repo/tree/--upload-pack=evil/x").ref).toBeUndefined();
+  });
+
+  it("leaves plain repo URLs and websites alone", async () => {
+    const { parseGitTarget, isGitRepoUrl } = await import("./input-resolver.js");
+    expect(parseGitTarget("https://github.com/owner/repo")).toEqual({ cloneUrl: "https://github.com/owner/repo" });
+    expect(isGitRepoUrl("https://myapp.com/tree/main/x")).toBe(false);
+  });
+});
+
+describe("resolveInput — ZIP symlink entries (write-through-symlink attack)", () => {
+  it("never creates a symlink, so a file entry 'inside' it cannot land outside the extraction root", async () => {
+    const zipParentDir = await makeScratchDir("immunogen-test-zipsym-");
+    const outside = await makeScratchDir("immunogen-test-outside-");
+    const zipPath = join(zipParentDir, "evil.zip");
+    // Entry 1: `link` -> the outside dir. Entry 2: `link/pwned.txt`.
+    await writeZipFile(zipPath, { link: outside, "link/pwned.txt": "owned\n", "app/index.ts": "export {};\n" }, { link: 0o120777 });
+
+    const result = await resolveInput(zipPath);
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- asserts nothing was written into the outside scratch dir
+      expect(existsSync(join(outside, "pwned.txt"))).toBe(false);
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- asserts the benign entry was still extracted
+      expect(existsSync(join(result.workingDir, "app/index.ts"))).toBe(true);
+      expect(result.diagnostics?.map((diagnostic) => diagnostic.code)).toEqual(["ZIP_ENTRIES_SKIPPED"]);
+      expect(result.diagnostics?.[0]?.message).toContain("link");
+    } finally {
+      await result.cleanup();
+    }
   });
 });

@@ -262,3 +262,70 @@ tests (`test:dist`: ESM + CJS import, skill parity, symlinked CLI) pass.
 | DNS rebinding | Guarded URL-mode requests go through an undici `Agent` whose socket `lookup` applies the same `isBlockedAddress` policy: the connection only ever reaches an address that passed the check, so a second, different DNS answer cannot redirect it. Proven against a real local server. `undici@7.30.1` (Node ≥20.18.1) is now a dependency. | `src/web/pinned-fetch.ts`, `src/web/scan-url.ts` |
 | SARIF fingerprints | `primaryLocationLineHash` hashes rule + file + message + masked snippet, never the line; same-key findings in a file get an occurrence index in line order. Alerts survive unrelated edits that move them. | `src/reporters/sarif.ts` |
 | Process-history comments | Every reference to internal planning documents, plan/phase/pass labels and threat IDs removed or rewritten (~230 sites, 70 files); comments describing superseded designs (manifest-only dependency checks, the shared AST cache) corrected. | codebase-wide |
+
+---
+
+# Second audit — accuracy on real projects (2026-11-18, released as 0.3.0)
+
+Scope: the repository at `b6c6515` (0.2.0 plus README changes), the
+Claude Code skill as installed, and — the method that found most of what
+follows — scans of real AI-built projects, then of immunogen itself.
+
+Baseline: `typecheck` and `lint` clean, **66 files / 1,053 tests** green, CI
+green. The first audit had removed every crash-level problem; what was left
+was **trust in the score**. On one real Supabase + Python project the 0.2.0
+report was 146 findings, 120 of them CRITICAL, almost all false; on ordinary
+apps a docs placeholder or a harmless `.env.production` meant an automatic
+F; and several real leaks scored A.
+
+Severity scale as in the first audit. Every item was reproduced with
+`scan()` before the fix; each has a test in
+`tests/integration/audit-2026-11.test.ts` or next to the code.
+
+## High
+
+| # | Problem | Fix |
+|---|---|---|
+| A1 | `.claude/` is always scanned, so Claude Code worktrees (`.claude/worktrees/<name>/`, full checkouts) were scanned too — 105 of 146 findings on a real repo were copies. `.git/info/exclude` was ignored. | Worktrees (that path, and any nested linked git worktree) are skipped with a `WORKTREES_SKIPPED` note; tool caches are hard-excluded; `info/exclude` is honored. |
+| A2 | The RLS rule blanked dollar-quoted SQL, so a migration that enables RLS on every table in a `do $$` loop was invisible: 30 CRITICALs on a correctly protected database. | Bulk protection (dynamic enable loops, RLS event triggers, revoking `anon`'s privileges with default privileges) is recognized; one INFO note records the reliance; tables created after a one-off loop are still reported. Supabase is also detected from `supabase/functions/` and Deno imports. |
+| A3 | A ZIP has no git index, so a gitignored `.env` inside one was skipped: an export with a live OpenAI key scored 100/A. | ZIP input reads every env file it contains. |
+| A4 | Any committed `.env*` was CRITICAL regardless of content — a Vite `.env.production` with one public URL gave 20/F. | SEC-05 reads the file: CRITICAL only for secret values (names listed, values never echoed), INFO / LOW otherwise. |
+| A5 | No rule for database connection strings — `postgresql://postgres:<password>@db.<ref>.supabase.co` in source scored clean. | SEC-10, CRITICAL on managed hosts; local hosts, template variables and default passwords skipped; password masked and redacted before LLM calls. |
+| A6 | No placeholder handling on provider-key patterns: `sk_live_YOUR_KEY_HERE` in a README was a CRITICAL live Stripe key. | One placeholder test (placeholder words, long single-character runs, sequences) on every key-shaped match, in repo scans and served bundles. |
+| A7 | The AI-layer checks — the headline feature — missed a `.claude/settings.json` `SessionStart` hook running `curl … \| sh`, `Bash(*)` permissions, a `.vscode/mcp.json` server running `bash -c "curl \| sh"`, and injection text in `.windsurfrules` / `GEMINI.md`. | AILAYER-05 (auto-running commands) and AILAYER-06 (permissions); MCP detectors read VS Code / Roo / Kiro / Amazon Q configs; injection and exfiltration globs cover Windsurf, Gemini, Cline, Kiro, Copilot instructions and Claude agents / commands. |
+| A8 | Self-scan: `extract-zip` allows writes outside the extraction root through symlink entries (GHSA-7pqw-9j4j-h8q3, unfixed, unmaintained); `simple-git@3.36.0` carries a CRITICAL guard bypass fixed only in 4.0.1, never offered because Dependabot ignored all majors. | Own yauzl-based extractor that never creates symlinks; `simple-git` 4.0.2; Dependabot holds back majors only for APIs we build on. |
+| A9 | The installed `/immunogen` skill ran a July build (pre-0.1.0: the OOM, SSRF bypasses, retired model) from a stale `dist/`, via a copied — not symlinked — skill folder. | Local environment: rebuilt, skill folder replaced by a symlink to the repo (per README). |
+
+## Medium
+
+| # | Problem | Fix |
+|---|---|---|
+| B1 | Suppressions left no trace: one `// immunogen-ignore` above a live key, or `**/*.ts` in `.immunogenignore`, gave 100/A — a coding agent can silence the gate. | `ScanResult.suppressed`, `FINDINGS_SUPPRESSED` / `PATHS_IGNORED` diagnostics, SARIF `suppressions`. |
+| B2 | Lovable / Bolt page names (`PrivacyPolicy.tsx`) not recognized by LEGAL-01. | Names normalized; router paths / links count. |
+| B3 | Dev-only dependencies weighed like production ones (a `vite` devDependency cost 25 points). | One level lower for devDependencies, npm `dev: true`, and pnpm packages unreachable from production roots. |
+| B4 | One 10 s budget for every OSV severity lookup; unrated advisories silently HIGH. | Per-request timeouts in a 30 s budget; unrated is said in the message (MEDIUM confidence); fix version named in the remediation. |
+| B5 | No retry on OSV transient failures — one blip degraded the whole dependency check. | Two retries with backoff, honoring `Retry-After`. |
+| B6 | GitHub `/tree/` / `/blob/` links fell into live-URL mode (adding `--authorize` would probe github.com). | Cloned at that ref, scanning that folder. |
+| B7 | Flat terminal report (592 lines, one message repeated 120 times). | Grouped by rule and message with every location. |
+
+## Low
+
+- RLS analysis re-read every SQL file once per SQL file → computed once per scan.
+- README claimed `scanIncomplete` covers every coverage reduction; it covers the offline dependency list, a truncated walk, and failed live-URL checks — documented as such.
+- `--offline` was documented as "never touch the network" although a git URL still has to be cloned — documented.
+- 2 green Dependabot PRs were open — merged.
+
+## Beyond the fixes
+
+Shipped in the same release: hallucinated-dependency detection (DEP-02),
+the live Supabase / Firebase data-exposure check (WEB-DATA-01/02/03),
+`--format prompt`, `--baseline`, `--min-severity`, confidence-weighted
+scoring, a GitHub Action, and a CI job that runs the action on fixtures and
+on immunogen itself.
+
+## Outcome
+
+`typecheck` clean, `lint` 0 errors (the same 3 intentional warnings as
+before), **71 files / 1,158 tests** (was 66 / 1,053), `build` and `test:dist` pass. The real
+project above: 146 findings / 120 CRITICAL → 10 findings / 0 CRITICAL. The
+self-scan: F (blocked; CRITICAL `simple-git`, HIGH `extract-zip`) → 95/A.

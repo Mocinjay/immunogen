@@ -217,3 +217,21 @@ describe("detectStack — Python and Go", () => {
     expect(hints.hasStripe).toBe(true);
   });
 });
+
+describe("detectStack — Supabase CLI projects without a package.json dependency", () => {
+  it("detects Supabase from a supabase/functions/ edge function directory", () => {
+    const hints = detectStack(new Map([["supabase/functions/hook/index.ts", "Deno.serve(() => new Response('ok'));"]]));
+    expect(hints.hasSupabase).toBe(true);
+  });
+
+  it("detects Supabase from supabase/migrations/", () => {
+    expect(detectStack(new Map([["supabase/migrations/0001_init.sql", "create table t (id int);"]])).hasSupabase).toBe(true);
+  });
+
+  it("detects a Deno npm:/jsr:/esm.sh Supabase import", () => {
+    for (const specifier of ["npm:@supabase/supabase-js@2", "jsr:@supabase/supabase-js@2", "https://esm.sh/@supabase/supabase-js@2"]) {
+      const hints = detectStack(new Map([["functions/x.ts", `import { createClient } from "${specifier}";`]]));
+      expect(hints.hasSupabase).toBe(true);
+    }
+  });
+});

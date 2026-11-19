@@ -4,9 +4,100 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-11-19
+
+A second production audit (see `docs/AUDIT.md`), driven by scanning real
+AI-built projects: on one of them the 0.2.0 report was 146 findings and
+120 CRITICALs; on 0.3.0 it is 10 findings, none of them false alarms from
+duplicate checkouts or bulk-protected tables.
+
+### Security
+
+- ZIP input is extracted by a new symlink-safe extractor (built on yauzl);
+  `extract-zip` is gone. It allowed writes outside the extraction folder
+  through symlink entries (GHSA-7pqw-9j4j-h8q3, no fixed release). Symlink and
+  special entries are skipped and reported (`ZIP_ENTRIES_SKIPPED`).
+- `simple-git` 3.36.0 → 4.0.2, past a CRITICAL unsafe-operation-guard bypass
+  (GHSA-x6jw-m9v5-85vh). Patched dev-tool transitives are pinned with
+  `pnpm.overrides`, and Dependabot now offers major updates for packages
+  that handle untrusted input.
+- Both were found by running immunogen on itself, which CI now does on
+  every push.
+
+### Added
+
+- **Database connection strings** with a password (SEC-10): Postgres /
+  Supabase / Neon, MySQL, MongoDB Atlas, Redis, AMQP, SQL Server. CRITICAL
+  on managed cloud hosts; local and docker-compose hosts, template
+  variables and default passwords are skipped; the password is always
+  masked (and now also redacted before any LLM call).
+- **Agent auto-run and permissions** (AILAYER-05 / AILAYER-06): Claude Code
+  hooks, status-line and credential-helper commands, Cursor hooks, VS Code
+  folder-open tasks and MCP launch commands that download-and-run code or
+  send credentials out; `Bash(*)`, `bypassPermissions` and
+  `enableAllProjectMcpServers` in committed agent settings.
+- AI-layer coverage for `.vscode/mcp.json`, `.windsurfrules`, `GEMINI.md`,
+  `.clinerules`, `.claude/agents` and `commands`, `.github/instructions` and
+  `prompts`, `.kiro/steering`, Roo and Amazon Q configs.
+- **Hallucinated dependencies** (DEP-02): direct dependencies that do not
+  exist on the public npm registry or PyPI. Private registries configured in
+  the repo, workspace packages and non-registry specifiers are skipped.
+- **Backend data exposure** in live-URL mode (WEB-DATA-01/02/03): whether
+  the Supabase tables, Firebase Realtime Database or Firestore collections a
+  site's code uses can be read with the public key it ships — row counts and
+  names only, read-only. `--no-data-probes` turns it off.
+- `--format prompt`: a deterministic, numbered fix-it brief to paste into a
+  coding agent.
+- `--baseline <file>`: findings already in an earlier JSON report are not
+  scored, so existing repos can gate CI on new findings only (SARIF
+  `baselineState`).
+- `--min-severity <level>`.
+- A GitHub Action: `uses: Mocinjay/immunogen@v0.3.0`.
+- Suppressed findings are reported instead of dropped: `ScanResult.suppressed`,
+  a `FINDINGS_SUPPRESSED` diagnostic, and SARIF `suppressions` (shown as
+  dismissed in code scanning). Files excluded by `.immunogenignore` are
+  counted (`PATHS_IGNORED`).
 
 ### Fixed
+
+- Agent worktrees (`.claude/worktrees/`, or any nested git worktree) are no
+  longer scanned as part of the repo; they duplicated every finding.
+  Python, deploy-tool and framework caches are excluded, and
+  `.git/info/exclude` is honored.
+- Documentation placeholders (`sk_live_YOUR_KEY_HERE`, AWS's
+  `AKIAIOSFODNN7EXAMPLE`, Slack's `XXXX` webhook) are no longer reported as
+  live keys.
+- A committed `.env` file is CRITICAL only when it holds a secret value
+  (variable names are listed, values never echoed); one with only public or
+  default values is INFO, as Next.js and Vite document committing those.
+- A gitignored `.env` inside a ZIP is now scanned — the archive shipped it.
+- Supabase tables protected in bulk (a loop that enables RLS on every table,
+  an RLS event trigger, or revoking every privilege from `anon`) are no
+  longer reported one CRITICAL per table. Supabase projects are recognized
+  from `supabase/functions/`, `supabase/migrations/` and Deno imports.
+- Privacy / terms pages named the way Lovable and Bolt name them
+  (`PrivacyPolicy.tsx`, `TermsOfService.tsx`) and router links to them count
+  as present.
+- GitHub / GitLab / Bitbucket `/tree/` and `/blob/` links are cloned (at that
+  ref, scanning that folder) instead of being treated as live websites.
+- Dependency checks retry OSV.dev on transient failures, give each advisory
+  lookup its own timeout, say when OSV gave no severity, name the version to
+  upgrade to, and rate dev-only packages (npm and pnpm lockfiles) one level
+  lower.
+
+### Changed
+
+- LOW-confidence findings cost half their severity's points. Any CRITICAL is
+  still an automatic F.
+- The terminal report groups the same problem in several places into one
+  entry with every location, and counts Medium / Low in the header.
+- Library API: `ScanResult.sarif` (reserved, never used) is removed;
+  `ScanResult` gains optional `suppressed` and `baselined`; `ScanOptions`
+  gains `minSeverity`, `baseline` and `dataProbes`; `format` accepts
+  `"prompt"`.
+- Live-URL `scanIncomplete` follows warn-level diagnostics only.
+
+### Earlier, unreleased
 
 - README: the one-off `npx` and CI examples pin the release URL. npx caches
   whatever a URL first downloaded, so the unpinned `latest` URL kept

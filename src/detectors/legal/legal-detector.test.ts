@@ -149,3 +149,36 @@ describe("legalDetector — app gate", () => {
     expect(await legalDetector.detect(ctx)).toEqual([]);
   });
 });
+
+describe("legalDetector — page names and routes AI app builders generate", () => {
+  const VITE = { frameworks: new Set(["vite"]) };
+
+  async function ruleIds(files: Record<string, string>): Promise<string[]> {
+    const fileSet = new Map(Object.entries({ "package.json": "{}", ...files }));
+    const findings = await legalDetector.detect({
+      filePath: "package.json",
+      content: "{}",
+      stackHints: { ...STACK_HINTS, ...VITE },
+      fileSet,
+    });
+    return findings.map((finding) => finding.ruleId);
+  }
+
+  it.each([
+    ["src/pages/PrivacyPolicy.tsx"],
+    ["src/pages/TermsOfService.tsx"],
+    ["src/pages/TermsAndConditions.jsx"],
+    ["app/(marketing)/legal/page.tsx"],
+  ])("accepts %s as a legal page", async (path) => {
+    expect(await ruleIds({ [path]: "export default function Page() { return null; }" })).toEqual([]);
+  });
+
+  it("accepts a router path or link to a privacy page", async () => {
+    expect(await ruleIds({ "src/App.tsx": '<Route path="/privacy" element={<Legal />} />' })).toEqual([]);
+    expect(await ruleIds({ "src/Footer.tsx": '<a href="https://example.com/privacy-policy">Privacy</a>' })).toEqual([]);
+  });
+
+  it("still reports an app with no legal page at all", async () => {
+    expect(await ruleIds({ "src/App.tsx": "export default function App() { return null; }" })).toEqual(["LEGAL-01"]);
+  });
+});

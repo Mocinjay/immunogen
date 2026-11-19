@@ -32,7 +32,7 @@
  * `process.argv[1]` keeps the link path — a plain URL comparison would make
  * every installed `immunogen` invocation silently print nothing and exit 0.
  */
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { Command, Option } from "commander";
@@ -42,9 +42,13 @@ import { getReporter } from "../src/reporters/index.js";
 import { VERSION } from "../src/version.js";
 
 import type { ScanOptions } from "../src/index.js";
+import type { Severity } from "../src/core/types.js";
 
 /** Output formats `--format` accepts; anything else is a usage error, not a silent fallback. */
-const FORMATS = ["terminal", "json", "sarif"] as const;
+const FORMATS = ["terminal", "json", "sarif", "prompt"] as const;
+
+/** `--min-severity` levels, lowercase on the command line. */
+const MIN_SEVERITIES = ["info", "low", "medium", "high", "critical"] as const;
 
 /**
  * Runs one CLI scan action: calls `scan(path, { format, noLlm, authorize,
@@ -77,25 +81,33 @@ const FORMATS = ["terminal", "json", "sarif"] as const;
 export async function runCli(
   path: string,
   opts: {
-    format?: "terminal" | "json" | "sarif";
+    format?: (typeof FORMATS)[number];
     noLlm?: boolean;
+    minSeverity?: (typeof MIN_SEVERITIES)[number];
+    baseline?: string;
     authorize?: boolean;
     allowPrivate?: boolean;
     offline?: boolean;
     noIgnore?: boolean;
+    noDataProbes?: boolean;
   },
 ): Promise<number> {
   const scanOptions: ScanOptions = {
     ...(opts.format === undefined ? {} : { format: opts.format }),
+    ...(opts.minSeverity === undefined ? {} : { minSeverity: opts.minSeverity.toUpperCase() as Severity }),
     ...(opts.noLlm === true ? { noLlm: true } : {}),
     ...(opts.offline === true ? { offline: true } : {}),
     ...(opts.noIgnore === true ? { noIgnore: true } : {}),
     ...(opts.authorize === true ? { authorize: true } : {}),
     ...(opts.allowPrivate === true ? { allowPrivate: true } : {}),
+    ...(opts.noDataProbes === true ? { dataProbes: false } : {}),
   };
 
   let result;
   try {
+    if (opts.baseline !== undefined) {
+      scanOptions.baseline = loadBaseline(opts.baseline);
+    }
     result = await scan(path, scanOptions);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -106,6 +118,22 @@ export async function runCli(
   const reporter = getReporter(opts.format);
   process.stdout.write(reporter.render(result));
   return result.score.verdict === "blocked" ? 1 : 0;
+}
+
+/** Reads the `findings` array of an earlier `--format json` report; anything else is a clean, user-facing error. */
+function loadBaseline(file: string): NonNullable<ScanOptions["baseline"]> {
+  let parsed: unknown;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- the caller's own --baseline argument
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    throw new Error(`could not read baseline ${file}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const findings = (parsed as { findings?: unknown }).findings;
+  if (!Array.isArray(findings)) {
+    throw new Error(`baseline ${file} is not an immunogen --format json report (no "findings" array)`);
+  }
+  return findings as NonNullable<ScanOptions["baseline"]>;
 }
 
 /** True when this module is the process entry script, following symlinks (see module doc comment). */
@@ -136,7 +164,9 @@ if (isEntryScript()) {
       "path to the repository to scan (default: current directory), or a live https:// URL to screen (requires --authorize)",
       ".",
     )
-    .addOption(new Option("--format <format>", "output format").choices(FORMATS).default("terminal"))
+    .addOption(new Option("--format <format>", "output format (prompt = a fix-it prompt to paste into your coding agent)").choices(FORMATS).default("terminal"))
+    .addOption(new Option("--min-severity <level>", "leave out (and do not score) findings below this severity").choices(MIN_SEVERITIES))
+    .option("--baseline <file>", "an earlier --format json report: findings already in it are not scored, so only new ones can fail the build")
     .option(
       "--no-llm",
       "disable LLM fix-prompt enrichment (offline is the default)",
@@ -154,6 +184,10 @@ if (isEntryScript()) {
       "required consent gate for live-URL screening: only screen sites you own or are authorized to test",
     )
     .option(
+      "--no-data-probes",
+      "live-URL mode: skip checking whether the site's Supabase / Firebase data can be read with its public key",
+    )
+    .option(
       "--allow-private",
       "escape hatch for the URL SSRF guard, permitting loopback/private/link-local hosts (local dev/test only)",
     )
@@ -162,6 +196,9 @@ if (isEntryScript()) {
         path: string,
         options: {
           format: (typeof FORMATS)[number];
+          minSeverity?: (typeof MIN_SEVERITIES)[number];
+          baseline?: string;
+          dataProbes: boolean;
           llm: boolean;
           ignore: boolean;
           offline?: boolean;
@@ -172,6 +209,9 @@ if (isEntryScript()) {
         process.exitCode = await runCli(path, {
           format: options.format,
           noLlm: options.llm === false,
+          ...(options.minSeverity === undefined ? {} : { minSeverity: options.minSeverity }),
+          ...(options.baseline === undefined ? {} : { baseline: options.baseline }),
+          ...(options.dataProbes === false ? { noDataProbes: true } : {}),
           ...(options.offline === true ? { offline: true } : {}),
           ...(options.ignore === false ? { noIgnore: true } : {}),
           ...(options.authorize === true ? { authorize: true } : {}),

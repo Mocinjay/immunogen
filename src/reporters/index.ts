@@ -7,12 +7,14 @@
 export { jsonReporter } from "./json.js";
 export { terminalReporter } from "./terminal.js";
 export { sarifReporter } from "./sarif.js";
+export { promptReporter } from "./prompt.js";
 
 export type { Reporter } from "./interface.js";
 
 import { jsonReporter } from "./json.js";
 import { terminalReporter } from "./terminal.js";
 import { sarifReporter } from "./sarif.js";
+import { promptReporter } from "./prompt.js";
 
 import type { Reporter } from "./interface.js";
 
@@ -22,8 +24,9 @@ import type { Reporter } from "./interface.js";
  * other value — `"terminal"`, `undefined`, or any other string — falls back
  * to `terminalReporter`.
  */
-export function getReporter(format?: "terminal" | "json" | "sarif"): Reporter {
+export function getReporter(format?: "terminal" | "json" | "sarif" | "prompt"): Reporter {
   if (format === "json") return jsonReporter;
   if (format === "sarif") return sarifReporter;
+  if (format === "prompt") return promptReporter;
   return terminalReporter;
 }

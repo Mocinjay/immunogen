@@ -34,6 +34,7 @@
 export type {
   Diagnostic,
   Finding,
+  SuppressedFinding,
   ScanOptions,
   ScanResult,
   ShipScore,
@@ -42,15 +43,16 @@ export type {
 
 import { ingest } from "./core/ingest/index.js";
 import { computeScore } from "./core/scoring.js";
-import { runDetectors } from "./detectors/registry.js";
+import { runDetectorsDetailed } from "./detectors/registry.js";
 import { NoopAdapter } from "./llm/adapters/index.js";
 import { enrichFindings } from "./llm/enricher.js";
 import { providerConfigDiagnostic, selectAdapter } from "./llm/provider.js";
 import { isGitRepoUrl } from "./core/ingest/input-resolver.js";
+import { computeFingerprints } from "./core/fingerprint.js";
 import { isUrl } from "./web/url-resolver.js";
 import { scanUrl } from "./web/scan-url.js";
 
-import type { ScanOptions, ScanResult } from "./core/types.js";
+import type { Diagnostic, Finding, ScanOptions, ScanResult, Severity } from "./core/types.js";
 import type { ProviderAdapter } from "./llm/provider.js";
 
 /**
@@ -99,6 +101,58 @@ export async function scan(
   path: string,
   options?: ScanOptions,
 ): Promise<ScanResult> {
+  let result = await scanUnfiltered(path, options);
+  if (options?.baseline !== undefined) {
+    result = withBaseline(result, options.baseline);
+  }
+  return options?.minSeverity === undefined ? result : withMinSeverity(result, options.minSeverity);
+}
+
+/** Moves findings already present in `baseline` to `baselined`, rescores the rest, and records the split. */
+function withBaseline(result: ScanResult, baseline: readonly Finding[]): ScanResult {
+  const known = new Set(computeFingerprints(baseline));
+  const fingerprints = computeFingerprints(result.findings);
+  const findings: Finding[] = [];
+  const baselined: Finding[] = [];
+  for (const [index, finding] of result.findings.entries()) {
+    (known.has(fingerprints.at(index) ?? "") ? baselined : findings).push(finding);
+  }
+  const diagnostic: Diagnostic = {
+    level: "info",
+    code: "BASELINE_APPLIED",
+    message: `${String(baselined.length)} finding(s) already in the baseline were not scored; ${String(findings.length)} new finding(s) were.`,
+  };
+  return { ...result, findings, baselined, score: computeScore(findings), diagnostics: [...result.diagnostics, diagnostic] };
+}
+
+/** Severity order, least to most severe. */
+const SEVERITY_ORDER: readonly Severity[] = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"];
+
+/** Drops findings below `min`, rescores, and records how many were dropped. */
+function withMinSeverity(result: ScanResult, min: Severity): ScanResult {
+  const floor = SEVERITY_ORDER.indexOf(min);
+  const keep = (finding: Finding): boolean => SEVERITY_ORDER.indexOf(finding.severity) >= floor;
+  const findings = result.findings.filter(keep);
+  const dropped = result.findings.length - findings.length;
+  if (dropped === 0) {
+    return result;
+  }
+  const diagnostic: Diagnostic = {
+    level: "info",
+    code: "FINDINGS_FILTERED",
+    message: `${String(dropped)} finding(s) below ${min} were left out by --min-severity and not scored.`,
+  };
+  return {
+    ...result,
+    findings,
+    score: computeScore(findings),
+    diagnostics: [...result.diagnostics, diagnostic],
+    ...(result.suppressed === undefined ? {} : { suppressed: result.suppressed.filter(keep) }),
+  };
+}
+
+/** `scan()` before the `minSeverity` filter. */
+async function scanUnfiltered(path: string, options?: ScanOptions): Promise<ScanResult> {
   if (isUrl(path) && !isGitRepoUrl(path)) {
     return scanUrl(path, options ?? {});
   }
@@ -106,7 +160,7 @@ export async function scan(
   const scannedAt = new Date().toISOString();
 
   const ctx = await ingest(path, options);
-  const findings = await runDetectors(ctx);
+  const { findings, suppressed } = await runDetectorsDetailed(ctx);
   const score = computeScore(findings);
   const depsOffline = findings.some((finding) => finding.ruleId === "DEP-OFFLINE");
   const scanIncomplete = depsOffline || ctx.diagnostics.some((diagnostic) => diagnostic.code === "SCAN_TRUNCATED");
@@ -131,6 +185,13 @@ export async function scan(
       diagnostics.push(configWarning);
     }
   }
+  if (suppressed.length > 0) {
+    diagnostics.push({
+      level: "info",
+      code: "FINDINGS_SUPPRESSED",
+      message: `${String(suppressed.length)} finding(s) were silenced by immunogen-ignore comments and not scored (listed under "suppressed" in JSON; run with --no-ignore to score them).`,
+    });
+  }
   const enrichment = await enrichFindings(findings, adapter);
   diagnostics.push(...enrichment.diagnostics);
 
@@ -143,5 +204,6 @@ export async function scan(
     llmEnriched: enrichment.enriched,
     scanIncomplete,
     diagnostics,
+    suppressed,
   };
 }

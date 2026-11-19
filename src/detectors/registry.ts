@@ -44,18 +44,19 @@ import { legalDetector } from "./legal/index.js";
 import { firebaseRulesDetector, supabaseDetector, supabaseRlsDetector } from "./storage/index.js";
 import { pyGoRouteAuthDetector, routeAuthDetector, serverRouteAuthDetector } from "./auth/index.js";
 import { dangerousCodeDetector, pyGoCodeDetector, xssDetector } from "./injection/index.js";
-import { osvDetector } from "./deps/index.js";
+import { osvDetector, packageRegistryDetector } from "./deps/index.js";
 import { rateLimitDetector } from "./abuse/index.js";
 import {
   promptInjectionDetector,
   exfiltrationDetector,
   mcpPoisoningDetector,
   mcpLeastPrivilegeDetector,
+  agentAutorunDetector,
 } from "./ai-layer/index.js";
 
 import { isParseable, parseSource } from "../core/parse/ast-cache.js";
 
-import type { Detector, DetectorContext, Finding, ScanContext, Severity } from "../core/types.js";
+import type { Detector, DetectorContext, Finding, ScanContext, Severity, SuppressedFinding } from "../core/types.js";
 
 /**
  * Every detector registered by default. Some detector files emit more than
@@ -86,10 +87,12 @@ export const DEFAULT_DETECTORS: Detector[] = [
   pyGoCodeDetector,
   rateLimitDetector,
   osvDetector,
+  packageRegistryDetector,
   promptInjectionDetector,
   exfiltrationDetector,
   mcpPoisoningDetector,
   mcpLeastPrivilegeDetector,
+  agentAutorunDetector,
 ];
 
 /** Escapes every regex metacharacter in `char` except `*` and `{`/`}`/`,`, which `globToRegex` handles itself. */
@@ -199,7 +202,7 @@ function compareOrdinal(a: string, b: string): number {
  * stable, so ties keep their (deterministic) collection order: file order,
  * then detector registration order.
  */
-function sortFindings(findings: Finding[]): Finding[] {
+function sortFindings<T extends Finding>(findings: T[]): T[] {
   return [...findings].sort((a, b) => {
     const severityDelta = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
     if (severityDelta !== 0) {
@@ -310,6 +313,18 @@ export async function runDetectors(
   ctx: ScanContext,
   detectors: Detector[] = DEFAULT_DETECTORS,
 ): Promise<Finding[]> {
+  return (await runDetectorsDetailed(ctx, detectors)).findings;
+}
+
+/**
+ * `runDetectors`, also returning the findings that inline `immunogen-ignore`
+ * comments silenced (deduplicated and sorted the same way), so callers can
+ * report them instead of letting them vanish.
+ */
+export async function runDetectorsDetailed(
+  ctx: ScanContext,
+  detectors: Detector[] = DEFAULT_DETECTORS,
+): Promise<{ findings: Finding[]; suppressed: SuppressedFinding[] }> {
   const active = detectors.filter((detector) => appliesToStack(detector, ctx));
   const files = [...ctx.fileSet];
   // Keyed by file index so results flatten in file order regardless of completion order.
@@ -335,14 +350,29 @@ export async function runDetectors(
   };
   await Promise.all(Array.from({ length: Math.min(FILE_CONCURRENCY, files.length) }, worker));
 
-  const findings = files.flatMap((_, index) => perFile.get(index) ?? []);
+  const findings = dedupeFindings(files.flatMap((_, index) => perFile.get(index) ?? []));
+  if (ctx.options.noIgnore === true) {
+    return { findings: sortFindings(findings), suppressed: [] };
+  }
   const suppression = new SuppressionIndex(ctx.fileSet);
-  const kept = ctx.options.noIgnore === true ? findings : findings.filter((finding) => !suppression.isSuppressed(finding));
-  return sortFindings(dedupeFindings(kept));
+  const kept: Finding[] = [];
+  const suppressed: SuppressedFinding[] = [];
+  for (const finding of findings) {
+    const justification = suppression.suppressionFor(finding);
+    if (justification === undefined) {
+      kept.push(finding);
+    } else {
+      suppressed.push({ ...finding, justification });
+    }
+  }
+  return { findings: sortFindings(kept), suppressed: sortFindings(suppressed) };
 }
 
 /** Inline suppression marker, with any rule ids listed after it captured in group 1. */
 const IGNORE_MARKER_RE = /immunogen-ignore\b([^\n]*)/;
+
+/** Longest suppression-comment text carried into reports. */
+const MAX_JUSTIFICATION_CHARS = 200;
 
 /** A rule id token (`SEC-06`, `AUTH-01`, `DEP-OFFLINE`, `WEB-HDR`). */
 const RULE_ID_TOKEN_RE = /\b[A-Z]+-[A-Z0-9-]*[A-Z0-9]\b/g;
@@ -373,21 +403,29 @@ class SuppressionIndex {
    * `// immunogen-ignore SEC-06` or `# immunogen-ignore AUTH-04, AUTH-05`.
    */
   isSuppressed(finding: Finding): boolean {
+    return this.suppressionFor(finding) !== undefined;
+  }
+
+  /** The matching suppression comment's text (trimmed, capped), or `undefined` when the finding is not suppressed. */
+  suppressionFor(finding: Finding): string | undefined {
     const lines = this.linesOf(finding.file);
     if (lines === null || finding.line < 1) {
-      return false;
+      return undefined;
     }
     const candidates = [lines.at(finding.line - 1)];
     if (finding.line >= 2) {
       candidates.push(lines.at(finding.line - 2));
     }
-    return candidates.some((line) => {
+    for (const line of candidates) {
       const marker = line?.match(IGNORE_MARKER_RE);
       if (marker === null || marker === undefined) {
-        return false;
+        continue;
       }
       const ruleIds: string[] = (marker[1] ?? "").match(RULE_ID_TOKEN_RE) ?? [];
-      return ruleIds.length === 0 || ruleIds.includes(finding.ruleId);
-    });
+      if (ruleIds.length === 0 || ruleIds.includes(finding.ruleId)) {
+        return marker[0].trim().slice(0, MAX_JUSTIFICATION_CHARS);
+      }
+    }
+    return undefined;
   }
 }

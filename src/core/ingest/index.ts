@@ -38,10 +38,14 @@ import type { ScanContext, ScanOptions } from "../types.js";
  */
 export async function ingest(input: string, options?: ScanOptions): Promise<ScanContext> {
   const opts = options ?? {};
-  const { workingDir, cleanup } = await resolveInput(input, opts);
+  const { workingDir, kind, cleanup, diagnostics: inputDiagnostics } = await resolveInput(input, opts);
 
   try {
-    const { fileSet, diagnostics } = await walkFiles(workingDir, opts);
+    // A ZIP has no git history and everything inside it shipped with it, so
+    // its env files are scanned even when its .gitignore lists them.
+    const walked = await walkFiles(workingDir, opts, { keepIgnoredEnvFiles: kind === "zip" });
+    const { fileSet } = walked;
+    const diagnostics = [...(inputDiagnostics ?? []), ...walked.diagnostics];
     const stackHints = detectStack(fileSet);
 
     return {

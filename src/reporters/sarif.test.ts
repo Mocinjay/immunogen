@@ -497,3 +497,35 @@ describe("sarifReporter — artifact URIs, tool identity, and notifications", ()
     ]);
   });
 });
+
+describe("sarifReporter — suppressed findings", () => {
+  it("emits silenced findings as inSource suppressions with the comment as justification, without re-keying active alerts", () => {
+    const active = JSON.parse(sarifReporter.render(makeScanResult({ findings: [MEDIUM_FINDING] }))) as SarifLog;
+    const log = JSON.parse(
+      sarifReporter.render(
+        makeScanResult({
+          findings: [MEDIUM_FINDING],
+          suppressed: [{ ...LOW_FINDING, justification: "immunogen-ignore CFG-01 — debug flag is dev-only" }],
+        }),
+      ),
+    ) as SarifLog;
+    const results = log.runs[0]?.results ?? [];
+
+    expect(results).toHaveLength(2);
+    expect(results[0]?.suppressions).toBeUndefined();
+    expect(results[1]?.suppressions).toEqual([{ kind: "inSource", justification: "immunogen-ignore CFG-01 — debug flag is dev-only" }]);
+    expect(results[0]?.partialFingerprints).toEqual(active.runs[0]?.results[0]?.partialFingerprints);
+  });
+});
+
+describe("sarifReporter — baseline", () => {
+  it("marks new and baselined results with baselineState when a baseline was used", () => {
+    const log = JSON.parse(sarifReporter.render(makeScanResult({ findings: [MEDIUM_FINDING], baselined: [LOW_FINDING] }))) as SarifLog;
+    expect(log.runs[0]?.results.map((r) => r.baselineState)).toEqual(["new", "unchanged"]);
+  });
+
+  it("omits baselineState when no baseline was used", () => {
+    const log = JSON.parse(sarifReporter.render(makeScanResult({ findings: [MEDIUM_FINDING] }))) as SarifLog;
+    expect(log.runs[0]?.results[0]?.baselineState).toBeUndefined();
+  });
+});

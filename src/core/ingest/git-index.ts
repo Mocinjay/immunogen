@@ -150,6 +150,47 @@ export function parseIndexPaths(buffer: Buffer): string[] | undefined {
   }
 }
 
+/** Forward-slash path of `rootDir` relative to the work tree, with a trailing slash (`""` at the work-tree root). */
+function workTreePrefix(workTree: string, rootDir: string): string {
+  const relativeRoot = relative(workTree, resolve(rootDir)).split(sep).join("/");
+  return relativeRoot === "" ? "" : `${relativeRoot}/`;
+}
+
+/**
+ * Exclude patterns from the repository's `info/exclude` (gitignore syntax,
+ * repo-local and never committed — e.g. a developer excluding
+ * `.claude/worktrees/`). A linked worktree's git dir names its shared
+ * repository in `commondir`; `info/exclude` lives there. Returns the raw file
+ * text plus the scanned root's path prefix inside the work tree, or
+ * `undefined` when there is no repository or no exclude file.
+ */
+export async function readInfoExclude(rootDir: string): Promise<{ patterns: string; prefix: string } | undefined> {
+  const located = await findGitDir(rootDir);
+  if (located === undefined) {
+    return undefined;
+  }
+  const gitDirs = [located.gitDir];
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- reads the scan target's own git metadata as text, never executes it
+    const common = (await readFile(join(located.gitDir, "commondir"), "utf8")).trim();
+    if (common.length > 0) {
+      gitDirs.push(resolve(located.gitDir, common));
+    }
+  } catch {
+    // Not a linked worktree.
+  }
+  for (const gitDir of gitDirs) {
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- reads the scan target's own git metadata as text, never executes it
+      const patterns = await readFile(join(gitDir, "info", "exclude"), "utf8");
+      return { patterns, prefix: workTreePrefix(located.workTree, rootDir) };
+    } catch {
+      // No exclude file here; try the common dir.
+    }
+  }
+  return undefined;
+}
+
 /**
  * Returns the git-tracked files under `rootDir`, as forward-slash paths
  * relative to `rootDir` (the same key shape as `ScanContext.fileSet`), or
@@ -175,8 +216,7 @@ export async function readTrackedFiles(rootDir: string): Promise<Set<string> | u
     return undefined;
   }
 
-  const relativeRoot = relative(located.workTree, resolve(rootDir)).split(sep).join("/");
-  const prefix = relativeRoot === "" ? "" : `${relativeRoot}/`;
+  const prefix = workTreePrefix(located.workTree, rootDir);
   const tracked = new Set<string>();
   for (const path of paths) {
     if (path.startsWith(prefix)) {

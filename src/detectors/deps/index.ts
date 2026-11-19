@@ -4,3 +4,5 @@ export { osvDetector } from "./osv-detector.js";
 export { OsvUnavailableError, queryOsvBatch } from "./osv-client.js";
 /** Barrel re-export of the bundled offline fallback list + comparator (DEP-01's offline-degradation path). */
 export { checkFallback, FALLBACK_VULNERABLE_NPM } from "./osv-fallback.js";
+/** Barrel re-export of packageRegistryDetector (DEP-02: dependencies missing from the public registry). */
+export { packageRegistryDetector } from "./package-registry-detector.js";

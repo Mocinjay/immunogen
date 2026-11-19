@@ -12,7 +12,7 @@
  * overall determinism are both enforced here and proven by
  * scoring.test.ts.
  */
-import type { Band, Finding, Grade, Severity, ShipScore, Verdict } from "./types.js";
+import type { Band, Confidence, Finding, Grade, Severity, ShipScore, Verdict } from "./types.js";
 
 /** Per-severity point weight contributing to `rawPoints`. INFO contributes nothing. */
 const SEVERITY_WEIGHTS: Record<Severity, number> = {
@@ -21,6 +21,18 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
   MEDIUM: 10,
   LOW: 5,
   INFO: 0,
+};
+
+/**
+ * Multiplier on a finding's points by confidence. A LOW-confidence finding
+ * (a heuristic that is often a false positive, e.g. "no privacy page found")
+ * costs half; HIGH and MEDIUM cost full weight. Does not touch the CRITICAL
+ * rule: any CRITICAL finding is still an automatic F, whatever its confidence.
+ */
+const CONFIDENCE_WEIGHTS: Record<Confidence, number> = {
+  HIGH: 1,
+  MEDIUM: 1,
+  LOW: 0.5,
 };
 
 /** Risk floor applied when at least one CRITICAL finding is present — the critical hard cap. */
@@ -111,7 +123,8 @@ export function gradeFor(score: number, hasCritical: boolean): Grade {
  * Computes the deterministic Ship Score for a scan's findings.
  *
  * Formula:
- *   rawPoints  = sum of SEVERITY_WEIGHTS[finding.severity] across all findings
+ *   rawPoints  = sum of SEVERITY_WEIGHTS[finding.severity] x CONFIDENCE_WEIGHTS[finding.confidence]
+ *                across all findings (LOW confidence counts half)
  *   hasCritical = at least one finding has severity "CRITICAL"
  *   cappedRisk = hasCritical ? max(rawPoints, 80) : min(rawPoints, 100)
  *   score      = 100 - cappedRisk   (inverted: 0 risk -> 100 Ship Score)
@@ -136,7 +149,7 @@ export function computeScore(findings: Finding[]): ShipScore {
   let highCount = 0;
 
   for (const finding of findings) {
-    rawPoints += SEVERITY_WEIGHTS[finding.severity];
+    rawPoints += SEVERITY_WEIGHTS[finding.severity] * CONFIDENCE_WEIGHTS[finding.confidence];
     if (finding.severity === "CRITICAL") {
       criticalCount += 1;
     } else if (finding.severity === "HIGH") {

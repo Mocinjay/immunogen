@@ -6,6 +6,9 @@
  */
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { runCli } from "./immunogen.js";
 
@@ -171,5 +174,21 @@ describe("bin/immunogen.ts — thin-wrapper guard (criterion 5)", () => {
 
     expect(source).toMatch(/getReporter/);
     expect(source).toMatch(/scan\(/);
+  });
+});
+
+describe("runCli — --baseline", () => {
+  it("exits 2 with a clear message when the baseline is not an immunogen JSON report", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "immunogen-baseline-"));
+    const file = join(dir, "baseline.json");
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- test writes into its own mkdtemp dir
+    await writeFile(file, '{"not":"a report"}');
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(await runCli(CLEAN_FIXTURE, { format: "json", baseline: file })).toBe(2);
+      expect(stderr).toHaveBeenLastCalledWith(expect.stringContaining('no "findings" array'));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

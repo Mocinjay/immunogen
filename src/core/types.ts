@@ -103,6 +103,17 @@ export interface Finding {
   fixPrompt?: string;
 }
 
+/**
+ * A finding silenced by an inline `immunogen-ignore` comment. Never scored,
+ * but always reported (JSON `suppressed`, SARIF `suppressions`, a terminal
+ * count) so an accepted risk stays visible — including one an AI agent
+ * accepted on the developer's behalf.
+ */
+export interface SuppressedFinding extends Finding {
+  /** The suppression comment's text, e.g. `immunogen-ignore AUTH-01 — public endpoint`. */
+  justification: string;
+}
+
 /** Static configuration declared by a Detector, read by the registry. */
 export interface DetectorConfig {
   /** Stable identifier, used in Finding.detectorName. */
@@ -191,7 +202,7 @@ export interface Detector {
  */
 export interface ScanOptions {
   /** Reporter selection lives at the CLI layer, but the type belongs here. */
-  format?: "terminal" | "json" | "sarif";
+  format?: "terminal" | "json" | "sarif" | "prompt";
   /** `--no-llm`; offline is the default regardless of this flag. */
   noLlm?: boolean;
   /** Skip network-dependent detectors (OSV). */
@@ -202,6 +213,18 @@ export interface ScanOptions {
    * where those suppressions are the author's, not yours.
    */
   noIgnore?: boolean;
+  /**
+   * `--min-severity`: drop findings below this severity before scoring (a
+   * FINDINGS_FILTERED diagnostic counts them). Omitted = keep everything.
+   */
+  minSeverity?: Severity;
+  /**
+   * `--baseline <file>`: findings from an earlier scan (its JSON output's
+   * `findings`). Current findings that match one — same rule, file, message
+   * and masked snippet, regardless of line — are known, accepted debt: moved
+   * to `ScanResult.baselined` and not scored, so only NEW findings can block.
+   */
+  baseline?: readonly Finding[];
   /** Walker per-file size cap override, in bytes. */
   maxFileSizeBytes?: number;
   /** Walker total-repo byte cap override, across all read files (default 50MB). */
@@ -225,6 +248,12 @@ export interface ScanOptions {
    * (guard fully enforced) when omitted.
    */
   allowPrivate?: boolean;
+  /**
+   * Live-URL mode only: check whether the Supabase / Firebase backend the
+   * site's bundle names can be read with the public key it ships (row
+   * counts and names only). Defaults to on; `--no-data-probes` sets false.
+   */
+  dataProbes?: boolean;
   /**
    * Per-request timeout override (milliseconds) for the URL target fetcher
    * (src/web/fetch-target.ts `fetchTarget`), applied to both the main
@@ -318,8 +347,13 @@ export interface ScanResult {
    */
   diagnostics: Diagnostic[];
   /**
-   * Reserved, currently unused: SARIF output is produced by the SARIF
-   * reporter (`--format sarif`), not attached to the result.
+   * Findings silenced by inline `immunogen-ignore` comments (absent or empty
+   * when none were, and always empty with `--no-ignore`). Not scored.
    */
-  sarif?: unknown;
+  suppressed?: SuppressedFinding[];
+  /**
+   * Findings that matched `ScanOptions.baseline` and were not scored
+   * (absent when no baseline was given).
+   */
+  baselined?: Finding[];
 }

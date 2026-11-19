@@ -202,3 +202,19 @@ describe("ingest — end-to-end: a single call on a realistic local fixture tree
     expect(ctx.options).toEqual({});
   });
 });
+
+describe("ingest — ZIP input keeps env files the archive ships", () => {
+  it("reads a gitignored .env from a ZIP, while a local directory still honors .gitignore", async () => {
+    const files = { ".gitignore": ".env\n", ".env": "OPENAI_API_KEY=real", "package.json": "{}" };
+    const { root, cleanup } = await makeRepoTreeIngest(files);
+    cleanups.push(cleanup);
+    const zipPath = join(root, "export.zip");
+    await writeZipFile(zipPath, files);
+
+    const fromZip = await ingest(zipPath);
+    const fromDir = await ingest(root);
+
+    expect(fromZip.fileSet.has(".env")).toBe(true);
+    expect(fromDir.fileSet.has(".env")).toBe(false);
+  });
+});

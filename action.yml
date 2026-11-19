@@ -1,0 +1,101 @@
+name: immunogen
+description: Scan an AI-built app for launch-blocking security problems — leaked keys, missing RLS, unauthenticated routes, risky agent configs — and gate the build on its Ship Score.
+author: Mocinjay
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  path:
+    description: Folder to scan, relative to the workspace (or a live https:// URL, which also needs `--authorize` in `args`).
+    default: "."
+  format:
+    description: Report format written to `output` — sarif, json, terminal or prompt.
+    default: sarif
+  output:
+    description: File the report is written to.
+    default: immunogen.sarif
+  args:
+    description: Extra CLI arguments, e.g. `--min-severity high` or `--baseline immunogen-baseline.json`.
+    default: ""
+  upload-sarif:
+    description: Upload the SARIF report to GitHub code scanning (needs `security-events write` permission; only when format is sarif).
+    default: "true"
+  fail-on-blocked:
+    description: Fail the step when the verdict is blocked.
+    default: "true"
+
+outputs:
+  score:
+    description: Ship Score, 0-100.
+    value: ${{ steps.scan.outputs.score }}
+  grade:
+    description: Health grade, A-F.
+    value: ${{ steps.scan.outputs.grade }}
+  verdict:
+    description: pass or blocked.
+    value: ${{ steps.scan.outputs.verdict }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: "22"
+
+    - name: Build immunogen
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        corepack enable
+        pnpm install --frozen-lockfile --reporter=silent
+        pnpm build > /dev/null
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        IMMUNOGEN_BIN: ${{ github.action_path }}/dist/immunogen.js
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_ARGS: ${{ inputs.args }}
+      run: |
+        set +e
+        # INPUT_ARGS is word-split on purpose: it holds extra CLI flags written by the workflow author.
+        # shellcheck disable=SC2086
+        node "$IMMUNOGEN_BIN" "$INPUT_PATH" --format "$INPUT_FORMAT" $INPUT_ARGS > "$INPUT_OUTPUT"
+        code=$?
+        set -e
+        if [ "$code" -eq 2 ]; then
+          echo "::error::immunogen could not run (see the log above)."
+          exit 2
+        fi
+        # A JSON summary (no network, no LLM) for the step outputs, from the report when it is JSON or SARIF.
+        node -e '
+          const fs = require("fs");
+          const [file, format, code] = process.argv.slice(1);
+          let score = "", grade = "";
+          try {
+            const report = JSON.parse(fs.readFileSync(file, "utf8"));
+            const props = format === "sarif" ? report.runs?.[0]?.properties ?? {} : report.score ?? {};
+            score = String(props.score ?? ""); grade = String(props.grade ?? "");
+          } catch {}
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `score=${score}\ngrade=${grade}\nverdict=${code === "1" ? "blocked" : "pass"}\n`);
+        ' "$INPUT_OUTPUT" "$INPUT_FORMAT" "$code"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+    - name: Upload SARIF
+      if: always() && inputs.upload-sarif == 'true' && inputs.format == 'sarif' && steps.scan.outputs.exit-code != ''
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ inputs.output }}
+        category: immunogen
+
+    - name: Gate on the verdict
+      if: inputs.fail-on-blocked == 'true' && steps.scan.outputs.exit-code == '1'
+      shell: bash
+      run: |
+        echo "::error::immunogen verdict: blocked (Ship Score ${{ steps.scan.outputs.score }}, grade ${{ steps.scan.outputs.grade }})."
+        exit 1

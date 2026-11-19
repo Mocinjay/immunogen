@@ -14,6 +14,18 @@
  *   no `alter table ... enable row level security` for it in ANY migration,
  *   or a migration that explicitly disables RLS.
  *
+ *   Projects often protect tables in bulk instead of one statement each:
+ *   a `do $$ ... execute format('alter table %s enable row level security',
+ *   ...) $$` loop over the catalog, an event trigger that enables RLS on
+ *   every new table, or `revoke all on all tables in schema public from
+ *   anon` (with `alter default privileges ... revoke` for future tables).
+ *   That SQL is dynamic and cannot be verified statically, so a table it
+ *   covers — created in the same migration or an earlier one, or any time
+ *   when the mechanism also covers future tables — is not reported per
+ *   table. One INFO finding (AUTH-04, no score cost) at the bulk-protection
+ *   site records how many tables rely on it. Tables created AFTER a one-off
+ *   loop are still reported: the loop never saw them.
+ *
  *   AUTH-05: a permissive policy that lets writes through unconditionally —
  *   `using (true)` / `with check (true)` on `for all|insert|update|delete`.
  *   CRITICAL when it applies to everyone (`to public` / `to anon` / no `to`
@@ -118,21 +130,138 @@ function splitStatements(sql: string): Statement[] {
   return statements;
 }
 
-/** Every public table that has RLS enabled by any SQL file in the repo. */
-function tablesWithRlsEnabled(fileSet: ReadonlyMap<string, string>): Set<string> {
-  const enabled = new Set<string>();
+/** A dollar-quoted body (`do $$ ... $$`, a plpgsql function body), tag-matched. */
+const DOLLAR_BODY_RE = /\$([\w]*)\$([\s\S]*?)\$\1\$/g;
+
+/** Dynamic SQL that enables RLS: an `execute` of a built string naming `enable row level security`. */
+const DYNAMIC_ENABLE_RE = /\bexecute\b[\s\S]*?enable\s+row\s+level\s+security/i;
+
+/** Revoking every table privilege in `public` from the API's `anon` role (statically or via dynamic SQL). */
+const REVOKE_ANON_RE = /revoke\s[\s\S]*?\bon\s+all\s+tables\s+in\s+schema\s+public\s+from\s+[^;]*?\banon\b/i;
+const DYNAMIC_REVOKE_RE = /\bexecute\b[\s\S]*?revoke\s[\s\S]*?on\s+all\s+tables\s+in\s+schema\s+public/i;
+
+/** Mechanisms that also cover tables created later: an event trigger, or revoked default privileges. */
+const EVENT_TRIGGER_RE = /create\s+event\s+trigger/i;
+const DEFAULT_PRIVILEGES_REVOKE_RE = /alter\s+default\s+privileges\s[\s\S]*?revoke\s[\s\S]*?\bon\s+tables\b/i;
+
+/** A file that protects tables in bulk (see the module comment). */
+interface BulkProtection {
+  file: string;
+  line: number;
+  /** True when tables created after this file are covered too. */
+  coversFuture: boolean;
+  how: string;
+}
+
+/** Repo-wide RLS facts, computed once per scan (cached by fileSet identity). */
+interface RlsAnalysis {
+  /** Public tables with RLS enabled by a literal statement anywhere. */
+  enabled: Set<string>;
+  bulk: BulkProtection[];
+  /** For each bulk-protection file, how many tables rely on it (filled in by `coveredBy`). */
+  reliance: Map<string, number>;
+}
+
+/** 1-indexed line of character `offset` in `text`. */
+function lineAt(text: string, offset: number): number {
+  return text.slice(0, offset).split("\n").length;
+}
+
+/** Strips comments only (keeps dollar-quoted bodies), preserving line numbers. */
+function stripComments(sql: string): string {
+  const keepNewlines = (text: string): string => text.replace(/[^\n]/g, " ");
+  return sql.replace(/\/\*[\s\S]*?\*\//g, keepNewlines).replace(/--[^\n]*/g, keepNewlines);
+}
+
+/** Finds the bulk-protection mechanisms in one SQL file, if any (see the module comment). */
+function bulkProtectionIn(file: string, content: string): BulkProtection | undefined {
+  const sql = stripComments(content);
+  const bodies = [...sql.matchAll(DOLLAR_BODY_RE)];
+  const enableBody = bodies.find((body) => DYNAMIC_ENABLE_RE.test(body[2] ?? ""));
+  const revokeBody = bodies.find((body) => DYNAMIC_REVOKE_RE.test(body[2] ?? "") && /\banon\b/i.test(body[2] ?? ""));
+  const masked = maskNonStatementText(content);
+  const staticRevoke = masked.match(REVOKE_ANON_RE);
+  const revokeIndex = revokeBody?.index ?? staticRevoke?.index;
+  if (enableBody === undefined && revokeIndex === undefined) {
+    return undefined;
+  }
+  const enabling = "dynamic SQL that enables row level security";
+  const revoking = "a revoke of every table privilege from the anon role";
+  return {
+    file,
+    line: lineAt(sql, Math.min(enableBody?.index ?? Infinity, revokeIndex ?? Infinity)),
+    coversFuture:
+      (enableBody !== undefined && EVENT_TRIGGER_RE.test(sql)) ||
+      (revokeIndex !== undefined && DEFAULT_PRIVILEGES_REVOKE_RE.test(sql)),
+    how: enableBody !== undefined && revokeIndex !== undefined ? `${enabling} and ${revoking}` : enableBody !== undefined ? enabling : revoking,
+  };
+}
+
+/** Literal `alter table X enable row level security` statements, including ones inside DO blocks and functions. */
+function literalEnables(content: string): string[] {
+  const names: string[] = [];
+  const sources = [maskNonStatementText(content), ...[...stripComments(content).matchAll(DOLLAR_BODY_RE)].map((body) => body[2] ?? "")];
+  for (const source of sources) {
+    for (const match of source.matchAll(ENABLE_RLS_RE)) {
+      const name = publicTableName(match[1] ?? "");
+      if (name !== undefined) {
+        names.push(name);
+      }
+    }
+  }
+  return names;
+}
+
+const analysisCache = new WeakMap<ReadonlyMap<string, string>, RlsAnalysis>();
+
+/** Computes (once per fileSet) every literal RLS enable and every bulk-protection site in the repo's SQL. */
+function analyze(fileSet: ReadonlyMap<string, string>): RlsAnalysis {
+  const cached = analysisCache.get(fileSet);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const analysis: RlsAnalysis = { enabled: new Set(), bulk: [], reliance: new Map() };
   for (const [path, content] of fileSet) {
     if (!path.toLowerCase().endsWith(".sql")) {
       continue;
     }
-    for (const match of maskNonStatementText(content).matchAll(ENABLE_RLS_RE)) {
-      const name = publicTableName(match[1] ?? "");
-      if (name !== undefined) {
-        enabled.add(name);
+    for (const name of literalEnables(content)) {
+      analysis.enabled.add(name);
+    }
+    const bulk = bulkProtectionIn(path, content);
+    if (bulk !== undefined) {
+      analysis.bulk.push(bulk);
+    }
+  }
+  // Count reliance up front so the bulk site's INFO finding can report it
+  // regardless of which file the registry visits first.
+  for (const [path, content] of fileSet) {
+    if (!path.toLowerCase().endsWith(".sql")) {
+      continue;
+    }
+    for (const statement of splitStatements(maskNonStatementText(content))) {
+      const created = statement.text.match(CREATE_TABLE_RE);
+      const table = created === null ? undefined : publicTableName(created[1] ?? "");
+      if (table === undefined || analysis.enabled.has(table)) {
+        continue;
+      }
+      const cover = coveringProtection(analysis, path);
+      if (cover !== undefined) {
+        analysis.reliance.set(cover.file, (analysis.reliance.get(cover.file) ?? 0) + 1);
       }
     }
   }
-  return enabled;
+  analysisCache.set(fileSet, analysis);
+  return analysis;
+}
+
+/**
+ * The bulk protection that covers a table created in `file`: one in the same
+ * file or a later migration (file order is migration order), or one that
+ * also covers future tables.
+ */
+function coveringProtection(analysis: RlsAnalysis, file: string): BulkProtection | undefined {
+  return analysis.bulk.find((bulk) => bulk.coversFuture || bulk.file >= file);
 }
 
 /** Builds the AUTH-05 finding for a policy statement that lets writes through unconditionally, or `undefined`. */
@@ -182,13 +311,31 @@ export const supabaseRlsDetector: Detector = {
       }
 
       const findings: Finding[] = [];
-      const rlsEnabled = tablesWithRlsEnabled(ctx.fileSet);
+      const analysis = analyze(ctx.fileSet);
+      const rlsEnabled = analysis.enabled;
+
+      const ownBulk = analysis.bulk.find((bulk) => bulk.file === ctx.filePath);
+      const reliant = analysis.reliance.get(ctx.filePath) ?? 0;
+      if (ownBulk !== undefined && reliant > 0) {
+        findings.push({
+          ruleId: "AUTH-04",
+          category: "auth",
+          detectorName: "supabase-rls",
+          file: ctx.filePath,
+          line: ownBulk.line,
+          severity: "INFO",
+          confidence: "MEDIUM",
+          message: `${String(reliant)} public table(s) are protected only by ${ownBulk.how} here, which cannot be checked statically.`,
+          remediation:
+            "Confirm on the live database: select relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind in ('r','p') and not c.relrowsecurity; — it should return no rows.",
+        });
+      }
 
       for (const statement of splitStatements(maskNonStatementText(ctx.content))) {
         const created = statement.text.match(CREATE_TABLE_RE);
         if (created !== null) {
           const table = publicTableName(created[1] ?? "");
-          if (table !== undefined && !rlsEnabled.has(table)) {
+          if (table !== undefined && !rlsEnabled.has(table) && coveringProtection(analysis, ctx.filePath) === undefined) {
             findings.push({
               ruleId: "AUTH-04",
               category: "auth",

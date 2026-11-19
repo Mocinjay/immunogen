@@ -10,5 +10,6 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts", "bin/**/*.test.ts", "tests/**/*.test.ts"],
+    setupFiles: ["tests/setup/no-registry-network.ts"],
   },
 });

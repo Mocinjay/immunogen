@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_DETECTORS, matchesGlob, runDetectors } from "./registry.js";
+import { DEFAULT_DETECTORS, matchesGlob, runDetectors, runDetectorsDetailed } from "./registry.js";
 import { secretsDetector } from "./secrets/index.js";
 
 import type { Detector, Finding, ScanContext, StackHints } from "../core/types.js";
@@ -74,6 +74,8 @@ describe("runDetectors — fan-out and aggregation", () => {
       "exfiltration",
       "mcp-poisoning",
       "mcp-least-privilege",
+      "agent-autorun",
+      "package-registry",
     ];
 
     for (const expectedName of expectedNames) {
@@ -253,6 +255,25 @@ describe("runDetectors — inline immunogen-ignore suppression", () => {
     const findings = await runDetectors(makeScanContext(content), [flagEveryLine]);
 
     expect(findings.map((finding) => finding.line).sort()).toEqual([3, 4]);
+  });
+
+  it("returns the silenced findings with their suppression comment instead of dropping them", async () => {
+    const content = ["a // immunogen-ignore — reviewed, public endpoint", "b", "c"].join("\n");
+
+    const { findings, suppressed } = await runDetectorsDetailed(makeScanContext(content), [flagEveryLine]);
+
+    expect(findings.map((finding) => finding.line)).toEqual([3]);
+    expect(suppressed.map((finding) => finding.line)).toEqual([1, 2]);
+    expect(suppressed[0]?.justification).toBe("immunogen-ignore — reviewed, public endpoint");
+  });
+
+  it("reports nothing as suppressed under --no-ignore", async () => {
+    const content = ["a // immunogen-ignore", "b"].join("\n");
+
+    const { findings, suppressed } = await runDetectorsDetailed(makeScanContext(content, true), [flagEveryLine]);
+
+    expect(findings).toHaveLength(2);
+    expect(suppressed).toEqual([]);
   });
 
   it("only suppresses the listed rule ids when ids are given", async () => {

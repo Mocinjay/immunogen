@@ -115,3 +115,64 @@ describe("scan — diagnostics reach the ScanResult", () => {
     }
   });
 });
+
+describe("scan() — suppressed findings stay visible", () => {
+  it("returns findings silenced by immunogen-ignore under `suppressed`, unscored, with a diagnostic", async () => {
+    const { makeRepoTree } = await import("../tests/helpers/make-repo-tree.js");
+    const tree = await makeRepoTree({
+      "src/pay.ts": '// immunogen-ignore — rotated already\nconst key = "sk_live_51Qm8vRt2LpX7nWc4ZyKd9HjBfGs3TaEu";\n',
+    });
+    try {
+      const result = await scan(tree.root, { offline: true });
+      expect(result.findings.filter((finding) => finding.ruleId === "SEC-01")).toEqual([]);
+      expect(result.suppressed?.map((finding) => finding.ruleId)).toEqual(["SEC-01"]);
+      expect(result.score.score).toBe(100);
+      expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toContain("FINDINGS_SUPPRESSED");
+    } finally {
+      await tree.cleanup();
+    }
+  });
+});
+
+describe("scan() — minSeverity", () => {
+  it("drops findings below the floor, rescores, and records how many were dropped", async () => {
+    const { makeRepoTree } = await import("../tests/helpers/make-repo-tree.js");
+    const tree = await makeRepoTree({
+      "package.json": JSON.stringify({ dependencies: { vite: "5.0.0" } }),
+      "src/main.ts": "export const x = 1;",
+    });
+    try {
+      const all = await scan(tree.root, { offline: true });
+      const high = await scan(tree.root, { offline: true, minSeverity: "HIGH" });
+      expect(all.findings.some((f) => f.ruleId === "LEGAL-01")).toBe(true);
+      expect(high.findings.every((f) => f.severity === "HIGH" || f.severity === "CRITICAL")).toBe(true);
+      expect(high.score.score).toBeGreaterThanOrEqual(all.score.score);
+      expect(high.diagnostics.map((d) => d.code)).toContain("FINDINGS_FILTERED");
+    } finally {
+      await tree.cleanup();
+    }
+  });
+});
+
+describe("scan() — baseline", () => {
+  it("scores only findings that are not in the baseline, even after code moves", async () => {
+    const { makeRepoTree } = await import("../tests/helpers/make-repo-tree.js");
+    const { writeFile: write } = await import("node:fs/promises");
+    const key = 'const key = "sk_live_51Qm8vRt2LpX7nWc4ZyKd9HjBfGs3TaEu";\n';
+    const tree = await makeRepoTree({ "src/pay.ts": key });
+    try {
+      const before = await scan(tree.root, { offline: true });
+      // Shift the old finding down and add a new one.
+      await write(join(tree.root, "src/pay.ts"), `// moved\n\n${key}`);
+      await write(join(tree.root, "src/db.ts"), 'export const url = "postgresql://postgres:Hq7vRt2pLx9w@db.abcdefghijkl.supabase.co:5432/postgres";\n');
+
+      const after = await scan(tree.root, { offline: true, baseline: before.findings });
+
+      expect(after.findings.map((f) => f.ruleId)).toEqual(["SEC-10"]);
+      expect(after.baselined?.map((f) => f.ruleId)).toEqual(["SEC-01"]);
+      expect(after.diagnostics.map((d) => d.code)).toContain("BASELINE_APPLIED");
+    } finally {
+      await tree.cleanup();
+    }
+  });
+});

@@ -138,3 +138,29 @@ describe("scanUrl — probes do not follow redirects", () => {
     expect(result.diagnostics).toEqual([]);
   });
 });
+
+describe("scanUrl — backend data exposure", () => {
+  const ref = "abcdefghijklmnopqrst";
+  const b64 = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const anon = `${b64({ alg: "HS256" })}.${b64({ ref, role: "anon" })}.c2lnbmF0dXJlLXNpZ25hdHVyZQ`;
+  const page = `<html><script>createClient("https://${ref}.supabase.co","${anon}");db.from("orders").select()</script></html>`;
+  const handler = (url: string | URL): Response => {
+    const href = url.toString();
+    if (href.includes("supabase.co/rest/v1/orders")) return makeResponse("", { status: 206, headers: { "content-range": "0-0/7" } });
+    if (href.includes("supabase.co")) return makeResponse("{}", { status: 401 });
+    if (href === "https://example.com" || href === "https://example.com/") return makeResponse(page, { headers: { "content-type": "text/html" } });
+    return makeResponse("not found", { status: 404 });
+  };
+
+  it("reports a Supabase table the site's own anon key can read", async () => {
+    const result = await scanUrl("https://example.com", { authorize: true }, makeDeps(handler));
+    expect(result.findings.map((finding) => finding.ruleId)).toContain("WEB-DATA-01");
+    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toContain("DATA_PROBES");
+    expect(result.score.verdict).toBe("blocked");
+  });
+
+  it("skips the check entirely with dataProbes: false", async () => {
+    const result = await scanUrl("https://example.com", { authorize: true, dataProbes: false }, makeDeps(handler));
+    expect(result.findings.map((finding) => finding.ruleId)).not.toContain("WEB-DATA-01");
+  });
+});

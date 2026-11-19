@@ -37,6 +37,8 @@ import pc from "picocolors";
 import type { Reporter } from "./interface.js";
 
 import { isUrl } from "../web/url-resolver.js";
+import { isGitRepoUrl } from "../core/ingest/input-resolver.js";
+import { groupFindings, messageTemplate, remediationTemplate } from "./group.js";
 
 import type { Confidence, Diagnostic, Finding, Grade, ScanResult, Severity, Verdict } from "../core/types.js";
 
@@ -110,25 +112,41 @@ function confidenceTag(confidence: Confidence): string {
   return pc.dim(`[confidence: ${confidence}]`);
 }
 
-/**
- * Renders one finding as a multi-line block: severity + ruleId, the
- * `file:line` location, the message, the inline confidence tag, and — only
- * when present — a line echoing `finding.matchedText` and/or a dimmed
- * `fix prompt:` block echoing `finding.fixPrompt`, both exactly as received.
- */
-function renderFinding(finding: Finding): string {
-  const lines = [
-    `  ${colorSeverity(finding.severity)} ${pc.bold(sanitize(finding.ruleId))} ${pc.cyan(sanitize(`${finding.file}:${String(finding.line)}`))}`,
-    `    ${sanitize(finding.message)} ${confidenceTag(finding.confidence)}`,
-  ];
-  if (finding.matchedText !== undefined) {
-    // Already masked upstream; only control characters are stripped here.
-    lines.push(`    matched: ${sanitize(finding.matchedText)}`);
-  }
+/** Locations listed per finding group before the rest are summarized as a count. */
+const MAX_LOCATIONS_PER_GROUP = 20;
+
+/** One location line in a group: `file:line`, plus the masked matched text and any fix prompt. */
+function renderLocation(finding: Finding): string[] {
+  // matchedText is already masked upstream and fixPrompt already redacted;
+  // only control characters are stripped here.
+  const matched = finding.matchedText === undefined ? "" : `  ${pc.dim("matched:")} ${sanitize(finding.matchedText)}`;
+  const lines = [`    ${pc.cyan(sanitize(`${finding.file}:${String(finding.line)}`))}${matched}`];
   if (finding.fixPrompt !== undefined) {
-    // Already redacted upstream by the enricher; only control characters are stripped here.
-    lines.push(`    ${pc.dim("fix prompt:")} ${sanitizeMultiline(finding.fixPrompt)}`);
+    lines.push(`      ${pc.dim("fix prompt:")} ${sanitizeMultiline(finding.fixPrompt)}`);
   }
+  return lines;
+}
+
+/**
+ * Renders one group of same-rule, same-message findings: a header with
+ * severity, rule id, count and the message (exact for a single finding, the
+ * shared template for several), the confidence tag, then each location.
+ */
+function renderGroup(group: readonly Finding[]): string {
+  const [first] = group;
+  if (first === undefined) {
+    return "";
+  }
+  const count = group.length > 1 ? ` ${pc.dim(`×${String(group.length)}`)}` : "";
+  const message = group.length > 1 ? messageTemplate(first) : first.message;
+  const lines = [
+    `  ${colorSeverity(first.severity)} ${pc.bold(sanitize(first.ruleId))}${count} ${sanitize(message)} ${confidenceTag(first.confidence)}`,
+    ...group.slice(0, MAX_LOCATIONS_PER_GROUP).flatMap(renderLocation),
+  ];
+  if (group.length > MAX_LOCATIONS_PER_GROUP) {
+    lines.push(pc.dim(`    ... and ${String(group.length - MAX_LOCATIONS_PER_GROUP)} more (use --format json for the full list)`));
+  }
+  lines.push(`    ${pc.dim("fix:")} ${sanitize(group.length > 1 ? remediationTemplate(first) : first.remediation)}`);
   return lines.join("\n");
 }
 
@@ -155,7 +173,7 @@ function renderDiagnostics(diagnostics: readonly Diagnostic[]): string {
 
 /** Renders the target line: "Screened <url>" for a live-URL scan, "Scanned <path>" otherwise. */
 function renderTargetLine(target: string): string {
-  const verb = isUrl(target) ? "Screened" : "Scanned";
+  const verb = isUrl(target) && !isGitRepoUrl(target) ? "Screened" : "Scanned";
   return `${pc.bold(verb)}: ${sanitize(target)}`;
 }
 
@@ -169,6 +187,11 @@ function renderGradeBanner(score: ScanResult["score"]): string {
   return `${pc.bold("GRADE:")} ${pc.bold(colorGrade(score.grade))} — ${score.gradeLabel}`;
 }
 
+/** Number of findings at `severity`. */
+function countOf(result: ScanResult, severity: Severity): number {
+  return result.findings.filter((finding) => finding.severity === severity).length;
+}
+
 /** Renders the header block: target line, grade banner, Ship Score, band, verdict, critical/high counts. */
 function renderHeader(result: ScanResult): string {
   const { score } = result;
@@ -177,7 +200,7 @@ function renderHeader(result: ScanResult): string {
     renderGradeBanner(score),
     `${pc.bold("Ship Score:")} ${pc.bold(String(score.score))}/100 — ${colorBand(score.band)}`,
     `${pc.bold("Verdict:")} ${colorVerdict(score.verdict)}`,
-    `${pc.bold("Critical:")} ${String(score.criticalCount)}  ${pc.bold("High:")} ${String(score.highCount)}`,
+    `${pc.bold("Critical:")} ${String(score.criticalCount)}  ${pc.bold("High:")} ${String(score.highCount)}  ${pc.bold("Medium:")} ${String(countOf(result, "MEDIUM"))}  ${pc.bold("Low:")} ${String(countOf(result, "LOW"))}`,
   ];
   if (result.scanIncomplete) {
     lines.push(pc.yellow(pc.bold("Scan incomplete: coverage was reduced, so this score may be optimistic (see warnings).")));
@@ -189,7 +212,7 @@ export const terminalReporter: Reporter = {
   render(result: ScanResult): string {
     const sections = [renderHeader(result)];
     sections.push(
-      result.findings.length === 0 ? pc.green("No findings.") : result.findings.map(renderFinding).join("\n\n"),
+      result.findings.length === 0 ? pc.green("No findings.") : groupFindings(result.findings).map(renderGroup).join("\n\n"),
     );
     if (result.diagnostics.length > 0) {
       sections.push(renderDiagnostics(result.diagnostics));

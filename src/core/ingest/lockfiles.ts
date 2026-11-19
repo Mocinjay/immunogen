@@ -27,6 +27,8 @@ export interface LockedPackage {
   version: string;
   /** 1-indexed line of the package's entry in the lockfile. */
   line: number;
+  /** True when the lockfile marks the package as installed only for development (npm's `"dev": true`). */
+  dev?: boolean;
 }
 
 /** Lockfile basenames, by the ecosystem they resolve. */
@@ -41,13 +43,13 @@ class PackageSet {
   private readonly seen = new Set<string>();
   readonly packages: LockedPackage[] = [];
 
-  add(ecosystem: Ecosystem, name: string, version: string, line: number): void {
+  add(ecosystem: Ecosystem, name: string, version: string, line: number, dev = false): void {
     const key = `${name}@${version}`;
     if (name === "" || !EXACT_VERSION_RE.test(version) || this.seen.has(key)) {
       return;
     }
     this.seen.add(key);
-    this.packages.push({ ecosystem, name, version, line });
+    this.packages.push({ ecosystem, name, version, line, ...(dev ? { dev: true } : {}) });
   }
 }
 
@@ -81,13 +83,13 @@ export function parsePackageLock(content: string): LockedPackage[] {
   if (parsed.packages !== undefined && typeof parsed.packages === "object") {
     // v2/v3: keys are install paths ("node_modules/a/node_modules/@s/b").
     for (const [path, value] of Object.entries(parsed.packages)) {
-      const entry = value as { version?: unknown; link?: unknown; name?: unknown };
+      const entry = value as { version?: unknown; link?: unknown; name?: unknown; dev?: unknown };
       const marker = path.lastIndexOf("node_modules/");
       if (marker === -1 || entry.link === true || typeof entry.version !== "string") {
         continue;
       }
       const name = typeof entry.name === "string" ? entry.name : path.slice(marker + "node_modules/".length);
-      set.add("npm", name, entry.version, keyLines.get(path) ?? 1);
+      set.add("npm", name, entry.version, keyLines.get(path) ?? 1, entry.dev === true);
     }
     return set.packages;
   }
@@ -95,9 +97,9 @@ export function parsePackageLock(content: string): LockedPackage[] {
   // v1: nested `dependencies` trees.
   const walk = (dependencies: Record<string, unknown>): void => {
     for (const [name, value] of Object.entries(dependencies)) {
-      const entry = value as { version?: unknown; dependencies?: unknown };
+      const entry = value as { version?: unknown; dependencies?: unknown; dev?: unknown };
       if (typeof entry.version === "string") {
-        set.add("npm", name, entry.version, keyLines.get(name) ?? 1);
+        set.add("npm", name, entry.version, keyLines.get(name) ?? 1, entry.dev === true);
       }
       if (typeof entry.dependencies === "object" && entry.dependencies !== null) {
         walk(entry.dependencies as Record<string, unknown>);
@@ -117,8 +119,85 @@ function splitNameAtVersion(spec: string): [string, string] | undefined {
 }
 
 /** pnpm-lock.yaml: `packages:` (and v9 `snapshots:`) keys — `/name@1.2.3`, `name@1.2.3(peer@x)`, or v5 `/name/1.2.3`. */
+/** Strips quotes, a leading `/` and any `(peer@x)` suffix from a pnpm lockfile key or version. */
+function pnpmClean(raw: string): string {
+  return raw.trim().replace(/^['"]|['"]$/g, "").replace(/^\//, "").replace(/\(.*$/, "");
+}
+
+/**
+ * Packages a pnpm v6/v9 lockfile installs ONLY for development: everything
+ * not reachable from any importer's `dependencies` / `optionalDependencies`
+ * through the `snapshots` (v9) or `packages` (v6) dependency graph.
+ * Returns `undefined` when the lockfile has no importer roots to start
+ * from (then nothing is marked dev, rather than guessing).
+ */
+export function pnpmDevOnlyPackages(content: string): Set<string> | undefined {
+  const roots: string[] = [];
+  const edges = new Map<string, string[]>();
+  const all = new Set<string>();
+  let section = "";
+  let importerGroup = "";
+  let pendingName: string | undefined;
+  let entry: string | undefined;
+  let inDeps = false;
+
+  for (const line of content.split("\n")) {
+    if (/^\S/.test(line)) {
+      section = line.replace(/:.*$/, "");
+      continue;
+    }
+    const indent = line.length - line.trimStart().length;
+    const text = line.trim();
+    if (text === "") {
+      continue;
+    }
+    if (section === "importers") {
+      if (indent === 4) {
+        importerGroup = text.replace(/:$/, "");
+      } else if (indent === 6 && (importerGroup === "dependencies" || importerGroup === "optionalDependencies")) {
+        pendingName = pnpmClean(text.replace(/:$/, ""));
+      } else if (indent === 8 && pendingName !== undefined && text.startsWith("version:")) {
+        const version = pnpmClean(text.slice("version:".length));
+        if (/^\d/.test(version)) {
+          roots.push(`${pendingName}@${version}`);
+        }
+      }
+    } else if (section === "snapshots" || section === "packages") {
+      if (indent === 2) {
+        entry = pnpmClean(text.replace(/:\s*\{\}$/, "").replace(/:$/, ""));
+        all.add(entry);
+        inDeps = false;
+      } else if (indent === 4) {
+        inDeps = text === "dependencies:" || text === "optionalDependencies:";
+      } else if (indent === 6 && inDeps && entry !== undefined) {
+        const colon = text.lastIndexOf(": ");
+        if (colon > 0) {
+          const target = `${pnpmClean(text.slice(0, colon))}@${pnpmClean(text.slice(colon + 2))}`;
+          const list = edges.get(entry) ?? [];
+          list.push(target);
+          edges.set(entry, list);
+        }
+      }
+    }
+  }
+  if (roots.length === 0) {
+    return undefined;
+  }
+  const reachable = new Set<string>();
+  const queue = [...roots];
+  for (let next = queue.pop(); next !== undefined; next = queue.pop()) {
+    if (reachable.has(next)) {
+      continue;
+    }
+    reachable.add(next);
+    queue.push(...(edges.get(next) ?? []));
+  }
+  return new Set([...all].filter((key) => !reachable.has(key)));
+}
+
 export function parsePnpmLock(content: string): LockedPackage[] {
   const set = new PackageSet();
+  const devOnly = pnpmDevOnlyPackages(content);
   let inPackages = false;
   for (const [index, line] of content.split("\n").entries()) {
     if (/^\S/.test(line)) {
@@ -138,7 +217,7 @@ export function parsePnpmLock(content: string): LockedPackage[] {
     // pnpm v6/v9 keys are name@version[(peer@x)].
     const split = splitNameAtVersion(key.replace(/\(.*$/, ""));
     if (split !== undefined) {
-      set.add("npm", split[0], split[1], index + 1);
+      set.add("npm", split[0], split[1], index + 1, devOnly?.has(`${split[0]}@${split[1]}`) === true);
     }
   }
   return set.packages;

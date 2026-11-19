@@ -1,11 +1,22 @@
 /**
  * committedEnvDetector — text-only CAT-1 (Leaked Secrets) detector, SEC-05.
  *
- * The finding here is about a FILE's existence in the scanned tree, not a
- * string pattern inside it (`.env`, `.env.local`, `.env.production`,
- * `.env.staging` present in the tree and not ignored). The registry (src/detectors/registry.ts)
- * calls `detect()` once per file matching `config.globs`, so this detector
- * keys entirely off `ctx.filePath` — `ctx.content` is never read.
+ * The finding is about a committed env file (`.env`, `.env.local`,
+ * `.env.production`, `.env.staging` present in the tree and not ignored),
+ * rated by what it holds. Each `NAME=value` line is classified:
+ *   - secret: a secret-named variable (`*_SECRET`, `*_KEY`, `*_TOKEN`,
+ *     `*PASSWORD*`, `DATABASE_URL`, ...) with a real-looking value, a value
+ *     shaped like a provider key, or a connection URL with a password for a
+ *     remote host;
+ *   - not secret: client-public variables (`NEXT_PUBLIC_`, `VITE_`, ...,
+ *     unless named SECRET / PRIVATE / PASSWORD / SERVICE_ROLE — BUNDLE-01
+ *     reports those), public-by-design keys (publishable / anon / site
+ *     keys), plain URLs, numbers, flags, placeholders and empty values.
+ * Any secret value makes the file CRITICAL. Without one, the file is INFO —
+ * Next.js and Vite document committing `.env` / `.env.production` defaults —
+ * or LOW for a `.env*.local` file, which those frameworks reserve for
+ * untracked machine-local values. Only variable NAMES are reported, never
+ * values.
  *
  * Two guards run in sequence before a Finding is ever pushed:
  *   1. FP allowlist — test/fixture/mock/example directories never fire
@@ -26,12 +37,106 @@
  * string values only; never reads `ctx.ast`, never imports a parser, and
  * never evaluates, requires, or spawns a subprocess from scanned content.
  *
- * No `matchedText` is set on the pushed Finding — there is no single secret
- * string to mask; the finding IS the file's presence, not a value within it
- * (see plan 05-01 task 2 action).
+ * No `matchedText` is set on the pushed Finding — values are never echoed;
+ * the message names the secret variables instead.
  */
+import {
+  CONNECTION_URL_RE,
+  isLocalHost,
+  isPlaceholderPassword,
+  isPlaceholderSecret,
+  PLACEHOLDER_VALUE_RE,
+  PROVIDER_KEY_PATTERNS,
+} from "./secret-patterns.js";
+
 import type { Detector, DetectorContext, Finding } from "../../core/types.js";
 import { isInTestDirectory } from "../shared/test-paths.js";
+
+/** A leading `export ` keyword, stripped before ENV_LINE_RE runs. */
+const EXPORT_PREFIX_RE = /^\s*export\s+/;
+
+/** `NAME=value` (value may be quoted, may carry a trailing comment). */
+const ENV_LINE_RE = /^\s*([A-Za-z_][\w.-]*)\s*=(.*)$/;
+
+/** Variable-name fragments that mark a value as sensitive. */
+const SECRET_NAME_RE = /SECRET|KEY|TOKEN|PASSWORD|PASSWD|PWD|PRIVATE|CREDENTIAL|AUTH|DSN|SERVICE_ROLE|DATABASE_URL|DB_URL|CONNECTION|_URI$/i;
+
+/** Client-bundle prefixes: the framework inlines these into public code by design. */
+const CLIENT_PUBLIC_PREFIX_RE = /^(?:NEXT_PUBLIC_|VITE_|EXPO_PUBLIC_|REACT_APP_|NUXT_PUBLIC_|GATSBY_|PUBLIC_)/i;
+
+/** Name fragments that are never public, even behind a client prefix. */
+const NEVER_PUBLIC_RE = /SECRET|PRIVATE|PASSWORD|SERVICE_ROLE/i;
+
+/** Keys documented by their provider as safe to ship to clients. */
+const PUBLIC_BY_DESIGN_RE = /PUBLISHABLE|ANON_KEY|SITE_?KEY|PUBLIC_KEY|MEASUREMENT_ID/i;
+
+/** Values below this length are flags, ports or stubs, not credentials. */
+const MIN_SECRET_VALUE_LENGTH = 6;
+
+/** Most secret variable names listed in the message before the rest are counted. */
+const MAX_NAMED = 5;
+
+/** Strips surrounding quotes, or an unquoted value's trailing ` # comment`. */
+function unquote(raw: string): string {
+  const trimmed = raw.trim();
+  const quoted = trimmed.match(/^(['"`])(.*)\1/);
+  if (quoted !== null) {
+    return quoted[2] ?? "";
+  }
+  return trimmed.replace(/\s+#.*$/, "").trim();
+}
+
+/** True when `value` contains a provider-key shape or a remote connection URL with a real password. */
+function looksLikeCredential(value: string): boolean {
+  // Google `AIza` keys are public by design for Maps / Firebase; the secrets
+  // detector judges them with surrounding context instead.
+  const keyPatterns = PROVIDER_KEY_PATTERNS.filter((pattern) => pattern.provider !== "Google");
+  if (keyPatterns.some(({ regex }) => [...value.matchAll(regex)].some((match) => !isPlaceholderSecret(match[0])))) {
+    return true;
+  }
+  return [...value.matchAll(CONNECTION_URL_RE)].some(
+    (match) => !isLocalHost(match[4] ?? "") && !isPlaceholderPassword(match[3] ?? ""),
+  );
+}
+
+/** True when `NAME=value` holds a secret (see the module comment for the rules). */
+function isSecretEntry(name: string, value: string): boolean {
+  if (looksLikeCredential(value)) {
+    return true;
+  }
+  const clientPublic = CLIENT_PUBLIC_PREFIX_RE.test(name) && !NEVER_PUBLIC_RE.test(name);
+  if (!SECRET_NAME_RE.test(name) || clientPublic || PUBLIC_BY_DESIGN_RE.test(name)) {
+    return false;
+  }
+  if (
+    value.length < MIN_SECRET_VALUE_LENGTH ||
+    value.includes("${") ||
+    /^(?:true|false|\d+)$/i.test(value) ||
+    PLACEHOLDER_VALUE_RE.test(value) ||
+    isPlaceholderSecret(value)
+  ) {
+    return false;
+  }
+  // A URL is an endpoint; one carrying a real remote password was already
+  // caught by looksLikeCredential above.
+  return !/^[a-z][\w+.-]*:\/\//i.test(value);
+}
+
+/** Every secret-holding variable in an env file, with the 1-indexed line it is on. */
+function secretEntries(content: string): Array<{ name: string; line: number }> {
+  const entries: Array<{ name: string; line: number }> = [];
+  for (const [index, line] of content.split("\n").entries()) {
+    const match = line.replace(EXPORT_PREFIX_RE, "").match(ENV_LINE_RE);
+    const name = match?.[1];
+    if (name === undefined || match === null) {
+      continue;
+    }
+    if (isSecretEntry(name, unquote(match[2] ?? ""))) {
+      entries.push({ name, line: index + 1 });
+    }
+  }
+  return entries;
+}
 
 /**
  * Template-suffix basenames that carry no real secrets by convention and
@@ -88,20 +193,44 @@ export const committedEnvDetector: Detector = {
         return Promise.resolve([]);
       }
 
-      const finding: Finding = {
-        ruleId: "SEC-05",
-        category: "secrets",
-        detectorName: "committed-env",
-        file: ctx.filePath,
-        line: 1,
-        severity: "CRITICAL",
-        confidence: "HIGH",
-        message: `Committed environment file (${ctx.filePath}) found in the scanned tree.`,
-        remediation:
-          "Add this file to .gitignore, remove it from git history (e.g. git filter-repo or BFG), and rotate every secret it contained — committing it once is enough to leak everything inside.",
-      };
+      const secrets = secretEntries(ctx.content);
+      if (secrets.length > 0) {
+        const names = secrets.slice(0, MAX_NAMED).map((entry) => entry.name).join(", ");
+        const more = secrets.length > MAX_NAMED ? ` and ${String(secrets.length - MAX_NAMED)} more` : "";
+        return Promise.resolve([
+          {
+            ruleId: "SEC-05",
+            category: "secrets",
+            detectorName: "committed-env",
+            file: ctx.filePath,
+            line: secrets[0]?.line ?? 1,
+            severity: "CRITICAL",
+            confidence: "HIGH",
+            message: `Committed environment file (${ctx.filePath}) contains secret values: ${names}${more}.`,
+            remediation:
+              "Add this file to .gitignore, remove it from git history (e.g. git filter-repo or BFG), and rotate every secret it contained — committing it once is enough to leak everything inside.",
+          },
+        ]);
+      }
 
-      return Promise.resolve([finding]);
+      const isLocal = basename.endsWith(".local");
+      return Promise.resolve([
+        {
+          ruleId: "SEC-05",
+          category: "secrets",
+          detectorName: "committed-env",
+          file: ctx.filePath,
+          line: 1,
+          severity: isLocal ? "LOW" : "INFO",
+          confidence: "HIGH",
+          message: isLocal
+            ? `Committed ${basename} file — no secret values found in it, but .local env files are meant to stay on one machine and out of git.`
+            : `Committed environment file (${ctx.filePath}) with no secret-looking values — committing framework defaults is fine, as long as real secrets stay in an untracked .env*.local.`,
+          remediation: isLocal
+            ? `Add ${basename} to .gitignore and remove it from the repository (git rm --cached ${ctx.filePath}).`
+            : "Keep secrets in an untracked .env.local (or your host's secret settings) and only public, non-sensitive defaults in this file.",
+        },
+      ]);
     } catch {
       // No-throw contract (src/core/types.ts Detector.detect): any
       // unexpected failure must resolve to [], never reject.

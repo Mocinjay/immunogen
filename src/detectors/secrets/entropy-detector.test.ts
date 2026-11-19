@@ -30,7 +30,7 @@ function makeContext(content: string, filePath = "src/config.ts"): DetectorConte
 const STRIPE_KEY = "sk_live_4eC39HqLyjWDarjtT1zdp7dc";
 const AWS_KEY = "AKIAABCD1234EFGH5678"; // AKIA + exactly 16 chars in [0-9A-Z]
 // sk- + exactly 48 alnum chars, built deterministically so the length is provably correct.
-const OPENAI_KEY_BODY = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV";
+const OPENAI_KEY_BODY = "5P1nvecWboyuFTBSknR3aoIdxanrwVgK86HnyjnLogFBnd25";
 const OPENAI_KEY = `sk-${OPENAI_KEY_BODY.slice(0, 48)}`;
 
 describe("secretsDetector — provider-key regex (Pass A)", () => {
@@ -412,7 +412,7 @@ describe("secretsDetector — real-repo false positives (SEC-04 / SEC-06)", () =
 });
 
 describe("secretsDetector — current provider key formats", () => {
-  const BODY = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+  const BODY = "Dl09Jq7Nj1z3yXUwdeU5svM4RMyPQjzVrRSv_-ZOXhVmZKr18BE48OjJje6VMpyDAIbr29zfGm";
 
   it("flags OpenAI project / service-account / admin keys as SEC-03", async () => {
     for (const prefix of ["sk-proj-", "sk-svcacct-", "sk-admin-"]) {
@@ -461,10 +461,10 @@ describe("secretsDetector — private keys and third-party tokens (SEC-08 / SEC-
   });
 
   it.each([
-    ["GitHub", "ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789", "CRITICAL"],
-    ["Slack", "xoxb-1234567890-0987654321-AbCdEfGhIjKl", "CRITICAL"],
-    ["Slack webhook", "https://hooks.slack.com/services/T0ABC1234/B0DEF5678/AbCdEfGhIjKlMnOpQrStUvWx", "HIGH"],
-    ["Stripe webhook signing", "whsec_AbCdEfGhIjKlMnOpQrStUvWx1234", "HIGH"],
+    ["GitHub", "ghp_3dwcgEqOIzyVSVmgZ1CkbZJc8Ed4kjlCHjvV", "CRITICAL"],
+    ["Slack", "xoxb-6442569059-9735232264-TN1R4HOA0NOE", "CRITICAL"],
+    ["Slack webhook", "https://hooks.slack.com/services/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", "HIGH"],
+    ["Stripe webhook signing", "whsec_P4F66EsGoksly3JMuNVXLuhuYukVygQz", "HIGH"],
     ["Groq", `gsk_${"Ab1".repeat(17)}`, "CRITICAL"],
     ["Hugging Face", `hf_${"Ab1".repeat(12)}`, "CRITICAL"],
     ["Replicate", `r8_${"Ab1".repeat(13)}`, "CRITICAL"],
@@ -478,7 +478,7 @@ describe("secretsDetector — private keys and third-party tokens (SEC-08 / SEC-
   });
 
   it("flags a Stripe restricted live key (rk_live_) as SEC-01", async () => {
-    expect(await summarize('const k = "rk_live_51AbCdEfGhIjKlMnOp";')).toEqual([expect.stringMatching(/^SEC-01 CRITICAL/)]);
+    expect(await summarize('const k = "rk_live_51lOh0VIvyekpeNDFSypeabSIO7kdf5I";')).toEqual([expect.stringMatching(/^SEC-01 CRITICAL/)]);
   });
 });
 
@@ -527,5 +527,64 @@ describe("secretsDetector — Google and Resend keys (SEC-09)", () => {
 
   it("does NOT mistake a snake_case identifier for a Resend key", async () => {
     expect(await summarize("const v = re_validate_userprofilesettingsform();")).toEqual([]);
+  });
+});
+
+describe("secretsDetector — documentation placeholders are not secrets", () => {
+  async function ruleIds(content: string, filePath?: string): Promise<string[]> {
+    const findings = await secretsDetector.detect(makeContext(content, filePath));
+    return findings.map((finding) => finding.ruleId);
+  }
+
+  it.each([
+    ["a README setup line", "Set `STRIPE_SECRET_KEY=sk_live_YOUR_KEY_HERE` in .env.local", "README.md"],
+    ["AWS's documented example key", 'aws_access_key_id = "AKIAIOSFODNN7EXAMPLE"', "docs/setup.md"],
+    ["a zero-filled key", 'const k = "sk_live_000000000000000000000000";', "src/config.ts"],
+    ["Slack's example webhook", "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX", "README.md"],
+    ["a placeholder OpenAI project key", "OPENAI_API_KEY=sk-proj-replace-me-with-your-own-project-key-0001", ".env.example"],
+    ["a sequential fake Anthropic key", 'key: "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"', "src/x.ts"],
+  ])("does not flag %s", async (_label, content, filePath) => {
+    expect(await ruleIds(content, filePath)).toEqual([]);
+  });
+
+  it("still flags a real-looking key in the same README", async () => {
+    expect(await ruleIds("STRIPE_SECRET_KEY=sk_live_51Qm8vRt2LpX7nWc4ZyKd9HjBfGs3TaEu", "README.md")).toEqual(["SEC-01"]);
+  });
+});
+
+describe("secretsDetector — database connection strings (SEC-10)", () => {
+  async function summarize(content: string, filePath?: string): Promise<string[]> {
+    const findings = await secretsDetector.detect(makeContext(content, filePath));
+    return findings.map((finding) => `${finding.ruleId} ${finding.severity} ${finding.matchedText ?? ""}`);
+  }
+
+  it("flags a Supabase Postgres URL with a password as CRITICAL and masks the password", async () => {
+    const result = await summarize(
+      'export const pool = new Pool({ connectionString: "postgresql://postgres:Hq7vRt2pLx9w@db.abcdefghijkl.supabase.co:5432/postgres" });',
+    );
+    expect(result).toEqual(["SEC-10 CRITICAL postgresql://postgres:****@db.abcdefghijkl.supabase.co"]);
+    expect(result.join("")).not.toContain("Hq7vRt2pLx9w");
+  });
+
+  it("flags a MongoDB Atlas SRV URL as CRITICAL", async () => {
+    expect(await summarize('const uri = "mongodb+srv://admin:p4ssW0rdQ9@cluster0.ab1cd.mongodb.net/app";')).toEqual([
+      "SEC-10 CRITICAL mongodb+srv://admin:****@cluster0.ab1cd.mongodb.net",
+    ]);
+  });
+
+  it("flags a SQLAlchemy URL on an unknown remote host as HIGH", async () => {
+    expect(await summarize('DATABASE_URL = "postgresql+psycopg2://app:Zk82mQwe1xR@db.mycompany.io/prod"', "app/settings.py")).toEqual([
+      "SEC-10 HIGH postgresql://app:****@db.mycompany.io",
+    ]);
+  });
+
+  it.each([
+    ["localhost", 'const url = "postgres://postgres:Zk82mQwe1xR@localhost:5432/dev";'],
+    ["a docker-compose service", "DATABASE_URL: postgresql://app:Zk82mQwe1xR@db:5432/app"],
+    ["a template variable", "const url = `postgres://${user}:${password}@db.x.supabase.co/postgres`;"],
+    ["a default password", 'const url = "postgres://postgres:postgres@db.prod.example.org/app";'],
+    ["a placeholder password", "DATABASE_URL=postgresql://postgres:[YOUR-PASSWORD]@db.abcdefghijkl.supabase.co:5432/postgres"],
+  ])("does not flag a connection string using %s", async (_label, content) => {
+    expect(await summarize(content, "docker-compose.yml")).toEqual([]);
   });
 });

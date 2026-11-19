@@ -12,19 +12,22 @@
  *
  * ENG-05 invariant: this module never directly executes a subprocess or
  * the dynamic-evaluation primitive, and it never requires/imports/evals an
- * extracted or cloned file. extract-zip and simple-git are npm
+ * extracted or cloned file. yauzl (ZIP parsing) and simple-git are npm
  * dependencies that wrap subprocess/native behavior internally —
  * importing them does not violate ENG-05, which forbids the primitive in
  * OUR code (enforced by eslint.config.js's no-execute ruleset on src/**).
  */
-import extract from "extract-zip";
 import { simpleGit } from "simple-git";
-import { mkdtemp, rm, stat } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { openPromise } from "yauzl";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { createWriteStream, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 
-import type { ScanOptions } from "../types.js";
+import type { Entry } from "yauzl";
+
+import type { Diagnostic, ScanOptions } from "../types.js";
 
 /**
  * An input refused for a policy reason (path traversal, archive limits,
@@ -79,6 +82,10 @@ function cloneEnvironment(): Record<string, string> {
 export interface ResolvedInput {
   /** Absolute path to the directory the FileWalker should read. */
   workingDir: string;
+  /** Which input mode produced `workingDir`. */
+  kind: InputMode;
+  /** Non-fatal notes about the input itself (e.g. ZIP entries that were not extracted). */
+  diagnostics?: Diagnostic[];
   /**
    * Removes any temp directory created during resolution. A no-op (but
    * still awaitable) for the local-directory passthrough mode.
@@ -92,12 +99,61 @@ const GIT_URL_PATTERN = /^(https?:\/\/|git@)/i;
 const GIT_HOST_REPO_RE = /^https?:\/\/(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|codeberg\.org)\/[\w.-]+\/[\w.-]+\/?$/i;
 
 /**
+ * A browse URL into a repo on a well-known git host:
+ * `github.com/o/r/tree/<ref>/<path>`, `.../blob/<ref>/<file>`,
+ * GitLab's `.../-/tree/<ref>/...`, Bitbucket / Codeberg `.../src/<ref>/...`.
+ * Groups: 1 repo URL, 2 view kind, 3 ref, 4 path (optional).
+ */
+const GIT_HOST_BROWSE_RE =
+  // eslint-disable-next-line security/detect-unsafe-regex -- matched once against the caller's own CLI argument, never against scanned content
+  /^(https?:\/\/(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|codeberg\.org)\/[\w.-]+\/[\w.-]+?)(?:\.git)?\/(?:-\/)?(tree|blob|src)\/([^/?#]+)(?:\/([^?#]*))?(?:[?#].*)?$/i;
+
+/** A git ref safe to pass to `git clone --branch` (never option-shaped). */
+const SAFE_REF_RE = /^[\w][\w.\/-]*$/;
+
+/** What to clone for a git input, and which part of the checkout to scan. */
+export interface GitTarget {
+  cloneUrl: string;
+  /** Branch or tag to check out (`--branch`), when the URL named one. */
+  ref?: string;
+  /** Directory inside the checkout to scan, when the URL pointed into one. */
+  subdir?: string;
+}
+
+/**
+ * Splits a git input into the URL to clone plus an optional ref and
+ * subdirectory. A `/tree/<ref>/<dir>` URL scans that directory at that ref;
+ * a `/blob/<ref>/<file>` URL scans the whole repository at that ref. Refs
+ * containing `/` are ambiguous in browse URLs; the first segment is used.
+ */
+export function parseGitTarget(input: string): GitTarget {
+  const browse = input.match(GIT_HOST_BROWSE_RE);
+  if (browse === null) {
+    return { cloneUrl: input };
+  }
+  const [, repo = input, kind = "", ref = "", path = ""] = browse;
+  const target: GitTarget = { cloneUrl: repo };
+  if (SAFE_REF_RE.test(ref)) {
+    target.ref = decodeURIComponent(ref);
+  }
+  const subdir = path.replace(/\/+$/, "");
+  if (kind.toLowerCase() !== "blob" && subdir !== "") {
+    target.subdir = decodeURIComponent(subdir);
+  }
+  return target;
+}
+
+/**
  * True when `input` is an http(s) URL that names a git repository to clone
- * and scan — a repo page on a well-known git host, or any URL ending in
- * `.git` — rather than a deployed website to screen live.
+ * and scan — a repo page on a well-known git host (including a `/tree/` or
+ * `/blob/` link into it), or any URL ending in `.git` — rather than a
+ * deployed website to screen live.
  */
 export function isGitRepoUrl(input: string): boolean {
-  return /^https?:\/\//i.test(input) && (GIT_HOST_REPO_RE.test(input) || /\.git\/?$/i.test(input));
+  return (
+    /^https?:\/\//i.test(input) &&
+    (GIT_HOST_REPO_RE.test(input) || GIT_HOST_BROWSE_RE.test(input) || /\.git\/?$/i.test(input))
+  );
 }
 
 /**
@@ -106,7 +162,7 @@ export function isGitRepoUrl(input: string): boolean {
  * string check), then the git URL patterns, with local-directory
  * passthrough as the default fallback.
  */
-type InputMode = "zip" | "git" | "dir";
+export type InputMode = "zip" | "git" | "dir";
 
 function classifyInput(input: string): InputMode {
   if (input.toLowerCase().endsWith(".zip")) {
@@ -156,6 +212,7 @@ function resolveDir(input: string): ResolvedInput {
 
   return {
     workingDir: resolved,
+    kind: "dir",
     cleanup: noopCleanup,
   };
 }
@@ -176,13 +233,19 @@ async function resolveGit(url: string): Promise<ResolvedInput> {
   if (url.startsWith("-")) {
     throw new InputRejectedError(`Refusing git input that looks like a command-line option: ${url}`);
   }
+  const target = parseGitTarget(url);
+  const subdir = target.subdir;
+  if (subdir !== undefined && subdir.split("/").some((segment) => segment === ".." || segment === "")) {
+    throw new InputRejectedError(`Refusing a repository path that leaves the checkout: ${subdir}`);
+  }
   const tempDir = await makeTempDir("immunogen-git-");
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort();
   }, GIT_CLONE_TIMEOUT_MS);
   try {
-    await simpleGit({ abort: controller.signal }).env(cloneEnvironment()).clone(url, tempDir, ["--depth", "1"]);
+    const cloneArgs = ["--depth", "1", ...(target.ref === undefined ? [] : ["--branch", target.ref])];
+    await simpleGit({ abort: controller.signal }).env(cloneEnvironment()).clone(target.cloneUrl, tempDir, cloneArgs);
   } catch (err) {
     await rm(tempDir, { recursive: true, force: true });
     const reason = controller.signal.aborted
@@ -192,8 +255,19 @@ async function resolveGit(url: string): Promise<ResolvedInput> {
   } finally {
     clearTimeout(timer);
   }
+  let workingDir = tempDir;
+  if (subdir !== undefined) {
+    workingDir = resolve(tempDir, subdir);
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- a directory inside our own fresh clone, containment-checked above
+    const subdirStat = statSync(workingDir, { throwIfNoEntry: false });
+    if (!workingDir.startsWith(tempDir + sep) || subdirStat?.isDirectory() !== true) {
+      await rm(tempDir, { recursive: true, force: true });
+      throw new Error(`Path "${subdir}" is not a directory in ${target.cloneUrl}${target.ref === undefined ? "" : ` at ${target.ref}`}`);
+    }
+  }
   return {
-    workingDir: tempDir,
+    workingDir,
+    kind: "git",
     cleanup: makeCleanup(tempDir),
   };
 }
@@ -203,10 +277,10 @@ async function resolveGit(url: string): Promise<ResolvedInput> {
  * for `entry.fileName` against `extractRoot` and throws BEFORE any byte is
  * written if the destination would escape the extraction root.
  *
- * extract-zip@2.0.1's `yauzl` dependency already rejects any entry name
- * containing `..`, a leading `/`, or a `\` with an "invalid relative path"
- * / "absolute path" error before the `onEntry` callback ever runs for that
- * entry — see yauzl's `validateFileName`. This guard is defense-in-depth:
+ * yauzl already rejects any entry name containing `..`, a leading `/`, or a
+ * `\` with an "invalid relative path" / "absolute path" error before the
+ * entry is handed over — see yauzl's `validateFileName`. This guard is
+ * defense-in-depth:
  * it catches traversal forms yauzl's check might miss and guards against
  * future yauzl relaxations.
  */
@@ -240,37 +314,111 @@ export function chargeZipBudget(budget: ZipBudget, uncompressedSize: number, zip
   }
 }
 
+/** Unix file-type bits in a ZIP entry's external attributes (high 16 bits). */
+const S_IFMT = 0o170000;
+const S_IFREG = 0o100000;
+const S_IFDIR = 0o040000;
+
+/**
+ * Extracts one ZIP archive into `destDir`, entry by entry, with the
+ * containment check and zip-bomb budget enforced BEFORE each write.
+ *
+ * Only regular files and directories are written. Symlinks (and devices,
+ * FIFOs, ...) are skipped and counted: a symlink entry followed by a file
+ * entry "inside" it is the classic way to write outside the extraction root
+ * (extract-zip, which this replaced, is affected and unmaintained — see
+ * GHSA-7pqw-9j4j-h8q3). Because no symlink is ever created, every directory
+ * under `destDir` is real and lexical containment is sufficient. Files are
+ * created exclusively (`wx`), so a duplicate entry name fails the archive
+ * instead of overwriting. yauzl itself rejects absolute paths, `..`
+ * segments and backslashes, and verifies declared sizes.
+ */
+async function extractZip(zipPath: string, destDir: string, budget: ZipBudget): Promise<{ skippedSpecial: string[] }> {
+  const zip = await openPromise(zipPath, { lazyEntries: true, validateEntrySizes: true, decodeStrings: true });
+  const skippedSpecial: string[] = [];
+
+  const handle = async (entry: Entry): Promise<void> => {
+    assertEntryWithinRoot(entry.fileName, destDir);
+    chargeZipBudget(budget, entry.uncompressedSize, zipPath);
+    const dest = resolve(destDir, entry.fileName);
+    const fileType = (entry.externalFileAttributes >>> 16) & S_IFMT;
+    if (entry.fileName.endsWith("/") || fileType === S_IFDIR) {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- containment-checked path inside our own temp dir
+      await mkdir(dest, { recursive: true });
+      return;
+    }
+    // 0 = no Unix attributes (e.g. archives made on Windows): a plain file.
+    if (fileType !== 0 && fileType !== S_IFREG) {
+      skippedSpecial.push(entry.fileName);
+      return;
+    }
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- containment-checked path inside our own temp dir
+    await mkdir(dirname(dest), { recursive: true });
+    const stream = await zip.openReadStreamPromise(entry);
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- containment-checked path inside our own temp dir
+    await pipeline(stream, createWriteStream(dest, { flags: "wx", mode: 0o600 }));
+  };
+
+  try {
+    await new Promise<void>((resolveAll, reject) => {
+      zip.on("error", reject);
+      zip.on("end", () => {
+        resolveAll();
+      });
+      zip.on("entry", (entry: Entry) => {
+        handle(entry).then(
+          () => {
+            zip.readEntry();
+          },
+          (err: unknown) => {
+            reject(err instanceof Error ? err : new Error(String(err)));
+          },
+        );
+      });
+      zip.readEntry();
+    });
+  } finally {
+    if (zip.isOpen) {
+      zip.close();
+    }
+  }
+  return { skippedSpecial };
+}
+
 /**
  * Resolves a ZIP file path: extracts into an isolated `mkdtemp` directory
- * with a per-entry containment guard (`onEntry`) that fires before any
- * write for that entry. A malicious entry causes the extraction promise to
- * reject; `extract-zip`'s `Extractor` cancels and closes the zipfile on any
- * thrown error from `onEntry`, so no further entries are processed either.
+ * (see `extractZip` for the per-entry guards). Any failure removes the temp
+ * dir; policy refusals keep their message, anything else (a corrupt or
+ * non-ZIP file) becomes one clean error.
  */
 async function resolveZip(zipPath: string): Promise<ResolvedInput> {
   const tempDir = await makeTempDir("immunogen-zip-");
   const budget: ZipBudget = { entries: 0, uncompressedBytes: 0 };
+  let skippedSpecial: string[];
   try {
-    await extract(zipPath, {
-      dir: tempDir,
-      onEntry: (entry) => {
-        assertEntryWithinRoot(entry.fileName, tempDir);
-        chargeZipBudget(budget, entry.uncompressedSize, zipPath);
-      },
-    });
+    ({ skippedSpecial } = await extractZip(zipPath, tempDir, budget));
   } catch (err) {
-    // Re-throw our own policy errors unchanged (already clean and
-    // user-readable); wrap anything else (yauzl/extract-zip's raw parse/
-    // format errors on a corrupt or non-ZIP file) into one clean message.
     await rm(tempDir, { recursive: true, force: true });
     if (err instanceof InputRejectedError) {
       throw err;
     }
     throw new Error(`Not a valid ZIP archive: ${zipPath}`);
   }
+  const diagnostics: Diagnostic[] =
+    skippedSpecial.length === 0
+      ? []
+      : [
+          {
+            level: "warn",
+            code: "ZIP_ENTRIES_SKIPPED",
+            message: `${String(skippedSpecial.length)} symlink or special entr${skippedSpecial.length === 1 ? "y was" : "ies were"} not extracted from the ZIP (never followed, so never scanned): ${skippedSpecial.slice(0, 5).join(", ")}${skippedSpecial.length > 5 ? ", ..." : ""}.`,
+          },
+        ];
   return {
     workingDir: tempDir,
+    kind: "zip",
     cleanup: makeCleanup(tempDir),
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
 }
 

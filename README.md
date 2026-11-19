@@ -24,10 +24,10 @@
 
 - **Deterministic** — the same code always produces the same report. No LLM decides what counts as a finding.
 - **Never runs your code** — static analysis only, and secrets are redacted in every output format.
-- **Offline-first** — a local scan's only network call is an OSV.dev lookup of package names and versions; `--offline` removes it.
-- **Covers the AI layer** — prompt injection, data exfiltration and MCP tool poisoning in skills, rules and agent prompts.
+- **Offline-first** — a local scan's only network calls are an OSV.dev lookup and a registry existence check of package names (and versions for OSV); `--offline` removes both.
+- **Covers the AI layer** — prompt injection, data exfiltration, MCP tool poisoning, auto-running agent hooks and over-broad agent permissions in skills, rules, settings and MCP configs.
 - **Repo, git URL or live site** — scan a folder, a ZIP, a GitHub/GitLab/Bitbucket URL, or (with consent) a deployed website.
-- **CI-native** — exit codes gate the build; SARIF output feeds GitHub code scanning.
+- **CI-native** — a GitHub Action, exit codes that gate the build, SARIF for code scanning, and a baseline mode so existing repos fail only on new findings.
 
 Works on JavaScript / TypeScript, Python and Go.
 
@@ -47,6 +47,8 @@ immunogen
 
 That's it — no account, no API key. Scan another folder with `immunogen ./path/to/app`, or a remote repo with `immunogen https://github.com/owner/repo`.
 
+Fixing with an AI coding agent? `immunogen --format prompt` prints a numbered, ready-to-paste brief — every problem with its `file:line` and fix.
+
 <details>
 <summary><b>Other ways to run it</b> — npx, per-project, Docker</summary>
 
@@ -55,7 +57,7 @@ That's it — no account, no API key. Scan another folder with `immunogen ./path
 One-off run without installing (pinned to a release, because npx caches whatever a URL first downloaded):
 
 ```sh
-npx --yes --package=https://github.com/Mocinjay/immunogen/releases/download/v0.2.0/immunogen-0.2.0.tgz immunogen
+npx --yes --package=https://github.com/Mocinjay/immunogen/releases/download/v0.3.0/immunogen-0.3.0.tgz immunogen
 ```
 
 As a project dev dependency (CI gate or library use):
@@ -77,26 +79,26 @@ docker run --rm -v "$PWD:/app" immunogen /app
 
 <img src="https://raw.githubusercontent.com/Mocinjay/immunogen/main/assets/grades.svg" alt="Grade scale on the 0–100 Ship Score: F Critical 0–34, D Infected 35–54, C Symptomatic 55–74, B Healthy 75–89, A Immune 90–100. Any CRITICAL finding is an automatic F." width="100%" />
 
-Every finding costs points by severity (CRITICAL 50, HIGH 25, MEDIUM 10, LOW 5), and the remaining score maps to a grade. **A single CRITICAL finding** — one leaked production key, one unauthenticated payment route — **is an automatic F** and blocks the verdict, however clean the rest of the project is. The verdict is `blocked` on any CRITICAL finding or a score below 40, and `pass` otherwise.
+Every finding costs points by severity (CRITICAL 50, HIGH 25, MEDIUM 10, LOW 5) — half that for a LOW-confidence heuristic — and the remaining score maps to a grade. **A single CRITICAL finding** — one leaked production key, one unauthenticated payment route — **is an automatic F** and blocks the verdict, however clean the rest of the project is. The verdict is `blocked` on any CRITICAL finding or a score below 40, and `pass` otherwise.
 
 ## What it catches
 
-23 detectors across 12 categories on a repo scan, plus 5 web probes when you screen a live URL.
+25 detectors across 12 categories on a repo scan, plus 5 web probes and a backend data-exposure check when you screen a live URL.
 
 | Category | What it catches |
 |---|---|
-| **Secrets** | Hardcoded provider keys (Stripe, AWS, OpenAI incl. `sk-proj-`, Anthropic, Gemini / Google `AIza` keys outside Firebase/Maps client config, Supabase `service_role` / `sb_secret_`, GitHub, Slack, SendGrid, Resend, Groq, xAI, Hugging Face, Replicate, npm), committed private keys and service-account JSON, committed `.env` files, high-entropy tokens (prose, URLs, hashes and lockfiles are ignored) |
+| **Secrets** | Hardcoded provider keys (Stripe, AWS, OpenAI incl. `sk-proj-`, Anthropic, Gemini / Google `AIza` keys outside Firebase/Maps client config, Supabase `service_role` / `sb_secret_`, GitHub, Slack, SendGrid, Resend, Groq, xAI, Hugging Face, Replicate, npm), database connection strings with a password (Postgres / Supabase / Neon, MySQL, MongoDB Atlas, Redis), committed private keys and service-account JSON, committed `.env` files that hold secrets, high-entropy tokens (prose, URLs, hashes, lockfiles and documentation placeholders such as `sk_live_YOUR_KEY` are ignored) |
 | **Client-bundle exposure** | Secret-named env vars inlined into the client via `NEXT_PUBLIC_` / `VITE_` / `EXPO_PUBLIC_` / `REACT_APP_` / `NUXT_PUBLIC_` / `GATSBY_` (public-by-design keys such as the Supabase anon key are not flagged); LLM SDKs running in the browser with `dangerouslyAllowBrowser` |
 | **Auth & RLS** | Unauthenticated routes — Next.js App Router handlers, Pages Router API routes, Server Actions, Express / Fastify / Hono / Koa, FastAPI / Flask, Go (Gin / Echo / Chi / Fiber / net/http); Supabase tables without RLS and `using (true)` write policies; open Firebase rules; JWTs decoded without verification; auth tokens in `localStorage` |
 | **Abuse / rate limiting** | Paid-LLM endpoints and login / sign-up / password-reset endpoints with no rate limiting |
 | **Payment safety** | Stripe webhooks that skip signature verification; charge amounts taken from the request |
-| **Dependencies** | Known vulnerabilities in every resolved package, direct and transitive, from npm / pnpm / yarn / bun / Poetry / uv / Pipenv lockfiles or manifests — rated by each advisory's real severity, with an offline fallback |
+| **Dependencies** | Known vulnerabilities in every resolved package, direct and transitive, from npm / pnpm / yarn / bun / Poetry / uv / Pipenv lockfiles or manifests — rated by each advisory's real severity (one level lower for dev-only packages), with the version to upgrade to and an offline fallback; dependencies that don't exist on the public npm / PyPI registry (hallucinated names an attacker could register) |
 | **Injection / XSS** | Unsanitized `dangerouslySetInnerHTML`; SQL built by string interpolation; `eval` / `exec` / shell / unsafe YAML or pickle on dynamic input; server-side request forgery; open redirects |
 | **CORS & headers** | Wildcard or reflected origins combined with credentials; missing Content-Security-Policy |
 | **Storage** | Public Firebase / Firestore / Storage rules; Supabase buckets with no access policy |
 | **Legal** | No privacy policy or terms when the app collects user data |
 | **Config / debug** | Whole-environment dumps (`process.env`, `os.environ`, `os.Environ()`) to logs or HTTP responses |
-| **AI layer** | Prompt-injection strings, data-exfiltration directives, MCP tool poisoning and least-privilege gaps in skills, rules and agent prompts |
+| **AI layer** | Prompt-injection strings, data-exfiltration directives, MCP tool poisoning and least-privilege gaps in skills, rules and agent prompts (Claude, Cursor, Copilot, Windsurf, Gemini, Cline, Kiro, ...); agent hooks, VS Code folder-open tasks and MCP launch commands that download-and-run code or send credentials out; `Bash(*)`, `bypassPermissions` and auto-approved MCP servers in committed agent settings |
 
 ## How it compares
 
@@ -125,12 +127,15 @@ immunogen [path] [options]
 
 | Option | Description |
 |---|---|
-| `--format <format>` | `terminal` (default), `json` (a stable `ScanResult`), or `sarif` (GitHub code scanning and other SARIF tools). |
-| `--offline` | Never touch the network: check dependencies against the bundled advisory list instead of OSV.dev. |
+| `--format <format>` | `terminal` (default), `json` (a stable `ScanResult`), `sarif` (GitHub code scanning and other SARIF tools), or `prompt` (a numbered fix-it brief to paste into Claude Code / Cursor / Copilot). |
+| `--min-severity <level>` | Leave out — and don't score — findings below `info` / `low` / `medium` / `high` / `critical`. |
+| `--baseline <file>` | An earlier `--format json` report: findings already in it are not scored, so only new ones can fail the build. |
+| `--offline` | No dependency lookups: check against the bundled advisory list instead of OSV.dev, and skip the registry existence check. (Cloning a git URL still needs the network.) |
 | `--no-ignore` | Disregard `.immunogenignore` and inline `immunogen-ignore` comments — for auditing a repo you don't control. |
 | `--no-llm` | Disable LLM fix prompts (already the default; explicit for scripts). |
 | `--authorize` | Required consent to screen a live URL. Only screen sites you own or are authorized to test. |
 | `--allow-private` | Let live-URL screening reach loopback / private hosts (local dev only). |
+| `--no-data-probes` | Live-URL screening: skip the Supabase / Firebase data-exposure check. |
 | `-v, --version` | Print the installed version. |
 
 | Exit code | Meaning |
@@ -150,6 +155,10 @@ export async function POST(req: Request) { /* ... */ }
 
 Exclude whole paths (vendored code, seed data) with a `.immunogenignore` file at the scan root, in `.gitignore` syntax. Route handlers can also be marked with a `// public` comment.
 
+Suppressions never disappear silently: every report counts them, JSON lists them under `suppressed` with their comment, and SARIF marks them as suppressed in source — so an accepted risk stays visible, including one a coding agent accepted for you. Pass `--no-ignore` to score them anyway.
+
+The scan follows `.gitignore` and `.git/info/exclude`, and skips agent worktrees (`.claude/worktrees/`, or any nested git worktree) so a second checkout of the same repo is never counted twice.
+
 <details>
 <summary><b>Library API</b></summary>
 
@@ -162,11 +171,12 @@ const result = await scan("./my-app");
 console.log(result.score.grade, result.score.score, result.findings.length);
 ```
 
-`scan(path, options?)` returns a `ScanResult`: `{ target, scannedAt, stackHints, findings, score, llmEnriched, scanIncomplete, diagnostics }`.
+`scan(path, options?)` returns a `ScanResult`: `{ target, scannedAt, stackHints, findings, score, llmEnriched, scanIncomplete, diagnostics, suppressed?, baselined? }`.
 
 - `score` — `{ score, grade, gradeLabel, band, verdict, criticalCount, highCount }`
 - `findings` — severity-sorted, each with `ruleId`, `category`, `severity`, `confidence`, `file`, `line`, `message`, `remediation`
-- `diagnostics` — every non-fatal warning (unparseable files, files over the size cap, a truncated walk, LLM or URL-probe failures); `scanIncomplete` is `true` whenever coverage was reduced
+- `diagnostics` — every non-fatal note (unparseable files, files over the size cap, a truncated walk, suppressed or baselined findings, LLM or URL-probe failures); `scanIncomplete` is `true` when the dependency check fell back to the offline list, the walk hit a repo-size cap, or a live-URL check could not complete
+- `suppressed` — findings silenced by `immunogen-ignore` comments (not scored); `baselined` — findings that matched `options.baseline` (not scored)
 
 Ships as ESM and CommonJS with TypeScript types.
 
@@ -193,7 +203,7 @@ Every snippet is redacted before it is sent — no source file and no matched se
 
 ## CI integration
 
-Gate every push and pull request, and send findings to the repository's **Security → Code scanning** tab:
+Gate every push and pull request with the GitHub Action, and send findings to the repository's **Security → Code scanning** tab:
 
 ```yaml
 name: immunogen
@@ -209,22 +219,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-
-      - name: Screen with immunogen
-        run: npx --yes --package=https://github.com/Mocinjay/immunogen/releases/download/v0.2.0/immunogen-0.2.0.tgz immunogen . --format sarif > results.sarif
-
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: results.sarif
+      - uses: Mocinjay/immunogen@v0.3.0
 ```
 
-A `blocked` verdict fails the step; `if: always()` still uploads the findings when it does. Alert fingerprints don't depend on line numbers, so alerts keep their identity when unrelated edits move code around.
+A `blocked` verdict fails the job, and the SARIF report is uploaded either way. Alert fingerprints don't depend on line numbers, so alerts keep their identity when unrelated edits move code around.
+
+| Input | Default | |
+|---|---|---|
+| `path` | `.` | Folder to scan |
+| `format` | `sarif` | `sarif`, `json`, `terminal` or `prompt` |
+| `output` | `immunogen.sarif` | Where the report is written |
+| `args` | | Extra flags, e.g. `--min-severity high` or `--baseline immunogen-baseline.json` |
+| `upload-sarif` | `true` | Upload to code scanning (needs `security-events: write`) |
+| `fail-on-blocked` | `true` | Fail the step on a `blocked` verdict |
+
+Outputs: `score`, `grade`, `verdict`.
+
+**Adopting it on an existing repo?** Commit a baseline once — `immunogen --format json > immunogen-baseline.json` — and pass `args: --baseline immunogen-baseline.json`. Existing findings stop counting; any new one still fails the build.
+
+<details>
+<summary>Without the action (any CI)</summary>
+
+<br />
+
+```sh
+npx --yes --package=https://github.com/Mocinjay/immunogen/releases/download/v0.3.0/immunogen-0.3.0.tgz immunogen . --format sarif > results.sarif
+```
+
+Exit code `1` means blocked.
+
+</details>
 
 ## Screen a live URL
 
@@ -241,6 +265,9 @@ A bounded, read-only probe of a deployed site. `--authorize` is a required conse
 | Exposed files (`WEB-EXPOSED`) | A publicly served `.env`, `.git/config`, `.git/HEAD`, `config.json` or source map |
 | Secrets in bundles (`WEB-SEC`) | Live-looking provider keys in same-origin scripts, redacted in output |
 | Cookies (`WEB-COOKIE`) | Session cookies missing `Secure`, `HttpOnly` or a strong `SameSite` |
+| Backend data exposure (`WEB-DATA`) | Whether the Supabase tables, Firebase Realtime Database or Firestore collections the site's code uses can be read with the public key it ships |
+
+The data-exposure check is read-only: it asks Supabase for a row **count** (`HEAD` with `Prefer: count=exact`, no row data), asks Firebase for top-level key names or document names only, writes nothing, and only contacts the Supabase / Firebase hosts named in the site's own bundle. `--no-data-probes` turns it off.
 
 <details>
 <summary><b>SSRF protection</b></summary>
@@ -280,19 +307,19 @@ The symlink keeps the skill in sync when you rebuild; copying the folder also wo
 ```mermaid
 flowchart LR
     R["Folder · ZIP · git URL"] --> I["Ingest<br/>walk + parse"]
-    I --> D["23 detectors<br/>12 categories"]
+    I --> D["25 detectors<br/>12 categories"]
     U["Live URL<br/>--authorize"] --> F["Bounded fetch<br/>SSRF-guarded"]
-    F --> W["5 web probes"]
+    F --> W["5 web probes<br/>+ data exposure"]
     D --> S["Ship Score<br/>grade · verdict"]
     W --> S
-    S --> O["terminal · JSON · SARIF"]
+    S --> O["terminal · JSON · SARIF · prompt"]
 ```
 
 Scanned code is only ever read, never imported or executed; each file is parsed at most once and released before the next.
 
 ## Roadmap
 
-Planned: Django and Rails route coverage, slopsquatting / hallucinated-package detection, and cross-file data flow for injection rules. See the [changelog](./CHANGELOG.md) for what has shipped.
+Planned: Django and Rails route coverage, and cross-file data flow for injection rules. See the [changelog](./CHANGELOG.md) for what has shipped.
 
 ## Contributing
 
