@@ -118,3 +118,71 @@ describe("supabaseRlsDetector — AUTH-05 always-true write policies", () => {
     expect(await summarize({ [MIGRATION]: withRls(policies) })).toEqual([]);
   });
 });
+
+describe("supabaseRlsDetector — bulk protection (dynamic SQL, event triggers, revoked grants)", () => {
+  const INIT = "supabase/migrations/0001_init.sql";
+  const LOCKDOWN = "supabase/migrations/0009_lockdown.sql";
+  const LATER = "supabase/migrations/0010_more.sql";
+  const createTables = "create table public.users (id uuid primary key);\ncreate table public.orders (id uuid primary key);\n";
+  const loop = [
+    "do $$",
+    "declare rel record;",
+    "begin",
+    "  for rel in select c.oid::regclass as ident from pg_class c join pg_namespace n on n.oid = c.relnamespace",
+    "    where n.nspname = 'public' and c.relkind in ('r','p') and not c.relrowsecurity",
+    "  loop",
+    "    execute format('alter table %s enable row level security', rel.ident);",
+    "  end loop;",
+    "end",
+    "$$;",
+  ].join("\n");
+
+  it("does not report tables created before a migration that enables RLS on every table in a loop", async () => {
+    const files = { [INIT]: createTables, [LOCKDOWN]: loop };
+    expect(await summarize(files, INIT)).toEqual([]);
+  });
+
+  it("records one INFO finding (no score cost) at the loop, counting the tables that rely on it", async () => {
+    const files = { [INIT]: createTables, [LOCKDOWN]: loop };
+    const findings = await supabaseRlsDetector.detect(makeContext(files, LOCKDOWN));
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "AUTH-04", severity: "INFO", line: 1 });
+    expect(findings[0]?.message).toContain("2 public table(s)");
+  });
+
+  it("still reports a table created AFTER a one-off loop — the loop never saw it", async () => {
+    const files = { [INIT]: createTables, [LOCKDOWN]: loop, [LATER]: "create table public.invoices (id uuid);\n" };
+    expect(await summarize(files, LATER)).toEqual(["AUTH-04 CRITICAL L1 invoices"]);
+  });
+
+  it("treats an event trigger that enables RLS as covering future tables too", async () => {
+    const trigger = [
+      "create or replace function rls_auto_enable() returns event_trigger language plpgsql as $fn$",
+      "declare cmd record;",
+      "begin",
+      "  for cmd in select * from pg_event_trigger_ddl_commands() where command_tag = 'CREATE TABLE' loop",
+      "    execute format('alter table %s enable row level security', cmd.object_identity);",
+      "  end loop;",
+      "end $fn$;",
+      "create event trigger ensure_rls on ddl_command_end execute function rls_auto_enable();",
+    ].join("\n");
+    const files = { [INIT]: trigger, [LATER]: "create table public.invoices (id uuid);\n" };
+    expect(await summarize(files, LATER)).toEqual([]);
+  });
+
+  it("treats revoking every table privilege from anon (plus default privileges) as covering all tables", async () => {
+    const revoke = [
+      "revoke all on all tables in schema public from anon, authenticated;",
+      "alter default privileges in schema public revoke all on tables from anon, authenticated;",
+    ].join("\n");
+    const files = { [INIT]: revoke, [LATER]: "create table public.invoices (id uuid);\n" };
+    expect(await summarize(files, LATER)).toEqual([]);
+  });
+
+  it("counts a literal enable inside a DO block as a normal static enable", async () => {
+    const files = {
+      [INIT]: "create table public.users (id uuid);\ndo $$ begin alter table public.users enable row level security; end $$;\n",
+    };
+    expect(await summarize(files, INIT)).toEqual([]);
+  });
+});

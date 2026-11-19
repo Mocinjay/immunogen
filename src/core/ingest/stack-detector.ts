@@ -151,6 +151,19 @@ function hasEnvFile(fileSet: Map<string, string>): boolean {
   return false;
 }
 
+/** A Deno / CDN import of the Supabase client (`npm:@supabase/...`, `jsr:@supabase/...`, `esm.sh/@supabase/...`). */
+const DENO_SUPABASE_IMPORT_RE = /["'](?:npm:|jsr:|https:\/\/esm\.sh\/)@supabase\//;
+
+/** True when any JS/TS file imports the Supabase client the Deno way (no package.json entry). */
+function hasDenoSupabaseImport(fileSet: Map<string, string>): boolean {
+  for (const [key, content] of fileSet) {
+    if (/\.(?:[cm]?[jt]sx?)$/.test(key) && DENO_SUPABASE_IMPORT_RE.test(content)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const NEXT_CONFIG_BASENAMES = ["next.config.js", "next.config.ts", "next.config.mjs", "next.config.cjs"];
 const VITE_CONFIG_BASENAMES = ["vite.config.js", "vite.config.ts", "vite.config.mjs", "vite.config.cjs"];
 
@@ -197,9 +210,18 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
     (name) => name in deps,
   );
   const hasSupabaseConfig = [...fileSet.keys()].some(
-    (key) => key === "supabase/config.toml" || key.endsWith("/supabase/config.toml"),
+    (key) =>
+      key === "supabase/config.toml" ||
+      key.endsWith("/supabase/config.toml") ||
+      // Supabase CLI layout: edge functions and migrations, even with no package.json.
+      /(?:^|\/)supabase\/(?:functions|migrations)\//.test(key),
   );
-  const hasSupabase = hasSupabaseDep || hasSupabaseConfig || python.has("supabase") || hasGoModule(go, ["github.com/supabase-community/"]);
+  const hasSupabase =
+    hasSupabaseDep ||
+    hasSupabaseConfig ||
+    hasDenoSupabaseImport(fileSet) ||
+    python.has("supabase") ||
+    hasGoModule(go, ["github.com/supabase-community/"]);
 
   const hasFirebase =
     ["firebase", "firebase-admin", "@react-native-firebase/app"].some((name) => name in deps) ||
