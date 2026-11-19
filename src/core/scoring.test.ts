@@ -279,3 +279,18 @@ describe("computeScore — grade + gradeLabel wiring", () => {
     expect(computeScore(shuffled)).toEqual(computeScore(findings));
   });
 });
+
+describe("computeScore — confidence weighting", () => {
+  it("charges a LOW-confidence finding half its severity's points", () => {
+    expect(computeScore([makeFinding("MEDIUM", { confidence: "LOW" })]).score).toBe(95);
+    expect(computeScore([makeFinding("MEDIUM", { confidence: "MEDIUM" })]).score).toBe(90);
+    expect(computeScore([makeFinding("HIGH", { confidence: "LOW" }), makeFinding("HIGH", { confidence: "LOW" })]).score).toBe(75);
+  });
+
+  it("still makes any CRITICAL an automatic F, whatever its confidence", () => {
+    const score = computeScore([makeFinding("CRITICAL", { confidence: "LOW" })]);
+    expect(score.grade).toBe("F");
+    expect(score.verdict).toBe("blocked");
+    expect(score.score).toBeLessThanOrEqual(20);
+  });
+});
