@@ -115,3 +115,21 @@ describe("scan — diagnostics reach the ScanResult", () => {
     }
   });
 });
+
+describe("scan() — suppressed findings stay visible", () => {
+  it("returns findings silenced by immunogen-ignore under `suppressed`, unscored, with a diagnostic", async () => {
+    const { makeRepoTree } = await import("../tests/helpers/make-repo-tree.js");
+    const tree = await makeRepoTree({
+      "src/pay.ts": '// immunogen-ignore — rotated already\nconst key = "sk_live_51Qm8vRt2LpX7nWc4ZyKd9HjBfGs3TaEu";\n',
+    });
+    try {
+      const result = await scan(tree.root, { offline: true });
+      expect(result.findings.filter((finding) => finding.ruleId === "SEC-01")).toEqual([]);
+      expect(result.suppressed?.map((finding) => finding.ruleId)).toEqual(["SEC-01"]);
+      expect(result.score.score).toBe(100);
+      expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toContain("FINDINGS_SUPPRESSED");
+    } finally {
+      await tree.cleanup();
+    }
+  });
+});

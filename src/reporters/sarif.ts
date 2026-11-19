@@ -244,7 +244,12 @@ function buildLocation(finding: Finding): SarifLocation {
  * copied in, since it may carry (already-masked, but still best kept out of
  * a shared alert surface) matched content.
  */
-function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>, fingerprint: string): SarifResult {
+function buildResult(
+  finding: Finding,
+  ruleIndexByRuleId: Map<string, number>,
+  fingerprint: string,
+  justification?: string,
+): SarifResult {
   const ruleIndex = ruleIndexByRuleId.get(finding.ruleId);
 
   return {
@@ -254,6 +259,7 @@ function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>, f
     message: { text: `${finding.message} ${finding.remediation}`.trim() },
     locations: [buildLocation(finding)],
     partialFingerprints: { primaryLocationLineHash: fingerprint },
+    ...(justification === undefined ? {} : { suppressions: [{ kind: "inSource" as const, justification }] }),
   };
 }
 
@@ -265,8 +271,13 @@ function buildResult(finding: Finding, ruleIndexByRuleId: Map<string, number>, f
  * or JSON output; it does not restructure any other part of the run.
  */
 function buildRun(result: ScanResult): SarifRun {
-  const { rules, ruleIndexByRuleId } = buildRules(result.findings);
-  const fingerprints = computeFingerprints(result.findings);
+  // Suppressed findings are emitted too (with `suppressions`), and share one
+  // fingerprint space with the active ones, so silencing a finding never
+  // changes another alert's identity.
+  const suppressed = result.suppressed ?? [];
+  const all: Finding[] = [...result.findings, ...suppressed];
+  const { rules, ruleIndexByRuleId } = buildRules(all);
+  const fingerprints = computeFingerprints(all);
 
   return {
     tool: {
@@ -284,7 +295,14 @@ function buildRun(result: ScanResult): SarifRun {
         ...(result.diagnostics.length > 0 ? { toolExecutionNotifications: result.diagnostics.map(buildNotification) } : {}),
       },
     ],
-    results: result.findings.map((finding, index) => buildResult(finding, ruleIndexByRuleId, fingerprints.at(index) ?? "")),
+    results: all.map((finding, index) =>
+      buildResult(
+        finding,
+        ruleIndexByRuleId,
+        fingerprints.at(index) ?? "",
+        index >= result.findings.length ? suppressed.at(index - result.findings.length)?.justification : undefined,
+      ),
+    ),
     properties: {
       grade: result.score.grade,
       gradeLabel: result.score.gradeLabel,

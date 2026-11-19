@@ -34,6 +34,7 @@
 export type {
   Diagnostic,
   Finding,
+  SuppressedFinding,
   ScanOptions,
   ScanResult,
   ShipScore,
@@ -42,7 +43,7 @@ export type {
 
 import { ingest } from "./core/ingest/index.js";
 import { computeScore } from "./core/scoring.js";
-import { runDetectors } from "./detectors/registry.js";
+import { runDetectorsDetailed } from "./detectors/registry.js";
 import { NoopAdapter } from "./llm/adapters/index.js";
 import { enrichFindings } from "./llm/enricher.js";
 import { providerConfigDiagnostic, selectAdapter } from "./llm/provider.js";
@@ -106,7 +107,7 @@ export async function scan(
   const scannedAt = new Date().toISOString();
 
   const ctx = await ingest(path, options);
-  const findings = await runDetectors(ctx);
+  const { findings, suppressed } = await runDetectorsDetailed(ctx);
   const score = computeScore(findings);
   const depsOffline = findings.some((finding) => finding.ruleId === "DEP-OFFLINE");
   const scanIncomplete = depsOffline || ctx.diagnostics.some((diagnostic) => diagnostic.code === "SCAN_TRUNCATED");
@@ -131,6 +132,13 @@ export async function scan(
       diagnostics.push(configWarning);
     }
   }
+  if (suppressed.length > 0) {
+    diagnostics.push({
+      level: "info",
+      code: "FINDINGS_SUPPRESSED",
+      message: `${String(suppressed.length)} finding(s) were silenced by immunogen-ignore comments and not scored (listed under "suppressed" in JSON; run with --no-ignore to score them).`,
+    });
+  }
   const enrichment = await enrichFindings(findings, adapter);
   diagnostics.push(...enrichment.diagnostics);
 
@@ -143,5 +151,6 @@ export async function scan(
     llmEnriched: enrichment.enriched,
     scanIncomplete,
     diagnostics,
+    suppressed,
   };
 }

@@ -103,6 +103,17 @@ export interface Finding {
   fixPrompt?: string;
 }
 
+/**
+ * A finding silenced by an inline `immunogen-ignore` comment. Never scored,
+ * but always reported (JSON `suppressed`, SARIF `suppressions`, a terminal
+ * count) so an accepted risk stays visible — including one an AI agent
+ * accepted on the developer's behalf.
+ */
+export interface SuppressedFinding extends Finding {
+  /** The suppression comment's text, e.g. `immunogen-ignore AUTH-01 — public endpoint`. */
+  justification: string;
+}
+
 /** Static configuration declared by a Detector, read by the registry. */
 export interface DetectorConfig {
   /** Stable identifier, used in Finding.detectorName. */
@@ -318,8 +329,8 @@ export interface ScanResult {
    */
   diagnostics: Diagnostic[];
   /**
-   * Reserved, currently unused: SARIF output is produced by the SARIF
-   * reporter (`--format sarif`), not attached to the result.
+   * Findings silenced by inline `immunogen-ignore` comments (absent or empty
+   * when none were, and always empty with `--no-ignore`). Not scored.
    */
-  sarif?: unknown;
+  suppressed?: SuppressedFinding[];
 }

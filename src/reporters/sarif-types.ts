@@ -89,6 +89,14 @@ export interface SarifResult {
   };
   locations: SarifLocation[];
   partialFingerprints: SarifPartialFingerprints;
+  /** Present when the result was silenced in source (`immunogen-ignore`); code-scanning UIs show it as dismissed. */
+  suppressions?: SarifSuppression[];
+}
+
+/** SARIF 2.1.0 §3.35 `suppression`. */
+export interface SarifSuppression {
+  kind: "inSource" | "external";
+  justification?: string;
 }
 
 /**
