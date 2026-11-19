@@ -225,7 +225,7 @@ export const mcpPoisoningDetector: Detector = {
   config: {
     name: "mcp-poisoning",
     category: "ai-layer",
-    globs: ["**/.mcp.json", "**/.cursor/mcp.json"],
+    globs: ["**/.mcp.json", "**/.cursor/mcp.json", "**/.vscode/mcp.json", "**/.roo/mcp.json", "**/.kiro/settings/mcp.json", "**/.amazonq/mcp.json"],
   },
 
   // Not declared `async` — no network/disk wait in this JSON-only detector;

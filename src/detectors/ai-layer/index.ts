@@ -6,3 +6,4 @@ export { exfiltrationDetector } from "./exfiltration-detector.js";
 export { mcpPoisoningDetector } from "./mcp-poisoning-detector.js";
 /** Barrel re-export of mcpLeastPrivilegeDetector (CAT-11 AI Layer, AILAYER-04). */
 export { mcpLeastPrivilegeDetector } from "./mcp-least-privilege-detector.js";
+export { agentAutorunDetector } from "./agent-autorun-detector.js";

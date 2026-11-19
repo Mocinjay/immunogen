@@ -293,7 +293,7 @@ export function detectStack(fileSet: Map<string, string>): StackHints {
 
   const hasEnvFiles = hasEnvFile(fileSet);
 
-  const hasMcpJson = fileSet.has(".mcp.json") || fileSet.has(".cursor/mcp.json");
+  const hasMcpJson = fileSet.has(".mcp.json") || fileSet.has(".cursor/mcp.json") || fileSet.has(".vscode/mcp.json");
 
   const hasClaudeSkills = hasKeyWithPrefix(fileSet, ".claude/skills/");
 

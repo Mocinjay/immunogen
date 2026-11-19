@@ -85,7 +85,7 @@ const ACTION_RE = /\b(send|transmit|upload|exfiltrate|post|curl|wget|fetch)\b/i;
  * fixed-cardinality, no nested quantifiers.
  */
 const CONTEXT_REF_RE =
-  /(process\.env|os\.environ|\benv\b|conversation|context|history|secret|token|api[_-]?key|credentials)/i;
+  /(process\.env|os\.environ|\benv\b|conversation|context|history|secret|token|api[_-]?key|credentials|\.ssh|id_rsa|id_ed25519|\.aws|\.npmrc|\.netrc|\.git-credentials|keychain|private key)/i;
 
 /**
  * Clause (c) external-URL half: an `http(s)://` URL. Host capture group is
@@ -160,6 +160,22 @@ export const exfiltrationDetector: Detector = {
       "**/CLAUDE.md",
       "**/system-prompt.md",
       "**/system_prompt.md",
+      "**/.windsurfrules",
+      "**/.windsurf/rules/**",
+      "**/GEMINI.md",
+      "**/AGENT.md",
+      "**/.clinerules",
+      "**/.clinerules/**",
+      "**/.roorules",
+      "**/.roo/rules/**",
+      "**/.claude/agents/**/*.md",
+      "**/.claude/commands/**/*.md",
+      "**/.github/instructions/**/*.md",
+      "**/.github/prompts/**/*.md",
+      "**/.github/chatmodes/**/*.md",
+      "**/.kiro/steering/**",
+      "**/.amazonq/rules/**",
+      "**/.junie/guidelines.md",
       "**/.github/copilot-instructions.md",
     ],
   },

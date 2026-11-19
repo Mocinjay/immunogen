@@ -51,6 +51,7 @@ import {
   exfiltrationDetector,
   mcpPoisoningDetector,
   mcpLeastPrivilegeDetector,
+  agentAutorunDetector,
 } from "./ai-layer/index.js";
 
 import { isParseable, parseSource } from "../core/parse/ast-cache.js";
@@ -90,6 +91,7 @@ export const DEFAULT_DETECTORS: Detector[] = [
   exfiltrationDetector,
   mcpPoisoningDetector,
   mcpLeastPrivilegeDetector,
+  agentAutorunDetector,
 ];
 
 /** Escapes every regex metacharacter in `char` except `*` and `{`/`}`/`,`, which `globToRegex` handles itself. */
