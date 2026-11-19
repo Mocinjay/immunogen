@@ -21,7 +21,7 @@ function makeCtx(target: FetchedTarget): WebContext {
   return { target, probes: [] };
 }
 
-const LIVE_STRIPE_KEY = "sk_live_51H8xyzABCDEFGHIJKLMNOP";
+const LIVE_STRIPE_KEY = "sk_live_51H8xyzQmR7tLp2VwKe9";
 
 describe("bundleSecretsDetector — WEB-SEC (vulnerable)", () => {
   it("flags a live Stripe key in a same-origin script bundle as CRITICAL, and redacts it", () => {
@@ -46,7 +46,7 @@ describe("bundleSecretsDetector — WEB-SEC (vulnerable)", () => {
 
   it("flags an AWS key as CRITICAL", () => {
     const target = makeTarget({
-      scripts: [{ url: "https://example.com/app.js", body: "AKIAABCDEFGHIJKLMNOP" }],
+      scripts: [{ url: "https://example.com/app.js", body: "AKIA4N7QXR2TLM8KPZ3W" }],
     });
 
     const findings = bundleSecretsDetector.detect(makeCtx(target));
@@ -56,7 +56,7 @@ describe("bundleSecretsDetector — WEB-SEC (vulnerable)", () => {
   });
 
   it("flags an OpenAI-shaped key as HIGH", () => {
-    const openAiKey = `sk-${"a".repeat(48)}`;
+    const openAiKey = "sk-T3BlbkFJq8Zr2mXc7Lw4Np9Vd1Ks6Hy0Gu5Ea3Rt8Wb2Qn7F";
     const target = makeTarget({
       scripts: [{ url: "https://example.com/app.js", body: openAiKey }],
     });
@@ -104,7 +104,7 @@ describe("bundleSecretsDetector — WEB-SEC (clean)", () => {
 });
 
 describe("bundleSecretsDetector — Google API keys", () => {
-  const googleKey = `AIza${"S".repeat(35)}`;
+  const googleKey = "AIzaSyB7q2Xc9LmN4pR8tV1wZ3kD6fH0jG5sQeT";
   const target = (body: string) => ({
     target: { url: "https://example.com/", status: 200, headers: {}, body: "", scripts: [{ url: "https://example.com/app.js", body }], cookies: [] },
     probes: [],
@@ -128,5 +128,13 @@ describe("bundleSecretsDetector — Google API keys", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0]?.severity).toBe("CRITICAL");
     expect(findings[0]?.message).toContain("Gemini");
+  });
+});
+
+describe("bundleSecretsDetector — placeholders", () => {
+  it("does not report a placeholder key compiled into a bundle", () => {
+    const target = makeTarget({ scripts: [{ url: "https://example.com/app.js", body: 'const k = "sk_live_YOUR_KEY_HERE_0000";' }] });
+    const findings = bundleSecretsDetector.detect(makeCtx(target));
+    expect(findings).toEqual([]);
   });
 });

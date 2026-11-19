@@ -30,6 +30,7 @@
  * path.
  */
 import {
+  CONNECTION_URL_RE,
   ENTROPY_THRESHOLD,
   hasAnchorKeyword,
   JWT_RE,
@@ -161,7 +162,21 @@ function redactAnchoredEntropy(text: string): string {
  */
 function redactSnippet(text: string): string {
   const afterFixedPatterns = redactFixedPatterns(text);
-  return redactAnchoredEntropy(afterFixedPatterns);
+  return redactAnchoredEntropy(redactConnectionPasswords(afterFixedPatterns));
+}
+
+/**
+ * Pass 1b: the password inside any `scheme://user:password@host` connection
+ * URL is replaced (scheme, user and host are kept so the prompt still says
+ * which database is affected). Unconditional — unlike the detector, the
+ * redactor never decides a password is "only a default".
+ */
+function redactConnectionPasswords(text: string): string {
+  return text.replaceAll(
+    CONNECTION_URL_RE,
+    (whole: string, _scheme: string, user: string, password: string) =>
+      whole.replace(`${user}:${password}@`, `${user}:${REDACTED_PLACEHOLDER}@`),
+  );
 }
 
 /** The `Redactor` gate. Exposes `redactSnippet` as a namespaced object. */

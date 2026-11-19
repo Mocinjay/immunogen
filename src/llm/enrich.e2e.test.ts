@@ -56,7 +56,7 @@ const WITH_SECRET_FIXTURE = "tests/fixtures/scan/with-secret";
  * ABSENCE from the captured provider prompt, never placed into any
  * `ScanResult`/`Finding` literal directly.
  */
-const FIXTURE_SECRET = "sk_live_FAKE0000000000000000000000TESTONLY";
+const FIXTURE_SECRET = "sk_live_511xaclBNe4ajX9UBVs6fKSyUj6JniwGTV";
 
 /** A fake ProviderAdapter that records every prompt it receives and returns a fixed, canned fix string. */
 function makeFakeAdapter(response: string): ProviderAdapter & { calls: string[] } {

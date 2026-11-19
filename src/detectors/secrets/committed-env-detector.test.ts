@@ -145,3 +145,56 @@ describe("committedEnvDetector — config", () => {
     expect(committedEnvDetector.config.globs.some((glob) => glob.includes(".env"))).toBe(true);
   });
 });
+
+describe("committedEnvDetector — rated by content", () => {
+  async function detectEnv(filePath: string, content: string) {
+    return committedEnvDetector.detect(makeContext(filePath, { [filePath]: content }));
+  }
+
+  it("is INFO for a Vite .env.production holding only public values (committing defaults is documented practice)", async () => {
+    const findings = await detectEnv(".env.production", "VITE_API_URL=https://api.example.com\nVITE_APP_NAME=demo\nPORT=3000\n");
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "SEC-05", severity: "INFO" });
+  });
+
+  it("is INFO for public-by-design Supabase / Stripe keys", async () => {
+    const content = [
+      "NEXT_PUBLIC_SUPABASE_URL=https://abcdefghijkl.supabase.co",
+      "NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiJ9.c2lnbmF0dXJl",
+      "STRIPE_PUBLISHABLE_KEY=pk_live_51Qm8vRt2LpX7nWc4ZyKd9HjB",
+      "NEXTAUTH_URL=http://localhost:3000",
+    ].join("\n");
+    expect((await detectEnv(".env", content))[0]?.severity).toBe("INFO");
+  });
+
+  it("is LOW for a committed .env.local even without secrets", async () => {
+    expect((await detectEnv(".env.local", "DEBUG=true\n"))[0]?.severity).toBe("LOW");
+  });
+
+  it("is CRITICAL and names (never echoes) the secret variables", async () => {
+    const content = [
+      "VITE_API_URL=https://api.example.com",
+      "export JWT_SECRET='Qm8vRt2LpX7nWc4Z'",
+      "DATABASE_URL=postgresql://postgres:Hq7vRt2pLx9w@db.abcdefghijkl.supabase.co:5432/postgres",
+    ].join("\n");
+    const [finding] = await detectEnv(".env", content);
+    expect(finding).toMatchObject({ severity: "CRITICAL", line: 2 });
+    expect(finding?.message).toContain("JWT_SECRET, DATABASE_URL");
+    expect(finding?.message).not.toContain("Qm8vRt2LpX7nWc4Z");
+  });
+
+  it("is CRITICAL for a provider-key value under any name", async () => {
+    expect((await detectEnv(".env", "PAYMENTS=sk_live_51Qm8vRt2LpX7nWc4ZyKd9HjB"))[0]?.severity).toBe("CRITICAL");
+  });
+
+  it("ignores placeholders, references, local database URLs and secret-named client vars (BUNDLE-01 owns those)", async () => {
+    const content = [
+      "OPENAI_API_KEY=your-openai-key",
+      "STRIPE_SECRET_KEY=",
+      "API_TOKEN=${CI_TOKEN}",
+      "DATABASE_URL=postgres://postgres:postgres@localhost:5432/dev",
+      "NEXT_PUBLIC_MAPS_KEY=AIzaSyB7q2Xc9LmN4pR8tV1wZ3kD6fH0jG5sQeT",
+    ].join("\n");
+    expect((await detectEnv(".env", content))[0]?.severity).toBe("INFO");
+  });
+});

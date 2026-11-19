@@ -199,3 +199,12 @@ describe("redactFinding — Finding.matchedText/message redaction", () => {
     expect(redacted.message).toBe("Plain message with no secret.");
   });
 });
+
+describe("Redactor — connection-string passwords", () => {
+  it("replaces the password in a database URL and keeps the scheme, user and host", () => {
+    const text = 'const db = "postgresql://postgres:Hq7vRt2pLx9w@db.abcdefghijkl.supabase.co:5432/postgres";';
+    const redacted = Redactor.redactSnippet(text);
+    expect(redacted).not.toContain("Hq7vRt2pLx9w");
+    expect(redacted).toContain("postgresql://postgres:[REDACTED]@db.abcdefghijkl.supabase.co");
+  });
+});

@@ -62,8 +62,14 @@
  * the full secret value never appears in any Finding field.
  */
 import {
+  CONNECTION_URL_RE,
   decodesToServiceRole,
   ENTROPY_THRESHOLD,
+  isLocalHost,
+  isPlaceholderPassword,
+  isPlaceholderSecret,
+  MANAGED_DB_HOST_RE,
+  PLACEHOLDER_VALUE_RE,
   GOOGLE_GENAI_CONTEXT_RE,
   GOOGLE_PUBLIC_CONTEXT_RE,
   JWT_RE,
@@ -224,7 +230,11 @@ function runGoogleKeyPass(
   for (const match of line.matchAll(sharedRegex("SEC-09", "Google"))) {
     spans.push([match.index, match.index + match[0].length]);
     const context = lines.slice(Math.max(0, index - GOOGLE_CONTEXT_LINES), index + GOOGLE_CONTEXT_LINES + 1).join("\n");
-    if (FIREBASE_MOBILE_CONFIG_BASENAMES.has(basename) || GOOGLE_PUBLIC_CONTEXT_RE.test(context)) {
+    if (
+      FIREBASE_MOBILE_CONFIG_BASENAMES.has(basename) ||
+      GOOGLE_PUBLIC_CONTEXT_RE.test(context) ||
+      isPlaceholderSecret(match[0])
+    ) {
       continue;
     }
     const isGenAi = GOOGLE_GENAI_CONTEXT_RE.test(context);
@@ -403,8 +413,6 @@ const ASSIGNED_VALUE_RE = /^['"`]?\s*[:=]\s*['"`]?([^\s'"`,;)]+)/;
 /** Minimum length of an assigned value for it to count as a real key rather than a stub. */
 const MIN_ASSIGNED_KEY_LENGTH = 20;
 
-/** Common placeholder values for an env var in docs / `.env.example` files. */
-const PLACEHOLDER_VALUE_RE = /^(?:your|my|<|\[|x{3,}|\.{3}|changeme|change-me|replace|example|placeholder|todo|insert|enter|redacted|dummy|test)/i;
 
 /**
  * Returns the [start, end) span of the literal value assigned to the
@@ -553,6 +561,11 @@ function runProviderPatterns(
       const matchedValue = match[0];
       const start = match.index;
       matchedSpans.push([start, start + matchedValue.length]);
+      if (pattern.ruleId !== "SEC-08" && isPlaceholderSecret(matchedValue)) {
+        // Documentation placeholder (`sk_live_YOUR_KEY_HERE`): claimed so the
+        // entropy pass cannot re-report it, but not a finding.
+        continue;
+      }
 
       findings.push({
         ruleId: pattern.ruleId,
@@ -570,6 +583,53 @@ function runProviderPatterns(
   }
 
   return matchedSpans;
+}
+
+/**
+ * Pass C: database / broker connection URLs with an inline password (SEC-10)
+ * — `postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres`,
+ * `mongodb+srv://user:<password>@cluster0.x.mongodb.net`. CRITICAL for a
+ * managed cloud database host, HIGH for any other remote host; local and
+ * docker-compose hosts, template variables and default passwords are
+ * skipped. `matchedText` keeps the scheme, user and host (needed to know
+ * which database to rotate) and masks the password entirely. Returns the
+ * claimed spans so the entropy pass cannot re-report the same URL.
+ */
+function runConnectionStringPass(
+  line: string,
+  lineNumber: number,
+  filePath: string,
+  detectorName: string,
+  claimedSpans: Array<[number, number]>,
+  findings: Finding[],
+): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (const match of line.matchAll(CONNECTION_URL_RE)) {
+    const [whole, scheme = "", user = "", password = "", host = ""] = match;
+    const start = match.index;
+    if (overlapsAny(start, start + whole.length, claimedSpans)) {
+      continue;
+    }
+    spans.push([start, start + whole.length]);
+    if (isLocalHost(host) || isPlaceholderPassword(password)) {
+      continue;
+    }
+    const managed = MANAGED_DB_HOST_RE.test(host);
+    findings.push({
+      ruleId: "SEC-10",
+      category: "secrets",
+      detectorName,
+      file: filePath,
+      line: lineNumber,
+      severity: managed ? "CRITICAL" : "HIGH",
+      confidence: managed ? "HIGH" : "MEDIUM",
+      message: `Database connection string with a hardcoded password found in source (${scheme} on ${host}) — anyone who reads it can connect to the database directly, bypassing your API and any row-level security.`,
+      remediation:
+        "Reset the database password now (the old one is in your git history), move the connection string to an untracked environment variable such as DATABASE_URL, and read it with process.env / os.environ.",
+      matchedText: `${scheme}://${user}:${MASK_SUFFIX}@${host}`,
+    });
+  }
+  return spans;
 }
 
 /** True when [start, end) overlaps any span in `spans`. */
@@ -628,7 +688,9 @@ function runEntropyPass(
     if (entropy < ENTROPY_THRESHOLD) {
       continue;
     }
-    if (!isPlausibleSecretValue(value)) {
+    // A URL is judged by isPlausibleSecretValue on its credential / query
+    // part; the placeholder check is for bare key-shaped literals.
+    if (!isPlausibleSecretValue(value) || (!URL_RE.test(value) && isPlaceholderSecret(value))) {
       // Clears the entropy bar but is prose, a URL, a hash, or a slug.
       continue;
     }
@@ -699,7 +761,9 @@ export const secretsDetector: Detector = {
           findings,
         );
         const googleSpans = runGoogleKeyPass(lines, index, ctx.filePath, "secrets", findings);
-        const claimedSpans = [...providerSpans, ...supabaseSpans, ...googleSpans];
+        const keySpans = [...providerSpans, ...supabaseSpans, ...googleSpans];
+        const connectionSpans = runConnectionStringPass(line, lineNumber, ctx.filePath, "secrets", keySpans, findings);
+        const claimedSpans = [...keySpans, ...connectionSpans];
         runEntropyPass(line, lineNumber, ctx.filePath, "secrets", claimedSpans, findings, entropyCount);
       }
 

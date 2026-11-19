@@ -45,6 +45,7 @@
 import {
   GOOGLE_GENAI_CONTEXT_RE,
   GOOGLE_PUBLIC_CONTEXT_RE,
+  isPlaceholderSecret,
   PROVIDER_KEY_PATTERNS,
 } from "../../detectors/secrets/secret-patterns.js";
 import { Redactor } from "../../llm/redactor.js";
@@ -132,6 +133,9 @@ function scanBodyForSecrets(fileLabel: string, body: string): Finding[] {
       const index = match.index;
       if (isGoogle && !isReportableGoogleKey(body, index, matchedRaw.length)) {
         continue;
+      }
+      if (pattern.ruleId !== "SEC-08" && isPlaceholderSecret(matchedRaw)) {
+        continue; // A placeholder string compiled into the bundle, not a key.
       }
       const severity = isGoogle ? "CRITICAL" : (SEVERITY_BY_PATTERN_RULE_ID[pattern.ruleId] ?? "HIGH");
       const redactedMatch = Redactor.redactSnippet(matchedRaw);

@@ -206,3 +206,102 @@ export function decodesToServiceRole(jwt: string): boolean {
     return false;
   }
 }
+
+/**
+ * Words that only appear in a key-shaped string when it is a documentation
+ * placeholder (`sk_live_YOUR_KEY_HERE`, `AKIAIOSFODNN7EXAMPLE`,
+ * `sk_live_FAKE0000...`). Matched case-insensitively anywhere in the value:
+ * the chance of one of these appearing by accident in a real random key is
+ * negligible (roughly one in tens of thousands for the 4-letter words).
+ */
+const PLACEHOLDER_WORD_RE = /your|example|placeholder|replace|changeme|dummy|sample|fake|redacted|insert|xxxx/i;
+
+/** Six or more of the same character in a row (`000000`, `XXXXXX`) — never seen in a real random key. */
+const REPEATED_RUN_RE = /(.)\1{5,}/;
+
+/** Keyboard / alphabet sequences used to fill example keys. */
+const SEQUENCE_RE = /123456|abcdef|qwerty/i;
+
+/**
+ * True when a key-shaped match is a documentation placeholder rather than a
+ * credential: it contains a placeholder word, a long run of one character,
+ * or an obvious sequence. Applied to every provider-key, Google-key,
+ * connection-string and entropy match before it is reported, so a README
+ * line such as `STRIPE_SECRET_KEY=sk_live_YOUR_KEY_HERE` does not fail a
+ * build. (The LLM redactor deliberately does NOT use this — over-redacting
+ * before a network call is always safe.)
+ */
+export function isPlaceholderSecret(value: string): boolean {
+  return PLACEHOLDER_WORD_RE.test(value) || REPEATED_RUN_RE.test(value) || SEQUENCE_RE.test(value);
+}
+
+/**
+ * A database / broker connection URL carrying an inline password:
+ * `scheme[+driver]://user:password@host`. Groups: 1 scheme, 2 user,
+ * 3 password, 4 host. Covers Postgres (incl. Supabase / Neon pooler URLs and
+ * SQLAlchemy `postgresql+psycopg2://`), MySQL / MariaDB, MongoDB (incl.
+ * `mongodb+srv://` Atlas URLs), Redis, AMQP, and SQL Server.
+ */
+export const CONNECTION_URL_RE =
+  // eslint-disable-next-line security/detect-unsafe-regex -- the optional `+driver` group is a fixed-alphabet run followed by a literal "://"; benchmarked linear on 100k-char adversarial input
+  /\b(postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|mssql|sqlserver|cockroachdb)(?:\+[a-z0-9]+)?:\/\/([^\s:@/'"`]+):([^\s@/'"`]+)@([^\s/'"`:?#,;)]+)/gi;
+
+/**
+ * Hosts that only exist on a developer machine or inside docker-compose — a
+ * password for one of these is a local default, not a leaked credential. A
+ * dot-less host (`db`, `postgres`, `redis`) is a compose service name.
+ */
+export function isLocalHost(host: string): boolean {
+  const lower = host.toLowerCase();
+  return (
+    !lower.includes(".") ||
+    lower === "127.0.0.1" ||
+    lower === "0.0.0.0" ||
+    lower.endsWith(".local") ||
+    lower.endsWith(".localhost") ||
+    lower.endsWith(".internal") ||
+    lower.startsWith("127.") ||
+    lower.startsWith("192.168.") ||
+    lower.startsWith("10.")
+  );
+}
+
+/** Managed database hosts — a password for one of these reaches production data directly. */
+export const MANAGED_DB_HOST_RE =
+  /supabase\.(?:co|com)|neon\.tech|rds\.amazonaws\.com|mongodb\.net|planetscale|psdb\.cloud|upstash\.io|render\.com|railway\.app|rlwy\.net|aivencloud\.com|cockroachlabs\.cloud|database\.azure\.com|ondigitalocean\.com|elephantsql|timescale|xata\.sh|turso\.io|redis-cloud\.com|redislabs\.com|cloudsql|googleapis\.com/i;
+
+/** Passwords that are framework / docker defaults or obvious stand-ins, never a real secret. */
+const DEFAULT_PASSWORDS = new Set([
+  "password",
+  "pass",
+  "passwd",
+  "postgres",
+  "root",
+  "admin",
+  "secret",
+  "user",
+  "pwd",
+  "mysecretpassword",
+  "changeme",
+  "example",
+  "test",
+  "guest",
+  "mongo",
+  "redis",
+  "mysql",
+]);
+
+/** True when a connection URL's password is a template variable, a default, or a placeholder. */
+export function isPlaceholderPassword(password: string): boolean {
+  return (
+    password.length < 4 ||
+    /^[$<{[%*]/.test(password) ||
+    password.includes("${") ||
+    DEFAULT_PASSWORDS.has(password.toLowerCase()) ||
+    isPlaceholderSecret(password)
+  );
+}
+
+/** Common placeholder values for an env var in docs / `.env.example` files (matched at the start of the value). */
+export const PLACEHOLDER_VALUE_RE =
+  /^(?:your|my|<|\[|x{3,}|\.{3}|changeme|change-me|replace|example|placeholder|todo|insert|enter|redacted|dummy|test)/i;

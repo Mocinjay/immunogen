@@ -7,7 +7,7 @@
  * and was never issued by Stripe or any other provider.
  */
 export const stripeSecretKey =
-  "sk_live_FAKE0000000000000000000000TESTONLY";
+  "sk_live_511xaclBNe4ajX9UBVs6fKSyUj6JniwGTV";
 
 export function getPaymentConfig() {
   return { stripeSecretKey };
