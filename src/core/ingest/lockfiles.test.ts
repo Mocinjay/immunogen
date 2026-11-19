@@ -169,3 +169,56 @@ describe("lockfileParserFor", () => {
     expect(lockfileParserFor("package.json")).toBeUndefined();
   });
 });
+
+describe("parsePnpmLock — dev-only packages", () => {
+  it("marks packages unreachable from production roots as dev, following the snapshot graph", async () => {
+    const { parsePnpmLock } = await import("./lockfiles.js");
+    const lock = [
+      "lockfileVersion: '9.0'",
+      "",
+      "importers:",
+      "",
+      "  .:",
+      "    dependencies:",
+      "      express:",
+      "        specifier: 4.21.2",
+      "        version: 4.21.2",
+      "    devDependencies:",
+      "      vitest:",
+      "        specifier: 4.1.12",
+      "        version: 4.1.12(@types/node@22.20.5)",
+      "",
+      "packages:",
+      "",
+      "  express@4.21.2:",
+      "    resolution: {integrity: sha512-x}",
+      "  qs@6.13.0:",
+      "    resolution: {integrity: sha512-x}",
+      "  vitest@4.1.12:",
+      "    resolution: {integrity: sha512-x}",
+      "  vite@8.0.16:",
+      "    resolution: {integrity: sha512-x}",
+      "",
+      "snapshots:",
+      "",
+      "  express@4.21.2:",
+      "    dependencies:",
+      "      qs: 6.13.0",
+      "",
+      "  qs@6.13.0: {}",
+      "",
+      "  vitest@4.1.12(@types/node@22.20.5):",
+      "    dependencies:",
+      "      vite: 8.0.16(@types/node@22.20.5)",
+      "",
+      "  vite@8.0.16(@types/node@22.20.5): {}",
+    ].join("\n");
+
+    const byName = new Map(parsePnpmLock(lock).map((pkg) => [pkg.name, pkg.dev === true]));
+
+    expect(byName.get("express")).toBe(false);
+    expect(byName.get("qs")).toBe(false);
+    expect(byName.get("vitest")).toBe(true);
+    expect(byName.get("vite")).toBe(true);
+  });
+});
