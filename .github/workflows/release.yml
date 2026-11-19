@@ -9,15 +9,20 @@ name: Release
 # Pushing a v<version> tag by hand, or running the workflow manually, does the
 # same. The tarball is attached twice: as immunogen-<version>.tgz and as
 # immunogen.tgz, so .../releases/latest/download/immunogen.tgz always installs
-# the newest release. The same tarball is then published to npm through npm
-# trusted publishing (OIDC): no npm token is stored anywhere, and npm attaches
-# a provenance attestation linking the package to this workflow run (set up
-# once with `npm trust github immunogen --file release.yml --repo
-# Mocinjay/immunogen`).
+# the newest release. The same tarball is then STAGED on npm through npm
+# trusted publishing (OIDC): no npm token is stored anywhere, npm attaches a
+# provenance attestation linking the package to this workflow run, and the
+# version goes live only after a maintainer approves it with 2FA (npmjs.com →
+# immunogen → Staged Packages, or `npm stage approve <id>`). A compromised
+# workflow or GitHub account therefore cannot ship to npm on its own. Set up
+# with `npm trust github immunogen --file release.yml --repo
+# Mocinjay/immunogen --allow-stage-publish` (npm >= 11.15) shortly before a
+# release: npm expires a trusted-publisher configuration that has not
+# completed a publish within 2 days of being created.
 #
 # The two halves are checked separately: a version already released on GitHub
 # but missing from npm is rebuilt, checked file-for-file against the release
-# tarball, and published — so a failed or skipped npm publish is recovered by
+# tarball, and staged — so a failed or skipped npm publish is recovered by
 # running this workflow again.
 
 on:
@@ -155,9 +160,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Publish to npm (trusted publishing)
+      - name: Stage on npm (trusted publishing)
         if: needs.check.outputs.publish == 'true'
         run: |
-          # Trusted publishing needs npm >= 11.5.1; Node 22 bundles npm 10.
-          npm install -g npm@11.11.0 --silent
-          npm publish "immunogen-${VERSION}.tgz" --access public
+          # Staged publishing needs npm >= 11.15.0; Node 22 bundles npm 10.
+          npm install -g npm@11.21.2 --silent
+          npm stage publish "./immunogen-${VERSION}.tgz" --access public --provenance
+          echo "::notice::immunogen@${VERSION} is staged on npm. It goes live once a maintainer approves it with 2FA: npmjs.com → immunogen → Staged Packages (or npm stage approve)."

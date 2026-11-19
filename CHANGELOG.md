@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Releases reach npm through **staged publishing**: the release workflow
+  stages the tarball via trusted publishing (OIDC, with provenance), and the
+  version goes live only after a maintainer approves it with 2FA — a
+  compromised workflow or GitHub account cannot ship to npm on its own. The
+  npm package itself requires 2FA to publish and accepts no tokens.
+- The release workflow checks GitHub and npm separately: a version released
+  on GitHub but missing from npm is rebuilt, compared file for file with the
+  GitHub Release tarball, and staged only if they match.
+
 ## [0.3.1] - 2026-11-19
 
 Hardening release: zero known vulnerabilities in the dependency tree, zero
