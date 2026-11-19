@@ -4,9 +4,12 @@
  * `walkFiles(rootDir, options)` walks a directory tree and returns exactly
  * the `Map<relativePath, rawText>` a detector should see: ScanContext.fileSet
  * (see src/core/types.ts). It hard-excludes universal noise directories
- * (`node_modules/`, `.next/`, `dist/`, `build/`, `.git/`, ...), applies
- * every `.gitignore` in the tree (root and nested, each scoped to its own
- * directory) via the `ignore` package, skips binaries and over-cap files —
+ * (`node_modules/`, `.next/`, `dist/`, `build/`, `.git/`, tool caches, ...),
+ * skips agent worktrees (`.claude/worktrees/` and any nested linked git
+ * worktree — a second checkout of the repo would report every finding twice),
+ * applies every `.gitignore` in the tree (root and nested, each scoped to its
+ * own directory) plus the repository's `.git/info/exclude` via the `ignore`
+ * package, skips binaries and over-cap files —
  * BUT always preserves the AI-layer files (`.mcp.json`, `.cursor/mcp.json`,
  * `.cursor/rules`, `.cursor/rules/**`, `.claude/**`) even when `.gitignore`
  * would exclude them, because a local agent still loads them.
@@ -16,7 +19,9 @@
  * file is always kept (a `.env` committed once and gitignored later is still
  * in the repo), while an untracked one is kept only when `.gitignore` does
  * not exclude it (it would be committed by the next `git add .`). Outside a
- * git work tree, `.gitignore` is the only signal. A gitignored, untracked
+ * git work tree, `.gitignore` is the only signal — except for ZIP input
+ * (`WalkSettings.keepIgnoredEnvFiles`), where every env file in the archive
+ * is read because the archive is what shipped. A gitignored, untracked
  * `.env.local` holding real keys is the correct local setup and is never
  * scanned. Tracked paths come from `readTrackedFiles` (git-index.ts), which
  * parses `.git/index` directly instead of running git. Each rule's
@@ -38,7 +43,7 @@ import ignore from "ignore";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 
-import { readTrackedFiles } from "./git-index.js";
+import { readInfoExclude, readTrackedFiles } from "./git-index.js";
 
 import type { Diagnostic, ScanOptions } from "../types.js";
 
@@ -106,10 +111,36 @@ const HARD_EXCLUDE_DIRS = [
   ".venv",
   "venv",
   "Pods", // CocoaPods' vendored-dependency directory (iOS/macOS) — never developer-authored, analogous to node_modules.
+  // Tool caches and deploy-tool output: generated, never developer-authored.
+  "__pycache__",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".tox",
+  ".vercel",
+  ".netlify",
+  ".wrangler",
+  ".output",
+  ".expo",
+  ".parcel-cache",
+  ".angular",
+  ".docusaurus",
+  ".serverless",
+  ".terraform",
+  ".gradle",
+  // Agent worktrees: full checkouts of the same repo (Claude Code puts them in
+  // .claude/worktrees/). Scanning them reports every finding once per copy.
+  ".worktrees",
 ];
 
+/** Directory paths (not just names) never visited — kept separate because `.claude/` itself must be scanned. */
+const HARD_EXCLUDE_PATHS = [".claude/worktrees"];
+
 /** fast-glob `ignore` patterns matching each hard-excluded directory anywhere in the tree. */
-const HARD_EXCLUDE_GLOBS = HARD_EXCLUDE_DIRS.map((dir) => `**/${dir}/**`);
+const HARD_EXCLUDE_GLOBS = [
+  ...HARD_EXCLUDE_DIRS.map((dir) => `**/${dir}/**`),
+  ...HARD_EXCLUDE_PATHS.map((path) => `**/${path}/**`),
+];
 
 /**
  * Binary asset extensions that might slip past the NUL-byte content sniff
@@ -223,6 +254,68 @@ function isGitignored(gitignores: ScopedGitignore[], relPath: string): boolean {
   });
 }
 
+/** True when `relPath`'s basename is `.env` or starts with `.env.` (the env-file rule used throughout). */
+function isEnvFile(relPath: string): boolean {
+  const basename = relPath.slice(relPath.lastIndexOf("/") + 1);
+  return basename === ".env" || basename.startsWith(".env.");
+}
+
+/**
+ * Directories (below the scan root) that are linked git worktrees: they hold a
+ * `.git` FILE pointing into another repository's `worktrees/` metadata. Such a
+ * directory is a second checkout of a repo (usually this same one, created by
+ * an agent or `git worktree add`), so scanning it duplicates every finding.
+ * Returns each worktree directory with a trailing slash.
+ */
+async function findNestedWorktrees(rootDir: string): Promise<string[]> {
+  // The main walk never yields `.git` entries (`**/.git/**` also matches a
+  // `.git` file), so pointer files get their own narrow glob. `**/.git/*/**`
+  // stops it descending into any real `.git/objects`, `.git/refs`, ...
+  const pointers = await fg("**/.git", {
+    cwd: rootDir,
+    dot: true,
+    onlyFiles: true,
+    followSymbolicLinks: false,
+    ignore: [...HARD_EXCLUDE_GLOBS.filter((glob) => glob !== "**/.git/**"), "**/.git/*/**"],
+  });
+  const worktrees: string[] = [];
+  for (const relPath of pointers) {
+    if (relPath === ".git") {
+      continue; // The scan root itself being a linked worktree is fine.
+    }
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- reads a .git pointer file in the scanned tree as text
+      const pointer = await readFile(join(rootDir, relPath), "utf8");
+      if (/^gitdir:.*[\\/]worktrees[\\/]/m.test(pointer)) {
+        worktrees.push(relPath.slice(0, -".git".length));
+      }
+    } catch {
+      // Unreadable pointer: treat the directory as ordinary content.
+    }
+  }
+  return worktrees.sort();
+}
+
+/** Loads `.git/info/exclude` as a matcher over scan-root-relative paths, or `undefined`. */
+async function loadInfoExclude(rootDir: string): Promise<((relPath: string) => boolean) | undefined> {
+  const exclude = await readInfoExclude(rootDir);
+  if (exclude === undefined) {
+    return undefined;
+  }
+  const matcher = ignore().add(exclude.patterns);
+  return (relPath) => matcher.ignores(`${exclude.prefix}${relPath}`);
+}
+
+/** Internal walker settings chosen by the ingest layer, not by callers of `scan()`. */
+export interface WalkSettings {
+  /**
+   * Read `.env*` files even when `.gitignore` excludes them. Set for ZIP
+   * input: an archive has no git history, and anything inside it was shipped
+   * with it, so a gitignored `.env` in a ZIP is exactly the leak to report.
+   */
+  keepIgnoredEnvFiles?: boolean;
+}
+
 /** Why a candidate produced no content. */
 type SkipReason = "oversize" | "binary" | "unreadable";
 
@@ -280,6 +373,7 @@ async function readIfEligible(
 export async function walkFiles(
   rootDir: string,
   options?: ScanOptions,
+  settings: WalkSettings = {},
 ): Promise<{ fileSet: Map<string, string>; diagnostics: Diagnostic[] }> {
   const maxFileSizeBytes = options?.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
   const maxTotalBytes = options?.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
@@ -298,8 +392,19 @@ export async function walkFiles(
     ignore: HARD_EXCLUDE_GLOBS,
   });
   const gitignores = await loadGitignores(rootDir, candidates);
+  const isInfoExcluded = await loadInfoExclude(rootDir);
   const trackedFiles = await readTrackedFiles(rootDir);
   const scanIgnore = options?.noIgnore === true ? undefined : await loadScanIgnore(rootDir);
+  const worktrees = await findNestedWorktrees(rootDir);
+  let scanIgnored = 0;
+
+  if (worktrees.length > 0) {
+    diagnostics.push({
+      level: "info",
+      code: "WORKTREES_SKIPPED",
+      message: `Skipped ${String(worktrees.length)} nested git worktree(s) — separate checkouts whose findings would duplicate this one: ${worktrees.slice(0, MAX_SKIPPED_PATHS_LISTED).join(", ")}${worktrees.length > MAX_SKIPPED_PATHS_LISTED ? ", ..." : ""}.`,
+    });
+  }
 
   for (const relPath of candidates) {
     if (totalBytesRead >= maxTotalBytes || fileSet.size >= maxTotalFiles) {
@@ -312,14 +417,25 @@ export async function walkFiles(
       break;
     }
 
+    if (worktrees.some((worktree) => relPath.startsWith(worktree))) {
+      continue;
+    }
+
     if (scanIgnore?.ignores(relPath) === true) {
+      scanIgnored += 1;
       continue;
     }
 
     const preserved = isAlwaysPreserved(relPath);
     const committed = trackedFiles?.has(relPath) === true;
+    const keptEnv = settings.keepIgnoredEnvFiles === true && isEnvFile(relPath);
 
-    if (!preserved && !committed && isGitignored(gitignores, relPath)) {
+    if (
+      !preserved &&
+      !committed &&
+      !keptEnv &&
+      (isGitignored(gitignores, relPath) || isInfoExcluded?.(relPath) === true)
+    ) {
       continue;
     }
 
@@ -345,6 +461,14 @@ export async function walkFiles(
 
     fileSet.set(relPath, read.content);
     totalBytesRead += Buffer.byteLength(read.content, "utf8");
+  }
+
+  if (scanIgnored > 0) {
+    diagnostics.push({
+      level: "info",
+      code: "PATHS_IGNORED",
+      message: `${String(scanIgnored)} file(s) excluded by .immunogenignore were not scanned (use --no-ignore to include them).`,
+    });
   }
 
   if (oversized.length > 0) {

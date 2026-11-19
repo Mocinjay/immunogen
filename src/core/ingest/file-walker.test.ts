@@ -340,3 +340,127 @@ describe("walkFiles — lockfile size cap", () => {
     expect(result.has("data.json")).toBe(false);
   });
 });
+
+describe("walkFiles — duplicate checkouts and tool caches", () => {
+  it("never descends into .claude/worktrees/ even though .claude/ is always preserved", async () => {
+    const tree = await makeRepoTree({
+      ".claude/skills/s.md": "# Skill",
+      ".claude/worktrees/feature-x/src/app.ts": "export const copy = 1;",
+      "src/app.ts": "export const original = 1;",
+    });
+    trees.push(tree);
+
+    const { fileSet } = await walkFiles(tree.root);
+
+    expect(fileSet.has(".claude/skills/s.md")).toBe(true);
+    expect(fileSet.has("src/app.ts")).toBe(true);
+    expect([...fileSet.keys()].some((key) => key.startsWith(".claude/worktrees/"))).toBe(false);
+  });
+
+  it("skips any nested linked git worktree and reports it in a WORKTREES_SKIPPED diagnostic", async () => {
+    const tree = await makeRepoTree({
+      "agents/wt-1/.git": "gitdir: /somewhere/repo/.git/worktrees/wt-1\n",
+      "agents/wt-1/src/app.ts": "export const copy = 1;",
+      "packages/lib/.git": "gitdir: ../../.git/modules/lib\n",
+      "packages/lib/index.ts": "export const submodule = 1;",
+      "src/app.ts": "export const original = 1;",
+    });
+    trees.push(tree);
+
+    const { fileSet, diagnostics } = await walkFiles(tree.root);
+
+    expect(fileSet.has("agents/wt-1/src/app.ts")).toBe(false);
+    // A submodule's .git file points at modules/, not worktrees/: still scanned.
+    expect(fileSet.has("packages/lib/index.ts")).toBe(true);
+    expect(fileSet.has("src/app.ts")).toBe(true);
+    const skipped = diagnostics.find((diagnostic) => diagnostic.code === "WORKTREES_SKIPPED");
+    expect(skipped?.message).toContain("agents/wt-1/");
+  });
+
+  it("excludes Python and deploy-tool caches", async () => {
+    const tree = await makeRepoTree({
+      "engine/.mypy_cache/3.12/x.json": '{"token":"abc"}',
+      "engine/__pycache__/m.cpython-312.pyc.txt": "cached",
+      ".vercel/output/static/app.js": "bundled",
+      "engine/main.py": "print('hi')",
+    });
+    trees.push(tree);
+
+    const { fileSet } = await walkFiles(tree.root);
+
+    expect([...fileSet.keys()]).toEqual(["engine/main.py"]);
+  });
+});
+
+describe("walkFiles — .git/info/exclude", () => {
+  it("honors the repository's info/exclude like a root .gitignore, but still keeps tracked files", async () => {
+    const tree = await makeRepoTree({
+      "scratch/notes.ts": "export const scratch = 1;",
+      "src/app.ts": "export const app = 1;",
+      ".env": "API_KEY=committed",
+    });
+    trees.push(tree);
+    const git = simpleGit(tree.root);
+    await git.init();
+    await git.add(".env");
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(tree.root, ".git", "info", "exclude"), "scratch/\n.env\n");
+
+    const { fileSet } = await walkFiles(tree.root);
+
+    expect(fileSet.has("scratch/notes.ts")).toBe(false);
+    expect(fileSet.has("src/app.ts")).toBe(true);
+    // Tracked: committed regardless of the exclude list.
+    expect(fileSet.has(".env")).toBe(true);
+  });
+
+  it("applies info/exclude relative to the work tree when a subdirectory is scanned", async () => {
+    const tree = await makeRepoTree({
+      "app/scratch/notes.ts": "export const scratch = 1;",
+      "app/src/app.ts": "export const app = 1;",
+    });
+    trees.push(tree);
+    await simpleGit(tree.root).init();
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(tree.root, ".git", "info", "exclude"), "/app/scratch/\n");
+
+    const { fileSet } = await walkFiles(join(tree.root, "app"));
+
+    expect(fileSet.has("scratch/notes.ts")).toBe(false);
+    expect(fileSet.has("src/app.ts")).toBe(true);
+  });
+});
+
+describe("walkFiles — keepIgnoredEnvFiles (ZIP input)", () => {
+  it("reads a gitignored .env when the ingest layer asks for it, and only env files", async () => {
+    const tree = await makeRepoTree({
+      ".gitignore": ".env\nsecret-notes.txt\n",
+      ".env": "OPENAI_API_KEY=real",
+      "secret-notes.txt": "still ignored",
+    });
+    trees.push(tree);
+
+    const normal = await walkFiles(tree.root);
+    const zip = await walkFiles(tree.root, {}, { keepIgnoredEnvFiles: true });
+
+    expect(normal.fileSet.has(".env")).toBe(false);
+    expect(zip.fileSet.has(".env")).toBe(true);
+    expect(zip.fileSet.has("secret-notes.txt")).toBe(false);
+  });
+});
+
+describe("walkFiles — .immunogenignore accounting", () => {
+  it("reports how many files .immunogenignore excluded, so a silenced scan is visible", async () => {
+    const tree = await makeRepoTree({
+      ".immunogenignore": "**/*.ts\n",
+      "a.ts": "export const a = 1;",
+      "b.ts": "export const b = 1;",
+    });
+    trees.push(tree);
+
+    const { diagnostics } = await walkFiles(tree.root);
+
+    const ignored = diagnostics.find((diagnostic) => diagnostic.code === "PATHS_IGNORED");
+    expect(ignored?.message).toContain("2 file(s)");
+  });
+});

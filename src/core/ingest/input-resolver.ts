@@ -79,6 +79,8 @@ function cloneEnvironment(): Record<string, string> {
 export interface ResolvedInput {
   /** Absolute path to the directory the FileWalker should read. */
   workingDir: string;
+  /** Which input mode produced `workingDir`. */
+  kind: InputMode;
   /**
    * Removes any temp directory created during resolution. A no-op (but
    * still awaitable) for the local-directory passthrough mode.
@@ -106,7 +108,7 @@ export function isGitRepoUrl(input: string): boolean {
  * string check), then the git URL patterns, with local-directory
  * passthrough as the default fallback.
  */
-type InputMode = "zip" | "git" | "dir";
+export type InputMode = "zip" | "git" | "dir";
 
 function classifyInput(input: string): InputMode {
   if (input.toLowerCase().endsWith(".zip")) {
@@ -156,6 +158,7 @@ function resolveDir(input: string): ResolvedInput {
 
   return {
     workingDir: resolved,
+    kind: "dir",
     cleanup: noopCleanup,
   };
 }
@@ -194,6 +197,7 @@ async function resolveGit(url: string): Promise<ResolvedInput> {
   }
   return {
     workingDir: tempDir,
+    kind: "git",
     cleanup: makeCleanup(tempDir),
   };
 }
@@ -270,6 +274,7 @@ async function resolveZip(zipPath: string): Promise<ResolvedInput> {
   }
   return {
     workingDir: tempDir,
+    kind: "zip",
     cleanup: makeCleanup(tempDir),
   };
 }
