@@ -75,6 +75,7 @@ describe("runDetectors — fan-out and aggregation", () => {
       "mcp-poisoning",
       "mcp-least-privilege",
       "agent-autorun",
+      "package-registry",
     ];
 
     for (const expectedName of expectedNames) {

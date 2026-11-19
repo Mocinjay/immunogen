@@ -44,7 +44,7 @@ import { legalDetector } from "./legal/index.js";
 import { firebaseRulesDetector, supabaseDetector, supabaseRlsDetector } from "./storage/index.js";
 import { pyGoRouteAuthDetector, routeAuthDetector, serverRouteAuthDetector } from "./auth/index.js";
 import { dangerousCodeDetector, pyGoCodeDetector, xssDetector } from "./injection/index.js";
-import { osvDetector } from "./deps/index.js";
+import { osvDetector, packageRegistryDetector } from "./deps/index.js";
 import { rateLimitDetector } from "./abuse/index.js";
 import {
   promptInjectionDetector,
@@ -87,6 +87,7 @@ export const DEFAULT_DETECTORS: Detector[] = [
   pyGoCodeDetector,
   rateLimitDetector,
   osvDetector,
+  packageRegistryDetector,
   promptInjectionDetector,
   exfiltrationDetector,
   mcpPoisoningDetector,

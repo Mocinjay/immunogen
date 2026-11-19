@@ -34,14 +34,13 @@
  * no TTL.
  */
 
+import { fetchWithRetry } from "./http.js";
 import { fixesFromOsvRecord, severityFromOsvRecord } from "./osv-severity.js";
 
 import type { AffectedFix } from "./osv-severity.js";
 
 import type { Severity } from "../../core/types.js";
 
-/** Per-attempt timeout for one OSV.dev request (each request is retried on transient failures). */
-const OSV_TIMEOUT_MS = 10_000;
 
 /** OSV.dev batch query endpoint — no API key required. */
 const OSV_QUERYBATCH_URL = "https://api.osv.dev/v1/querybatch";
@@ -112,63 +111,6 @@ function narrowOsvResults(parsed: unknown): OsvResult[] | undefined {
       .map((vuln): OsvVuln => ({ id: vuln.id as string }));
     return { vulns };
   });
-}
-
-/** Extra attempts after a transient failure (network error, timeout, HTTP 429 / 5xx). */
-const OSV_RETRIES = 2;
-
-/** Base backoff before a retry; doubled per attempt, or replaced by a (capped) Retry-After. */
-const OSV_BACKOFF_MS = 400;
-
-/** Longest Retry-After honored. */
-const OSV_MAX_RETRY_AFTER_MS = 5_000;
-
-/** True for responses worth retrying. */
-function isTransientStatus(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
-/** Waits `ms` milliseconds. */
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-/** Delay before retry `attempt` (0-based): Retry-After when the server sent one, else exponential backoff. */
-function retryDelay(attempt: number, response?: Response): number {
-  const header = response?.headers.get("retry-after");
-  const seconds = header === null || header === undefined ? Number.NaN : Number.parseFloat(header);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(seconds * 1000, OSV_MAX_RETRY_AFTER_MS);
-  }
-  return OSV_BACKOFF_MS * 2 ** attempt;
-}
-
-/**
- * `fetch` with a per-attempt timeout and up to OSV_RETRIES retries on a
- * transient failure. Returns the last response (which may be a non-OK
- * status) or throws the last network error.
- */
-async function fetchWithRetry(url: string, init: RequestInit = {}): Promise<Response> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= OSV_RETRIES; attempt += 1) {
-    try {
-      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(OSV_TIMEOUT_MS) });
-      if (!isTransientStatus(response.status) || attempt === OSV_RETRIES) {
-        return response;
-      }
-      await response.body?.cancel().catch(() => undefined);
-      await sleep(retryDelay(attempt, response));
-    } catch (error) {
-      lastError = error;
-      if (attempt === OSV_RETRIES) {
-        break;
-      }
-      await sleep(retryDelay(attempt));
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /** OSV.dev accepts at most this many queries per querybatch request. */
@@ -282,7 +224,7 @@ export interface VulnDetails {
 /** Session cache: advisory id -> its details. Ids whose lookup failed are absent (a later scan may retry). */
 const detailsCache = new Map<string, VulnDetails>();
 
-/** Overall wall-clock budget for one `fetchVulnDetails` call; each request also has its own OSV_TIMEOUT_MS. */
+/** Overall wall-clock budget for one `fetchVulnDetails` call; each request also has its own timeout (http.ts). */
 const DETAILS_BUDGET_MS = 30_000;
 
 /**
