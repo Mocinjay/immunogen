@@ -48,6 +48,7 @@ import { NoopAdapter } from "./llm/adapters/index.js";
 import { enrichFindings } from "./llm/enricher.js";
 import { providerConfigDiagnostic, selectAdapter } from "./llm/provider.js";
 import { isGitRepoUrl } from "./core/ingest/input-resolver.js";
+import { computeFingerprints } from "./core/fingerprint.js";
 import { isUrl } from "./web/url-resolver.js";
 import { scanUrl } from "./web/scan-url.js";
 
@@ -100,8 +101,28 @@ export async function scan(
   path: string,
   options?: ScanOptions,
 ): Promise<ScanResult> {
-  const result = await scanUnfiltered(path, options);
+  let result = await scanUnfiltered(path, options);
+  if (options?.baseline !== undefined) {
+    result = withBaseline(result, options.baseline);
+  }
   return options?.minSeverity === undefined ? result : withMinSeverity(result, options.minSeverity);
+}
+
+/** Moves findings already present in `baseline` to `baselined`, rescores the rest, and records the split. */
+function withBaseline(result: ScanResult, baseline: readonly Finding[]): ScanResult {
+  const known = new Set(computeFingerprints(baseline));
+  const fingerprints = computeFingerprints(result.findings);
+  const findings: Finding[] = [];
+  const baselined: Finding[] = [];
+  for (const [index, finding] of result.findings.entries()) {
+    (known.has(fingerprints.at(index) ?? "") ? baselined : findings).push(finding);
+  }
+  const diagnostic: Diagnostic = {
+    level: "info",
+    code: "BASELINE_APPLIED",
+    message: `${String(baselined.length)} finding(s) already in the baseline were not scored; ${String(findings.length)} new finding(s) were.`,
+  };
+  return { ...result, findings, baselined, score: computeScore(findings), diagnostics: [...result.diagnostics, diagnostic] };
 }
 
 /** Severity order, least to most severe. */

@@ -218,6 +218,13 @@ export interface ScanOptions {
    * FINDINGS_FILTERED diagnostic counts them). Omitted = keep everything.
    */
   minSeverity?: Severity;
+  /**
+   * `--baseline <file>`: findings from an earlier scan (its JSON output's
+   * `findings`). Current findings that match one — same rule, file, message
+   * and masked snippet, regardless of line — are known, accepted debt: moved
+   * to `ScanResult.baselined` and not scored, so only NEW findings can block.
+   */
+  baseline?: readonly Finding[];
   /** Walker per-file size cap override, in bytes. */
   maxFileSizeBytes?: number;
   /** Walker total-repo byte cap override, across all read files (default 50MB). */
@@ -338,4 +345,9 @@ export interface ScanResult {
    * when none were, and always empty with `--no-ignore`). Not scored.
    */
   suppressed?: SuppressedFinding[];
+  /**
+   * Findings that matched `ScanOptions.baseline` and were not scored
+   * (absent when no baseline was given).
+   */
+  baselined?: Finding[];
 }

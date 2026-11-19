@@ -517,3 +517,15 @@ describe("sarifReporter — suppressed findings", () => {
     expect(results[0]?.partialFingerprints).toEqual(active.runs[0]?.results[0]?.partialFingerprints);
   });
 });
+
+describe("sarifReporter — baseline", () => {
+  it("marks new and baselined results with baselineState when a baseline was used", () => {
+    const log = JSON.parse(sarifReporter.render(makeScanResult({ findings: [MEDIUM_FINDING], baselined: [LOW_FINDING] }))) as SarifLog;
+    expect(log.runs[0]?.results.map((r) => r.baselineState)).toEqual(["new", "unchanged"]);
+  });
+
+  it("omits baselineState when no baseline was used", () => {
+    const log = JSON.parse(sarifReporter.render(makeScanResult({ findings: [MEDIUM_FINDING] }))) as SarifLog;
+    expect(log.runs[0]?.results[0]?.baselineState).toBeUndefined();
+  });
+});

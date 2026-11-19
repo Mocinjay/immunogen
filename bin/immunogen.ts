@@ -32,7 +32,7 @@
  * `process.argv[1]` keeps the link path — a plain URL comparison would make
  * every installed `immunogen` invocation silently print nothing and exit 0.
  */
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { Command, Option } from "commander";
@@ -84,6 +84,7 @@ export async function runCli(
     format?: (typeof FORMATS)[number];
     noLlm?: boolean;
     minSeverity?: (typeof MIN_SEVERITIES)[number];
+    baseline?: string;
     authorize?: boolean;
     allowPrivate?: boolean;
     offline?: boolean;
@@ -102,6 +103,9 @@ export async function runCli(
 
   let result;
   try {
+    if (opts.baseline !== undefined) {
+      scanOptions.baseline = loadBaseline(opts.baseline);
+    }
     result = await scan(path, scanOptions);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -112,6 +116,22 @@ export async function runCli(
   const reporter = getReporter(opts.format);
   process.stdout.write(reporter.render(result));
   return result.score.verdict === "blocked" ? 1 : 0;
+}
+
+/** Reads the `findings` array of an earlier `--format json` report; anything else is a clean, user-facing error. */
+function loadBaseline(file: string): NonNullable<ScanOptions["baseline"]> {
+  let parsed: unknown;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- the caller's own --baseline argument
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    throw new Error(`could not read baseline ${file}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const findings = (parsed as { findings?: unknown }).findings;
+  if (!Array.isArray(findings)) {
+    throw new Error(`baseline ${file} is not an immunogen --format json report (no "findings" array)`);
+  }
+  return findings as NonNullable<ScanOptions["baseline"]>;
 }
 
 /** True when this module is the process entry script, following symlinks (see module doc comment). */
@@ -144,6 +164,7 @@ if (isEntryScript()) {
     )
     .addOption(new Option("--format <format>", "output format (prompt = a fix-it prompt to paste into your coding agent)").choices(FORMATS).default("terminal"))
     .addOption(new Option("--min-severity <level>", "leave out (and do not score) findings below this severity").choices(MIN_SEVERITIES))
+    .option("--baseline <file>", "an earlier --format json report: findings already in it are not scored, so only new ones can fail the build")
     .option(
       "--no-llm",
       "disable LLM fix-prompt enrichment (offline is the default)",
@@ -170,6 +191,7 @@ if (isEntryScript()) {
         options: {
           format: (typeof FORMATS)[number];
           minSeverity?: (typeof MIN_SEVERITIES)[number];
+          baseline?: string;
           llm: boolean;
           ignore: boolean;
           offline?: boolean;
@@ -181,6 +203,7 @@ if (isEntryScript()) {
           format: options.format,
           noLlm: options.llm === false,
           ...(options.minSeverity === undefined ? {} : { minSeverity: options.minSeverity }),
+          ...(options.baseline === undefined ? {} : { baseline: options.baseline }),
           ...(options.offline === true ? { offline: true } : {}),
           ...(options.ignore === false ? { noIgnore: true } : {}),
           ...(options.authorize === true ? { authorize: true } : {}),

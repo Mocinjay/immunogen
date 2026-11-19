@@ -173,3 +173,21 @@ describe("bin/immunogen.ts — thin-wrapper guard (criterion 5)", () => {
     expect(source).toMatch(/scan\(/);
   });
 });
+
+describe("runCli — --baseline", () => {
+  it("exits 2 with a clear message when the baseline is not an immunogen JSON report", async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = await mkdtemp(join(tmpdir(), "immunogen-baseline-"));
+    const file = join(dir, "baseline.json");
+    await writeFile(file, '{"not":"a report"}');
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(await runCli(CLEAN_FIXTURE, { format: "json", baseline: file })).toBe(2);
+      expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('no "findings" array');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

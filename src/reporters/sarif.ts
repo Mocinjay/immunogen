@@ -26,7 +26,6 @@
  * metadata — it never imports a parser, never evals/requires/spawns, and
  * never re-decodes scanned content.
  */
-import { createHash } from "node:crypto";
 
 import type { Reporter } from "./interface.js";
 import type {
@@ -40,6 +39,7 @@ import type {
 } from "./sarif-types.js";
 
 import { VERSION } from "../version.js";
+import { computeFingerprints } from "../core/fingerprint.js";
 
 import type { SarifNotification } from "./sarif-types.js";
 
@@ -125,43 +125,6 @@ function mapSeverityToLevel(severity: Severity): SarifLevel {
 function deriveRuleName(category: Category, detectorName: string): string {
   // eslint-disable-next-line security/detect-object-injection -- `category` is typed as the closed `Category` string-literal union from core/types.ts, never arbitrary scanned-repo content
   return `${CATEGORY_LABELS[category]} (${detectorName})`;
-}
-
-/** The finding fields that identify "the same problem" independent of where in the file it sits. */
-function fingerprintKey(finding: Finding): string {
-  return JSON.stringify([finding.ruleId, finding.file, finding.message, finding.matchedText ?? ""]);
-}
-
-/**
- * `partialFingerprints.primaryLocationLineHash` for every finding, in
- * `findings` order. The hash covers rule, file, message and the (masked)
- * matched snippet — never the line number — so an alert keeps its identity
- * when unrelated edits shift it up or down the file. Findings that share all
- * of those get an occurrence index (counted in line order) mixed in, so they
- * stay distinct. Only the scanner's own finding metadata is hashed.
- */
-function computeFingerprints(findings: readonly Finding[]): string[] {
-  const indicesByKey = new Map<string, number[]>();
-  for (const [index, finding] of findings.entries()) {
-    const key = fingerprintKey(finding);
-    const indices = indicesByKey.get(key);
-    if (indices === undefined) {
-      indicesByKey.set(key, [index]);
-    } else {
-      indices.push(index);
-    }
-  }
-
-  const fingerprints = new Map<number, string>();
-  for (const [key, indices] of indicesByKey) {
-    const byLine = indices
-      .map((index) => ({ index, line: findings.at(index)?.line ?? 0 }))
-      .sort((a, b) => a.line - b.line || a.index - b.index);
-    for (const [occurrence, { index }] of byLine.entries()) {
-      fingerprints.set(index, createHash("sha256").update(`${key}\n${String(occurrence)}`).digest("hex"));
-    }
-  }
-  return findings.map((_, index) => fingerprints.get(index) ?? "");
 }
 
 /**
@@ -275,7 +238,10 @@ function buildRun(result: ScanResult): SarifRun {
   // fingerprint space with the active ones, so silencing a finding never
   // changes another alert's identity.
   const suppressed = result.suppressed ?? [];
-  const all: Finding[] = [...result.findings, ...suppressed];
+  const baselined = result.baselined ?? [];
+  const all: Finding[] = [...result.findings, ...suppressed, ...baselined];
+  const activeCount = result.findings.length;
+  const suppressedEnd = activeCount + suppressed.length;
   const { rules, ruleIndexByRuleId } = buildRules(all);
   const fingerprints = computeFingerprints(all);
 
@@ -295,14 +261,18 @@ function buildRun(result: ScanResult): SarifRun {
         ...(result.diagnostics.length > 0 ? { toolExecutionNotifications: result.diagnostics.map(buildNotification) } : {}),
       },
     ],
-    results: all.map((finding, index) =>
-      buildResult(
+    results: all.map((finding, index) => {
+      const built = buildResult(
         finding,
         ruleIndexByRuleId,
         fingerprints.at(index) ?? "",
-        index >= result.findings.length ? suppressed.at(index - result.findings.length)?.justification : undefined,
-      ),
-    ),
+        index >= activeCount && index < suppressedEnd ? suppressed.at(index - activeCount)?.justification : undefined,
+      );
+      if (result.baselined === undefined) {
+        return built;
+      }
+      return { ...built, baselineState: index >= suppressedEnd ? ("unchanged" as const) : ("new" as const) };
+    }),
     properties: {
       grade: result.score.grade,
       gradeLabel: result.score.gradeLabel,

@@ -91,6 +91,8 @@ export interface SarifResult {
   partialFingerprints: SarifPartialFingerprints;
   /** Present when the result was silenced in source (`immunogen-ignore`); code-scanning UIs show it as dismissed. */
   suppressions?: SarifSuppression[];
+  /** Set when the scan ran against a baseline: `new`, or `unchanged` for a baselined finding. */
+  baselineState?: "new" | "unchanged";
 }
 
 /** SARIF 2.1.0 §3.35 `suppression`. */

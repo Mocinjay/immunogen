@@ -153,3 +153,26 @@ describe("scan() — minSeverity", () => {
     }
   });
 });
+
+describe("scan() — baseline", () => {
+  it("scores only findings that are not in the baseline, even after code moves", async () => {
+    const { makeRepoTree } = await import("../tests/helpers/make-repo-tree.js");
+    const { writeFile: write } = await import("node:fs/promises");
+    const key = 'const key = "sk_live_51Qm8vRt2LpX7nWc4ZyKd9HjBfGs3TaEu";\n';
+    const tree = await makeRepoTree({ "src/pay.ts": key });
+    try {
+      const before = await scan(tree.root, { offline: true });
+      // Shift the old finding down and add a new one.
+      await write(join(tree.root, "src/pay.ts"), `// moved\n\n${key}`);
+      await write(join(tree.root, "src/db.ts"), 'export const url = "postgresql://postgres:Hq7vRt2pLx9w@db.abcdefghijkl.supabase.co:5432/postgres";\n');
+
+      const after = await scan(tree.root, { offline: true, baseline: before.findings });
+
+      expect(after.findings.map((f) => f.ruleId)).toEqual(["SEC-10"]);
+      expect(after.baselined?.map((f) => f.ruleId)).toEqual(["SEC-01"]);
+      expect(after.diagnostics.map((d) => d.code)).toContain("BASELINE_APPLIED");
+    } finally {
+      await tree.cleanup();
+    }
+  });
+});
