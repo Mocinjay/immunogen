@@ -85,6 +85,18 @@ function workspaceNames(fileSet: ReadonlyMap<string, string>): Set<string> {
   return names;
 }
 
+/** Hosts of the public npm registry (and Yarn's mirror of it). */
+const PUBLIC_NPM_REGISTRY_HOSTS = new Set(["registry.npmjs.org", "registry.yarnpkg.com"]);
+
+/** True when `url` points at the public npm registry — by exact hostname, never by substring. */
+function isPublicNpmRegistry(url: string): boolean {
+  try {
+    return PUBLIC_NPM_REGISTRY_HOSTS.has(new URL(url).hostname.toLowerCase());
+  } catch {
+    return false; // Not a URL: treat as a private / unknown registry and check nothing.
+  }
+}
+
 /** What the repo's npm client configs say about private registries. */
 function npmRegistryConfig(fileSet: ReadonlyMap<string, string>): { privateDefault: boolean; privateScopes: Set<string> } {
   const privateScopes = new Set<string>();
@@ -101,7 +113,7 @@ function npmRegistryConfig(fileSet: ReadonlyMap<string, string>): { privateDefau
       privateScopes.add(match[1] ?? ""); // .yarnrc.yml npmScopes: { "@acme": ... }
     }
     const defaultRegistry = content.match(/^\s*(?:registry|npmRegistryServer)\s*[=:]\s*["']?(\S+?)["']?\s*$/m)?.[1];
-    if (defaultRegistry !== undefined && !defaultRegistry.includes("registry.npmjs.org") && !defaultRegistry.includes("registry.yarnpkg.com")) {
+    if (defaultRegistry !== undefined && !isPublicNpmRegistry(defaultRegistry)) {
       privateDefault = true;
     }
   }
@@ -167,7 +179,7 @@ function declaredDependencies(ctx: DetectorContext): Declared[] {
 /** Registry URL that answers 404 for a name that does not exist. */
 function registryUrl(dependency: Declared): string {
   return dependency.ecosystem === "npm"
-    ? `https://registry.npmjs.org/${dependency.name.replace("/", "%2f")}`
+    ? `https://registry.npmjs.org/${dependency.name.replaceAll("/", "%2f")}`
     : `https://pypi.org/pypi/${encodeURIComponent(dependency.name)}/json`;
 }
 

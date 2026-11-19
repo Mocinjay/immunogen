@@ -136,7 +136,11 @@ export function parseGitTarget(input: string): GitTarget {
   if (SAFE_REF_RE.test(ref)) {
     target.ref = decodeURIComponent(ref);
   }
-  const subdir = path.replace(/\/+$/, "");
+  let subdir = path;
+  // Trailing slashes trimmed with a loop: a `/\/+$/` regex is quadratic on a long run of slashes.
+  while (subdir.endsWith("/")) {
+    subdir = subdir.slice(0, -1);
+  }
   if (kind.toLowerCase() !== "blob" && subdir !== "") {
     target.subdir = decodeURIComponent(subdir);
   }

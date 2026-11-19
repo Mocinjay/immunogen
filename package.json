@@ -1,6 +1,6 @@
 {
   "name": "immunogen",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Scans AI-built (\"vibe-coded\") web apps for launch-blocking problems coding agents quietly ship, and emits a 0-100 Ship Score.",
   "keywords": [
     "security",
@@ -49,6 +49,8 @@
   },
   "files": [
     "dist",
+    ".claude/skills/immunogen/scan.mjs",
+    ".claude/skills/immunogen/SKILL.md",
     "LICENSE",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
@@ -100,7 +102,8 @@
       "brace-expansion@1": "1.1.21",
       "js-yaml@4": "4.3.2",
       "vite@8": "8.1.6",
-      "esbuild@0.27": "0.28.2"
+      "esbuild@0.27": "0.28.2",
+      "minimatch@10": "11.0.2"
     }
   }
 }

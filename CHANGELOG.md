@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-11-19
+
+Hardening release: zero known vulnerabilities in the dependency tree, zero
+lint warnings, CodeQL code scanning on immunogen's own source, and npm as
+the main way to install.
+
+### Security
+
+- File reads during a scan are race-free: each file is opened once
+  (refusing a path that has become a symlink), checked and read through the
+  same handle, and the read stops at the size cap even if the file grows.
+  The `.git` pointer lookup is a single operation too. (CodeQL
+  js/file-system-race.)
+- Git browse-URL parsing and live-URL probe paths no longer use a regex that
+  is quadratic on long runs of `/` (CodeQL js/polynomial-redos).
+- A private npm registry is recognized by exact hostname, not by a substring
+  of its URL (CodeQL js/incomplete-url-substring-sanitization).
+- The GitHub Action passes step outputs through environment variables, never
+  into a script (CodeQL actions/code-injection); every third-party action in
+  the Action and the workflows is pinned to a commit SHA, and checkout no
+  longer leaves the token in `.git/config`.
+- `minimatch` (moderate advisory, via the TypeScript ESLint toolchain) pinned
+  to 11.0.2: `pnpm audit` reports no known vulnerabilities.
+- Test files no longer contain literal bidirectional-override characters
+  (they are written as `\u202E` escapes), and lint is warning-free.
+- Repository: Dependabot alerts and security updates, and CodeQL default
+  setup, are enabled.
+
+### Added
+
+- Published to npm: `npx immunogen` or `npm install -g immunogen`. Releases
+  publish through npm trusted publishing (OIDC, with provenance) — no npm
+  token is stored anywhere.
+- `immunogen --install-skill` links the Claude Code skill that now ships in
+  the npm package into `~/.claude/skills/immunogen`, so `/immunogen` always
+  runs the installed version. It never overwrites an existing folder.
+
 ## [0.3.0] - 2026-11-19
 
 A second production audit (see `docs/AUDIT.md`), driven by scanning real

@@ -62,7 +62,7 @@ describe("findDeceptiveUnicode — vulnerable cases", () => {
   });
 
   it("flags an RTL override character", () => {
-    const hits = findDeceptiveUnicode("malicious‮");
+    const hits = findDeceptiveUnicode("malicious\u202E");
 
     expect(hits.some((hit) => hit.kind === "rtl-override")).toBe(true);
   });

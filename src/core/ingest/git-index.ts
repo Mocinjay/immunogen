@@ -18,7 +18,7 @@
  * truncated index) yields `undefined` — callers fall back to `.gitignore`
  * semantics rather than guessing.
  */
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 /** `DIRC` — the index file signature. */
@@ -43,22 +43,19 @@ async function findGitDir(startDir: string): Promise<{ workTree: string; gitDir:
   let current = resolve(startDir);
   for (let hop = 0; hop < MAX_PARENT_HOPS; hop += 1) {
     const candidate = join(current, ".git");
+    // One operation decides file vs directory (no stat-then-read race): a
+    // `.git` pointer file reads as text, a `.git` directory fails with EISDIR.
     try {
-      // eslint-disable-next-line security/detect-non-literal-fs-filename -- probes the scan target's own .git, never executes it
-      const info = await stat(candidate);
-      if (info.isDirectory()) {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- reads the scan target's own .git pointer file as text
+      const pointer = await readFile(candidate, "utf8");
+      const target = pointer.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim();
+      if (target !== undefined && target.length > 0) {
+        return { workTree: current, gitDir: resolve(current, target) };
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EISDIR") {
         return { workTree: current, gitDir: candidate };
       }
-      if (info.isFile()) {
-        // eslint-disable-next-line security/detect-non-literal-fs-filename -- reads the scan target's own .git pointer file as text
-        const pointer = await readFile(candidate, "utf8");
-        const match = pointer.match(/^gitdir:\s*(.+)$/m);
-        const target = match?.[1]?.trim();
-        if (target !== undefined && target.length > 0) {
-          return { workTree: current, gitDir: resolve(current, target) };
-        }
-      }
-    } catch {
       // No .git at this level — keep walking up.
     }
     const parent = dirname(current);

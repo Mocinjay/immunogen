@@ -40,7 +40,8 @@
  */
 import fg from "fast-glob";
 import ignore from "ignore";
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import { extname, join } from "node:path";
 
 import { readInfoExclude, readTrackedFiles } from "./git-index.js";
@@ -319,35 +320,57 @@ export interface WalkSettings {
 /** Why a candidate produced no content. */
 type SkipReason = "oversize" | "binary" | "unreadable";
 
+/** Bytes read per chunk; the read stops as soon as the running total passes the cap. */
+const READ_CHUNK_BYTES = 64 * 1024;
+
 /**
- * Reads `absPath` as text, or reports why it was skipped. The size is checked
- * with `stat` BEFORE reading, so an oversized file (a multi-GB dump or
- * build artifact) is never loaded into memory just to be discarded.
+ * Reads `absPath` as text, or reports why it was skipped. The file is opened
+ * ONCE and everything is decided on that handle — no check-then-use race:
+ * `O_NOFOLLOW` refuses a path that became a symlink after the walk listed
+ * it, `fstat` confirms a regular file under the size cap, and the read
+ * itself stops the moment it passes the cap, so a file that grows after the
+ * check is still never loaded past it (a multi-GB dump is never read).
  */
 async function readIfEligible(
   absPath: string,
   maxFileSizeBytes: number,
 ): Promise<{ content: string } | { skipped: SkipReason }> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- walker reads caller-supplied repo paths by design
-    const info = await stat(absPath);
+    handle = await open(absPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const info = await handle.stat();
+    if (!info.isFile()) {
+      return { skipped: "unreadable" };
+    }
     if (info.size > maxFileSizeBytes) {
       return { skipped: "oversize" };
     }
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- walker reads caller-supplied repo paths by design
-    const buffer = await readFile(absPath);
-    // Re-check: the file may have grown between stat and read.
-    if (buffer.length > maxFileSizeBytes) {
-      return { skipped: "oversize" };
+    const chunks: Buffer[] = [];
+    const chunk = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+    let total = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      total += bytesRead;
+      if (total > maxFileSizeBytes) {
+        return { skipped: "oversize" };
+      }
+      chunks.push(Buffer.from(chunk.subarray(0, bytesRead)));
     }
+    const buffer = Buffer.concat(chunks, total);
     const sniffWindow = buffer.subarray(0, Math.min(buffer.length, BINARY_SNIFF_BYTES));
     if (sniffWindow.includes(0x00)) {
       return { skipped: "binary" };
     }
     return { content: buffer.toString("utf8") };
   } catch {
-    // Vanished or permission-denied mid-walk: skip it rather than abort the scan.
+    // Vanished, permission-denied, or now a symlink: skip it rather than abort the scan.
     return { skipped: "unreadable" };
+  } finally {
+    await handle?.close();
   }
 }
 

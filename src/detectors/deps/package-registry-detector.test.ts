@@ -30,7 +30,7 @@ function registry(known: string[]) {
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
     const url = input instanceof Request ? input.url : input.toString();
     asked.push(url);
-    const hit = known.some((name) => url.endsWith(`/${name.replace("/", "%2f")}`) || url.includes(`/pypi/${name}/json`));
+    const hit = known.some((name) => url.endsWith(`/${name.replaceAll("/", "%2f")}`) || url.includes(`/pypi/${name}/json`));
     return Promise.resolve(new Response(null, { status: hit ? 200 : 404 }));
   });
   return asked;
