@@ -27,6 +27,8 @@ export interface LockedPackage {
   version: string;
   /** 1-indexed line of the package's entry in the lockfile. */
   line: number;
+  /** True when the lockfile marks the package as installed only for development (npm's `"dev": true`). */
+  dev?: boolean;
 }
 
 /** Lockfile basenames, by the ecosystem they resolve. */
@@ -41,13 +43,13 @@ class PackageSet {
   private readonly seen = new Set<string>();
   readonly packages: LockedPackage[] = [];
 
-  add(ecosystem: Ecosystem, name: string, version: string, line: number): void {
+  add(ecosystem: Ecosystem, name: string, version: string, line: number, dev = false): void {
     const key = `${name}@${version}`;
     if (name === "" || !EXACT_VERSION_RE.test(version) || this.seen.has(key)) {
       return;
     }
     this.seen.add(key);
-    this.packages.push({ ecosystem, name, version, line });
+    this.packages.push({ ecosystem, name, version, line, ...(dev ? { dev: true } : {}) });
   }
 }
 
@@ -81,13 +83,13 @@ export function parsePackageLock(content: string): LockedPackage[] {
   if (parsed.packages !== undefined && typeof parsed.packages === "object") {
     // v2/v3: keys are install paths ("node_modules/a/node_modules/@s/b").
     for (const [path, value] of Object.entries(parsed.packages)) {
-      const entry = value as { version?: unknown; link?: unknown; name?: unknown };
+      const entry = value as { version?: unknown; link?: unknown; name?: unknown; dev?: unknown };
       const marker = path.lastIndexOf("node_modules/");
       if (marker === -1 || entry.link === true || typeof entry.version !== "string") {
         continue;
       }
       const name = typeof entry.name === "string" ? entry.name : path.slice(marker + "node_modules/".length);
-      set.add("npm", name, entry.version, keyLines.get(path) ?? 1);
+      set.add("npm", name, entry.version, keyLines.get(path) ?? 1, entry.dev === true);
     }
     return set.packages;
   }
@@ -95,9 +97,9 @@ export function parsePackageLock(content: string): LockedPackage[] {
   // v1: nested `dependencies` trees.
   const walk = (dependencies: Record<string, unknown>): void => {
     for (const [name, value] of Object.entries(dependencies)) {
-      const entry = value as { version?: unknown; dependencies?: unknown };
+      const entry = value as { version?: unknown; dependencies?: unknown; dev?: unknown };
       if (typeof entry.version === "string") {
-        set.add("npm", name, entry.version, keyLines.get(name) ?? 1);
+        set.add("npm", name, entry.version, keyLines.get(name) ?? 1, entry.dev === true);
       }
       if (typeof entry.dependencies === "object" && entry.dependencies !== null) {
         walk(entry.dependencies as Record<string, unknown>);

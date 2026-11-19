@@ -34,11 +34,13 @@
  * no TTL.
  */
 
-import { severityFromOsvRecord } from "./osv-severity.js";
+import { fixesFromOsvRecord, severityFromOsvRecord } from "./osv-severity.js";
+
+import type { AffectedFix } from "./osv-severity.js";
 
 import type { Severity } from "../../core/types.js";
 
-/** 10-second hard timeout for the entire OSV.dev round trip. */
+/** Per-attempt timeout for one OSV.dev request (each request is retried on transient failures). */
 const OSV_TIMEOUT_MS = 10_000;
 
 /** OSV.dev batch query endpoint — no API key required. */
@@ -112,6 +114,63 @@ function narrowOsvResults(parsed: unknown): OsvResult[] | undefined {
   });
 }
 
+/** Extra attempts after a transient failure (network error, timeout, HTTP 429 / 5xx). */
+const OSV_RETRIES = 2;
+
+/** Base backoff before a retry; doubled per attempt, or replaced by a (capped) Retry-After. */
+const OSV_BACKOFF_MS = 400;
+
+/** Longest Retry-After honored. */
+const OSV_MAX_RETRY_AFTER_MS = 5_000;
+
+/** True for responses worth retrying. */
+function isTransientStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/** Waits `ms` milliseconds. */
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Delay before retry `attempt` (0-based): Retry-After when the server sent one, else exponential backoff. */
+function retryDelay(attempt: number, response?: Response): number {
+  const header = response?.headers.get("retry-after");
+  const seconds = header === null || header === undefined ? Number.NaN : Number.parseFloat(header);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, OSV_MAX_RETRY_AFTER_MS);
+  }
+  return OSV_BACKOFF_MS * 2 ** attempt;
+}
+
+/**
+ * `fetch` with a per-attempt timeout and up to OSV_RETRIES retries on a
+ * transient failure. Returns the last response (which may be a non-OK
+ * status) or throws the last network error.
+ */
+async function fetchWithRetry(url: string, init: RequestInit = {}): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= OSV_RETRIES; attempt += 1) {
+    try {
+      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(OSV_TIMEOUT_MS) });
+      if (!isTransientStatus(response.status) || attempt === OSV_RETRIES) {
+        return response;
+      }
+      await response.body?.cancel().catch(() => undefined);
+      await sleep(retryDelay(attempt, response));
+    } catch (error) {
+      lastError = error;
+      if (attempt === OSV_RETRIES) {
+        break;
+      }
+      await sleep(retryDelay(attempt));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 /** OSV.dev accepts at most this many queries per querybatch request. */
 const OSV_MAX_BATCH = 1000;
 
@@ -121,11 +180,6 @@ const OSV_MAX_BATCH = 1000;
  * any failure (see `queryOsvBatch`).
  */
 async function queryOsvChunk(uncachedQueries: OsvQuery[]): Promise<void> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-  }, OSV_TIMEOUT_MS);
-
   try {
     const body = JSON.stringify({
       queries: uncachedQueries.map((query) => ({
@@ -134,11 +188,10 @@ async function queryOsvChunk(uncachedQueries: OsvQuery[]): Promise<void> {
       })),
     });
 
-    const response = await fetch(OSV_QUERYBATCH_URL, {
+    const response = await fetchWithRetry(OSV_QUERYBATCH_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
-      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -171,8 +224,6 @@ async function queryOsvChunk(uncachedQueries: OsvQuery[]): Promise<void> {
     throw new OsvUnavailableError("OSV.dev query failed (network error, timeout, or malformed response)", {
       cause: error,
     });
-  } finally {
-    clearTimeout(timeoutId);
   }
 }
 
@@ -222,49 +273,64 @@ const SEVERITY_FETCH_CONCURRENCY = 8;
 /** OSV advisory ids are short tokens like GHSA-xxxx-xxxx-xxxx, PYSEC-2023-1, GO-2023-1, CVE-2024-1. */
 const OSV_ID_RE = /^[A-Za-z0-9._:-]{3,64}$/;
 
-/** Session cache: advisory id -> its severity, or null when the record carries none. */
-const severityCache = new Map<string, Severity | null>();
+/** What one advisory record says: its rating (when it has one) and the fixed versions per package. */
+export interface VulnDetails {
+  severity?: Severity;
+  fixes: AffectedFix[];
+}
+
+/** Session cache: advisory id -> its details. Ids whose lookup failed are absent (a later scan may retry). */
+const detailsCache = new Map<string, VulnDetails>();
+
+/** Overall wall-clock budget for one `fetchVulnDetails` call; each request also has its own OSV_TIMEOUT_MS. */
+const DETAILS_BUDGET_MS = 30_000;
 
 /**
- * Fetches the full OSV record for each advisory id and returns the
- * severities it could determine (see osv-severity.ts). Best-effort by
- * design: the batch query already established THAT a package is
- * vulnerable, so a failed or slow lookup here only loses the precise
- * rating — the id is simply absent from the result and the caller keeps
- * its default. Only public advisory ids are sent. Never throws.
+ * Fetches the full OSV record for each advisory id (bounded concurrency,
+ * per-request timeout and retries, one overall budget) and returns what was
+ * learned. Never throws: a failed or skipped lookup simply leaves that id
+ * out of the map, so callers can say "unrated" instead of guessing.
  */
-export async function fetchVulnSeverities(ids: string[]): Promise<Map<string, Severity>> {
-  const pending = [...new Set(ids)].filter((id) => OSV_ID_RE.test(id) && !severityCache.has(id));
+export async function fetchVulnDetails(ids: string[]): Promise<Map<string, VulnDetails>> {
+  const pending = [...new Set(ids)].filter((id) => OSV_ID_RE.test(id) && !detailsCache.has(id));
   if (pending.length > 0) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-    }, OSV_TIMEOUT_MS);
-    try {
-      const queue = [...pending];
-      const worker = async (): Promise<void> => {
-        for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
-          try {
-            const response = await fetch(`${OSV_VULN_URL}${encodeURIComponent(id)}`, { signal: controller.signal });
-            if (response.ok) {
-              severityCache.set(id, severityFromOsvRecord(await response.json()) ?? null);
-            }
-          } catch {
-            // Leave this id unrated; a later scan in the same process may retry it.
+    const deadline = Date.now() + DETAILS_BUDGET_MS;
+    const queue = [...pending];
+    const worker = async (): Promise<void> => {
+      for (let id = queue.shift(); id !== undefined && Date.now() < deadline; id = queue.shift()) {
+        try {
+          const response = await fetchWithRetry(`${OSV_VULN_URL}${encodeURIComponent(id)}`);
+          if (response.ok) {
+            const record: unknown = await response.json();
+            const severity = severityFromOsvRecord(record);
+            detailsCache.set(id, { ...(severity === undefined ? {} : { severity }), fixes: fixesFromOsvRecord(record) });
+          } else {
+            await response.body?.cancel().catch(() => undefined);
           }
+        } catch {
+          // Leave this id unknown; a later scan in the same process may retry it.
         }
-      };
-      await Promise.all(Array.from({ length: Math.min(SEVERITY_FETCH_CONCURRENCY, pending.length) }, worker));
-    } finally {
-      clearTimeout(timeoutId);
-    }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(SEVERITY_FETCH_CONCURRENCY, pending.length) }, worker));
   }
 
-  const severities = new Map<string, Severity>();
+  const details = new Map<string, VulnDetails>();
   for (const id of ids) {
-    const severity = severityCache.get(id);
-    if (severity !== undefined && severity !== null) {
-      severities.set(id, severity);
+    const known = detailsCache.get(id);
+    if (known !== undefined) {
+      details.set(id, known);
+    }
+  }
+  return details;
+}
+
+/** Severity per advisory id (unrated or failed lookups omitted). Thin view over `fetchVulnDetails`. */
+export async function fetchVulnSeverities(ids: string[]): Promise<Map<string, Severity>> {
+  const severities = new Map<string, Severity>();
+  for (const [id, details] of await fetchVulnDetails(ids)) {
+    if (details.severity !== undefined) {
+      severities.set(id, details.severity);
     }
   }
   return severities;

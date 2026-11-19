@@ -61,3 +61,36 @@ describe("queryOsvBatch", () => {
     expect(results.at(0)).toEqual({});
   });
 });
+
+describe("OSV client — transient failures and fix versions", () => {
+  it("retries a querybatch that first answers 503, instead of falling back offline", async () => {
+    let calls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      calls += 1;
+      return Promise.resolve(
+        calls === 1
+          ? new Response("busy", { status: 503, headers: { "retry-after": "0" } })
+          : new Response(JSON.stringify({ results: [{ vulns: [{ id: "GHSA-retry-0001" }] }] }), { status: 200 }),
+      );
+    });
+
+    const [result] = await queryOsvBatch([{ name: "retry-pkg", version: "1.0.0" }]);
+
+    expect(calls).toBe(2);
+    expect(result?.vulns?.map((vuln) => vuln.id)).toEqual(["GHSA-retry-0001"]);
+  });
+
+  it("returns each advisory's fixed versions with its severity", async () => {
+    const { fetchVulnDetails } = await import("./osv-client.js");
+    stubFetch({
+      "GHSA-fix-0001": {
+        database_specific: { severity: "HIGH" },
+        affected: [{ package: { ecosystem: "npm", name: "fixme" }, ranges: [{ events: [{ introduced: "0" }, { fixed: "2.3.1" }] }] }],
+      },
+    });
+
+    const details = await fetchVulnDetails(["GHSA-fix-0001"]);
+
+    expect(details.get("GHSA-fix-0001")).toEqual({ severity: "HIGH", fixes: [{ ecosystem: "npm", name: "fixme", fixed: ["2.3.1"] }] });
+  });
+});

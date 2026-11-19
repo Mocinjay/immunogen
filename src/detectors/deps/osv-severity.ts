@@ -134,3 +134,104 @@ export function worstSeverity(severities: Severity[]): Severity | undefined {
   }
   return worst;
 }
+
+/** Fixed versions an OSV record lists for one affected package. */
+export interface AffectedFix {
+  ecosystem: string;
+  name: string;
+  fixed: string[];
+}
+
+/**
+ * Every `affected[].ranges[].events[].fixed` version in an OSV record,
+ * grouped by package. Malformed shapes contribute nothing (never throws).
+ */
+export function fixesFromOsvRecord(record: unknown): AffectedFix[] {
+  if (typeof record !== "object" || record === null) {
+    return [];
+  }
+  const affected = (record as { affected?: unknown }).affected;
+  if (!Array.isArray(affected)) {
+    return [];
+  }
+  const fixes: AffectedFix[] = [];
+  for (const entry of affected as unknown[]) {
+    const item = entry as { package?: { ecosystem?: unknown; name?: unknown }; ranges?: unknown };
+    const ecosystem = item.package?.ecosystem;
+    const name = item.package?.name;
+    if (typeof ecosystem !== "string" || typeof name !== "string" || !Array.isArray(item.ranges)) {
+      continue;
+    }
+    const fixed: string[] = [];
+    for (const range of item.ranges as unknown[]) {
+      const events = (range as { events?: unknown }).events;
+      if (!Array.isArray(events)) {
+        continue;
+      }
+      for (const event of events as unknown[]) {
+        const value = (event as { fixed?: unknown }).fixed;
+        if (typeof value === "string" && value.length > 0 && value.length < 64) {
+          fixed.push(value);
+        }
+      }
+    }
+    if (fixed.length > 0) {
+      fixes.push({ ecosystem, name, fixed });
+    }
+  }
+  return fixes;
+}
+
+/**
+ * Compares dotted numeric versions (`1.2.10` > `1.2.9`; a leading `v` is
+ * ignored; a pre-release sorts before its release). Good enough to pick an
+ * upgrade target across npm, PyPI and Go version strings.
+ */
+export function compareVersions(left: string, right: string): number {
+  const split = (version: string): { parts: number[]; pre: boolean } => {
+    const trimmed = version.trim().replace(/^v/i, "");
+    const core = trimmed.split(/[-+]/, 1)[0] ?? "";
+    return {
+      parts: core.split(".").map((part) => Number.parseInt(part, 10) || 0),
+      pre: /^[\d.]+-/.test(trimmed) || /[a-z]/i.test(core),
+    };
+  };
+  const a = split(left);
+  const b = split(right);
+  for (let index = 0; index < Math.max(a.parts.length, b.parts.length); index += 1) {
+    const delta = (a.parts.at(index) ?? 0) - (b.parts.at(index) ?? 0);
+    if (delta !== 0) {
+      return delta;
+    }
+  }
+  return a.pre === b.pre ? 0 : a.pre ? -1 : 1;
+}
+
+/**
+ * The version to upgrade `name@current` to so that every listed advisory is
+ * fixed: for each advisory, the lowest fixed version above `current`; then
+ * the highest of those. `undefined` when an advisory lists no applicable fix.
+ */
+export function upgradeTarget(
+  name: string,
+  ecosystem: string,
+  current: string,
+  fixesPerAdvisory: readonly (readonly AffectedFix[])[],
+): string | undefined {
+  let target: string | undefined;
+  for (const fixes of fixesPerAdvisory) {
+    const candidates = fixes
+      .filter((fix) => fix.name === name && fix.ecosystem.toLowerCase() === ecosystem.toLowerCase())
+      .flatMap((fix) => fix.fixed)
+      .filter((version) => compareVersions(version, current) > 0)
+      .sort(compareVersions);
+    const lowest = candidates.at(0);
+    if (lowest === undefined) {
+      return undefined;
+    }
+    if (target === undefined || compareVersions(lowest, target) > 0) {
+      target = lowest;
+    }
+  }
+  return target;
+}

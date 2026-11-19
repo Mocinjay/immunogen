@@ -14,7 +14,8 @@ const fetchVulnSeveritiesMock = vi.fn<(ids: string[]) => Promise<Map<string, str
 
 vi.mock("./osv-client.js", () => ({
   queryOsvBatch: (queries: Array<{ name: string; version: string }>) => queryOsvBatchMock(queries),
-  fetchVulnSeverities: (ids: string[]) => fetchVulnSeveritiesMock(ids),
+  fetchVulnDetails: async (ids: string[]) =>
+    new Map([...(await fetchVulnSeveritiesMock(ids))].map(([id, severity]) => [id, { severity, fixes: [] }])),
 }));
 
 /** Minimal StackHints fixture — osvDetector reads ctx.content only, never ctx.stackHints. */
@@ -237,7 +238,7 @@ describe("osvDetector — one finding per vulnerable package", () => {
 
     expect(findings).toHaveLength(1);
     expect(findings[0]?.message).toBe(
-      "Vulnerable dependency: next@14.0.0 (4 OSV advisories: GHSA-a, GHSA-b, GHSA-c, +1 more).",
+      "Vulnerable dependency: next@14.0.0 (4 OSV advisories: GHSA-a, GHSA-b, GHSA-c, +1 more; OSV gave no severity, so it is rated HIGH by default).",
     );
   });
 });
@@ -255,7 +256,7 @@ describe("osvDetector — Python and Go manifests", () => {
     ]);
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({ ruleId: "DEP-01", file: "api/requirements.txt", line: 2 });
-    expect(findings[0]?.message).toBe("Vulnerable dependency: flask@2.0.1 (OSV advisory PYSEC-2023-1).");
+    expect(findings[0]?.message).toBe("Vulnerable dependency: flask@2.0.1 (OSV advisory PYSEC-2023-1; OSV gave no severity, so it is rated HIGH by default).");
   });
 
   it("queries the Go ecosystem for go.mod requirements", async () => {
@@ -356,11 +357,11 @@ describe("osvDetector — lockfiles", () => {
       { name: "ms", version: "2.0.0", ecosystem: "npm" },
     ]);
     expect(findings.map((finding) => [finding.file, finding.line, finding.message])).toEqual([
-      ["package.json", 4, "Vulnerable dependency: lodash@4.17.15 (OSV advisory GHSA-lodash)."],
+      ["package.json", 4, "Vulnerable dependency: lodash@4.17.15 (OSV advisory GHSA-lodash; OSV gave no severity, so it is rated HIGH by default)."],
       [
         "package-lock.json",
         13,
-        "Vulnerable transitive dependency: ms@2.0.0 (OSV advisory GHSA-ms) — installed by another package, resolved in this lockfile.",
+        "Vulnerable transitive dependency: ms@2.0.0 (OSV advisory GHSA-ms; OSV gave no severity, so it is rated HIGH by default) — installed by another package, resolved in this lockfile.",
       ],
     ]);
     expect(findings[1]?.remediation).toContain("overrides");
@@ -396,7 +397,7 @@ describe("osvDetector — lockfiles", () => {
     const findings = await osvDetector.detect(lockContext("poetry.lock", files));
 
     expect(findings.map((finding) => [finding.file, finding.line, finding.message])).toEqual([
-      ["pyproject.toml", 3, "Vulnerable dependency: flask@2.0.1 (OSV advisory PYSEC-1)."],
+      ["pyproject.toml", 3, "Vulnerable dependency: flask@2.0.1 (OSV advisory PYSEC-1; OSV gave no severity, so it is rated HIGH by default)."],
     ]);
   });
 });
@@ -427,5 +428,30 @@ describe("osvDetector — npm specifiers are normalized before they reach OSV", 
       { name: "d", version: "4.0.0", ecosystem: "npm" },
       { name: "@scope/real", version: "5.1.0", ecosystem: "npm" },
     ]);
+  });
+});
+
+describe("osvDetector — dev-only packages, fix versions, unrated advisories", () => {
+  it("rates a vulnerable devDependency one level lower and says why", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "GHSA-dev-0001" }] }, { vulns: [{ id: "GHSA-run-0002" }] }]);
+    fetchVulnSeveritiesMock.mockResolvedValue(new Map([["GHSA-dev-0001", "HIGH"], ["GHSA-run-0002", "HIGH"]]));
+    const manifest = JSON.stringify({ dependencies: { express: "4.17.1" }, devDependencies: { vite: "5.0.0" } }, null, 2);
+
+    const findings = await osvDetector.detect(makeContext(manifest));
+
+    const vite = findings.find((finding) => finding.message.includes("vite@"));
+    const express = findings.find((finding) => finding.message.includes("express@"));
+    expect(vite?.severity).toBe("MEDIUM");
+    expect(vite?.message).toContain("development-only");
+    expect(express?.severity).toBe("HIGH");
+  });
+
+  it("marks an unrated advisory with MEDIUM confidence", async () => {
+    queryOsvBatchMock.mockResolvedValue([{ vulns: [{ id: "GHSA-none-0003" }] }]);
+    fetchVulnSeveritiesMock.mockResolvedValue(new Map());
+
+    const [finding] = await osvDetector.detect(makeContext(JSON.stringify({ dependencies: { left: "1.0.0" } })));
+
+    expect(finding).toMatchObject({ severity: "HIGH", confidence: "MEDIUM" });
   });
 });

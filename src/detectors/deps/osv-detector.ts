@@ -50,13 +50,13 @@
  * `require()`s, `eval`s, or executes the scanned package.json as code.
  */
 import { checkFallback, type FallbackEntry } from "./osv-fallback.js";
-import { fetchVulnSeverities, queryOsvBatch } from "./osv-client.js";
-import { worstSeverity } from "./osv-severity.js";
+import { fetchVulnDetails, queryOsvBatch } from "./osv-client.js";
+import { upgradeTarget, worstSeverity } from "./osv-severity.js";
 import { lockfileParserFor, NPM_LOCKFILES, PYTHON_LOCKFILES } from "../../core/ingest/lockfiles.js";
 import { manifestParserFor, type Ecosystem } from "../../core/ingest/manifests.js";
 
 import type { Confidence, Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
-import type { OsvQuery } from "./osv-client.js";
+import type { OsvQuery, VulnDetails } from "./osv-client.js";
 
 /** Stable ruleId for every vulnerability finding this detector emits. */
 const DEP_RULE_ID = "DEP-01";
@@ -125,6 +125,8 @@ interface ParsedDependency {
   file?: string;
   /** Resolved from a lockfile but not declared in the sibling manifest. */
   transitive?: boolean;
+  /** Installed only for development (a devDependency, or npm's lockfile `"dev": true`). */
+  dev?: boolean;
 }
 
 /** package.json dependency/devDependency record shape, defensively typed (mirrors stack-detector.ts). */
@@ -175,6 +177,7 @@ function parseDirectDependencies(content: string): ParsedDependency[] {
     ...parsed.dependencies,
     ...parsed.devDependencies,
   };
+  const runtime = new Set(Object.keys(parsed.dependencies ?? {}));
 
   const result: ParsedDependency[] = [];
   for (const [declaredName, rawValue] of Object.entries(merged)) {
@@ -198,13 +201,17 @@ function parseDirectDependencies(content: string): ParsedDependency[] {
       rawVersion: rawValue,
       queryVersion,
       line: findDependencyLine(content, declaredName),
+      ...(runtime.has(declaredName) ? {} : { dev: true }),
     });
   }
   return result;
 }
 
 /** Direct dependency names (with their declaration lines) of the manifest sitting next to a lockfile. */
-function siblingManifestDependencies(lockfilePath: string, fileSet: ReadonlyMap<string, string>): { file: string; lines: Map<string, number> } | undefined {
+function siblingManifestDependencies(
+  lockfilePath: string,
+  fileSet: ReadonlyMap<string, string>,
+): { file: string; lines: Map<string, number>; devOnly: Set<string> } | undefined {
   const dir = dirOf(lockfilePath);
   const prefix = dir === "" ? "" : `${dir}/`;
   const isNpm = NPM_LOCKFILES.includes(lockfilePath.split("/").at(-1) ?? "");
@@ -215,11 +222,15 @@ function siblingManifestDependencies(lockfilePath: string, fileSet: ReadonlyMap<
       continue;
     }
     const lines = new Map<string, number>();
+    const devOnly = new Set<string>();
     if (isNpm) {
       try {
         const parsed = JSON.parse(content) as ParsedPackageJson;
         for (const name of Object.keys({ ...parsed.dependencies, ...parsed.devDependencies })) {
           lines.set(name, findDependencyLine(content, name));
+          if (!(name in (parsed.dependencies ?? {}))) {
+            devOnly.add(name);
+          }
         }
       } catch {
         // Malformed manifest — every locked package reports against the lockfile.
@@ -229,7 +240,7 @@ function siblingManifestDependencies(lockfilePath: string, fileSet: ReadonlyMap<
         lines.set(dependency.name, dependency.line);
       }
     }
-    return { file, lines };
+    return { file, lines, devOnly };
   }
   return undefined;
 }
@@ -248,11 +259,13 @@ function parseLockfileDependencies(lockfilePath: string, content: string, fileSe
   const manifest = siblingManifestDependencies(lockfilePath, fileSet);
   return parse(content).map((locked) => {
     const manifestLine = manifest?.lines.get(locked.name);
+    const dev = locked.dev === true || manifest?.devOnly.has(locked.name) === true;
     const base = {
       ecosystem: locked.ecosystem,
       name: locked.name,
       rawVersion: locked.version,
       queryVersion: locked.version,
+      ...(dev ? { dev: true } : {}),
     };
     return manifest !== undefined && manifestLine !== undefined
       ? { ...base, line: manifestLine, file: manifest.file }
@@ -361,37 +374,54 @@ const MAX_LISTED_ADVISORIES = 3;
  * (20+ advisories for an old `next`) flood the report and zero out the
  * Ship Score on its own.
  */
+/** One severity level lower (LOW stays LOW): the rating for a development-only package. */
+function lowerSeverity(severity: Severity): Severity {
+  const order: Severity[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+  const index = order.indexOf(severity);
+  return index === -1 ? severity : (order.at(Math.min(index + 1, order.length - 1)) ?? severity);
+}
+
 function buildOsvFinding(
   filePath: string,
   dependency: ParsedDependency,
   vulnIds: string[],
-  severities: ReadonlyMap<string, Severity>,
+  details: ReadonlyMap<string, VulnDetails>,
 ): Finding {
+  const severityOf = (id: string): Severity | undefined => details.get(id)?.severity;
   // Most severe advisories first, so the listed ids are the ones that matter.
-  const rank = (id: string): number => ["LOW", "MEDIUM", "HIGH", "CRITICAL"].indexOf(severities.get(id) ?? "");
+  const rank = (id: string): number => ["LOW", "MEDIUM", "HIGH", "CRITICAL"].indexOf(severityOf(id) ?? "");
   const ordered = [...vulnIds].sort((left, right) => rank(right) - rank(left));
-  const worst = worstSeverity(vulnIds.flatMap((id) => severities.get(id) ?? []));
+  const worst = worstSeverity(vulnIds.flatMap((id) => severityOf(id) ?? []));
+  const unrated = worst === undefined;
   const listed = ordered.slice(0, MAX_LISTED_ADVISORIES).join(", ");
   const more = vulnIds.length > MAX_LISTED_ADVISORIES ? `, +${String(vulnIds.length - MAX_LISTED_ADVISORIES)} more` : "";
   const advisories =
     vulnIds.length === 1
-      ? `${worst === undefined ? "" : `${worst} `}OSV advisory ${listed}`
-      : `${String(vulnIds.length)} OSV advisories${worst === undefined ? "" : `, highest ${worst}`}: ${listed}${more}`;
+      ? `${unrated ? "" : `${worst} `}OSV advisory ${listed}`
+      : `${String(vulnIds.length)} OSV advisories${unrated ? "" : `, highest ${worst}`}: ${listed}${more}`;
+  const rating = unrated ? "; OSV gave no severity, so it is rated HIGH by default" : "";
+  const devNote = dependency.dev === true ? "; development-only, so rated one level lower — it still runs on developer and CI machines" : "";
+  const baseSeverity = worst ?? OSV_HIT_SEVERITY;
+  const knownFixes = vulnIds.every((id) => details.has(id)) ? vulnIds.map((id) => details.get(id)?.fixes ?? []) : [];
+  const target =
+    knownFixes.length === 0 ? undefined : upgradeTarget(dependency.name, dependency.ecosystem, dependency.queryVersion, knownFixes);
+  const osvLink = `https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)}`;
+  const upgrade = target === undefined ? `a version that resolves ${vulnIds.length === 1 ? "this advisory" : "these advisories"}` : `${target} or later`;
   return {
     ruleId: DEP_RULE_ID,
     category: "deps",
     detectorName: "osv",
     file: dependency.file ?? filePath,
     line: dependency.line,
-    severity: worst ?? OSV_HIT_SEVERITY,
-    confidence: OSV_HIT_CONFIDENCE,
+    severity: dependency.dev === true ? lowerSeverity(baseSeverity) : baseSeverity,
+    confidence: unrated ? "MEDIUM" : OSV_HIT_CONFIDENCE,
     message: dependency.transitive === true
-      ? `Vulnerable transitive dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}) — installed by another package, resolved in this lockfile.`
-      : `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}).`,
+      ? `Vulnerable transitive dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}${rating}${devNote}) — installed by another package, resolved in this lockfile.`
+      : `Vulnerable dependency: ${dependency.name}@${dependency.rawVersion} (${advisories}${rating}${devNote}).`,
     remediation:
       dependency.transitive === true
-        ? `Update the package that depends on ${dependency.name}, or force a patched version with npm "overrides" / pnpm "pnpm.overrides" / yarn "resolutions" (or a direct pin in Python) — check https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`
-        : `Upgrade ${dependency.name} to a version that resolves ${vulnIds.length === 1 ? "this advisory" : "these advisories"} — check https://osv.dev/list?ecosystem=${dependency.ecosystem}&q=${encodeURIComponent(dependency.name)} for the fixed version ranges.`,
+        ? `Update the package that depends on ${dependency.name}, or force ${upgrade} with npm "overrides" / pnpm "pnpm.overrides" / yarn "resolutions" (or a direct pin in Python)${target === undefined ? ` — check ${osvLink} for the fixed version ranges` : ""}.`
+        : `Upgrade ${dependency.name} to ${upgrade}${target === undefined ? ` — check ${osvLink} for the fixed version ranges` : ""}.`,
   };
 }
 
@@ -531,16 +561,17 @@ export const osvDetector: Detector = {
           }
         });
 
-        // Real ratings are best-effort: an unreachable or partial lookup
-        // keeps the conservative HIGH default rather than failing the scan.
-        let severities: ReadonlyMap<string, Severity> = new Map();
+        // Real ratings and fix versions are best-effort: an unreachable or
+        // partial lookup keeps the conservative HIGH default (and says so in
+        // the message) rather than failing the scan.
+        let details: ReadonlyMap<string, VulnDetails> = new Map();
         try {
-          severities = await fetchVulnSeverities(hits.flatMap((hit) => hit.vulnIds));
+          details = await fetchVulnDetails(hits.flatMap((hit) => hit.vulnIds));
         } catch {
-          // Leave every advisory at the default rating.
+          // Leave every advisory unrated.
         }
 
-        return hits.map((hit) => buildOsvFinding(ctx.filePath, hit.dependency, hit.vulnIds, severities));
+        return hits.map((hit) => buildOsvFinding(ctx.filePath, hit.dependency, hit.vulnIds, details));
       } catch {
         // ANY OSV failure (a typed OsvUnavailableError from osv-client.ts,
         // OR any other unexpected throw/rejection) triggers the offline
