@@ -5,10 +5,32 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-    # Major versions carry breaking changes (Babel AST shape, SDK APIs, build
-    # output) and need a human-driven upgrade, not an automated bump.
+    # Majors of these change APIs we build on (Babel AST shape, SDK and CLI
+    # APIs, compiler / lint / build / test output) and need a human-driven
+    # upgrade. Every OTHER package — including simple-git, yauzl and undici,
+    # which handle untrusted repositories, archives and URLs — still gets a
+    # (CI-tested) major-version PR: a CRITICAL simple-git fix shipped only in
+    # a major release and was never offered while all majors were ignored.
     ignore:
-      - dependency-name: "*"
+      - dependency-name: "@babel/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@anthropic-ai/sdk"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "openai"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "commander"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@typescript-eslint/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tsup"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
