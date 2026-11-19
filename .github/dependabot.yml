@@ -32,6 +32,11 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # undici 8 requires Node >= 22.19 (engines here: >= 22.0) and changes its
+      # fetch types under the DNS-pinned SSRF guard. 7.x is still maintained;
+      # remove this when the Node floor is raised.
+      - dependency-name: "undici"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: development
