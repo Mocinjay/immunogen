@@ -175,24 +175,37 @@ export async function runScanSkill(target, options = {}) {
 /**
  * Parses `process.argv.slice(2)` for the CLI entry guard below: the first
  * non-flag argument is the scan target (a local path OR an `http(s)://`
- * URL), defaulting to `.` when omitted. `--authorize`, `--allow-private`, and
- * `--offline` map to `options.authorize`/`options.allowPrivate`/
- * `options.offline` (only set when present,
+ * URL), defaulting to `.` when omitted. `--authorize`, `--allow-private`,
+ * `--offline`, `--no-ignore`, `--no-data-probes` and `--min-severity <level>`
+ * (or `--min-severity=<level>`) map to the matching scan options (only set
+ * when present,
  * mirroring bin/immunogen.ts's own conditional-inclusion pattern). Any other
  * flag-shaped argument (starting with `-`) is ignored rather than
  * mis-parsed as the target.
  */
+const MIN_SEVERITIES = new Set(["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]);
+
 function parseArgs(argv) {
   let target;
   const options = {};
 
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv.at(index) ?? "";
     if (arg === "--authorize") {
       options.authorize = true;
     } else if (arg === "--allow-private") {
       options.allowPrivate = true;
     } else if (arg === "--offline") {
       options.offline = true;
+    } else if (arg === "--no-ignore") {
+      options.noIgnore = true;
+    } else if (arg === "--no-data-probes") {
+      options.dataProbes = false;
+    } else if (arg === "--min-severity" || arg.startsWith("--min-severity=")) {
+      const value = (arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : argv.at((index += 1)) ?? "").toUpperCase();
+      if (MIN_SEVERITIES.has(value)) {
+        options.minSeverity = value;
+      }
     } else if (!arg.startsWith("-") && target === undefined) {
       target = arg;
     }

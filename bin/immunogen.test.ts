@@ -181,6 +181,7 @@ describe("runCli — --baseline", () => {
   it("exits 2 with a clear message when the baseline is not an immunogen JSON report", async () => {
     const dir = await mkdtemp(join(tmpdir(), "immunogen-baseline-"));
     const file = join(dir, "baseline.json");
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- test writes into its own mkdtemp dir
     await writeFile(file, '{"not":"a report"}');
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {

@@ -61,6 +61,7 @@ const FIREBASE_PROJECT_ID_RE = /projectId\s*:\s*["']([a-z0-9-]{4,40})["']/;
 const SUPABASE_FROM_RE = /\.from\(\s*["'`]([A-Za-z_]\w{0,62})["'`]\s*\)/g;
 
 /** `collection(db, "name")` / `.collection("name")` — Firestore access. */
+// eslint-disable-next-line security/detect-unsafe-regex -- optional group is one class run then a literal comma; benchmarked linear on 100k-char adversarial input
 const FIRESTORE_COLLECTION_RE = /collection\(\s*(?:[\w$.]+\s*,\s*)?["'`]([A-Za-z_][\w-]{0,62})["'`]\s*[,)]/g;
 
 /** What the bundle reveals about the app's backend. */

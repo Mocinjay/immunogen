@@ -39,9 +39,16 @@ node .claude/skills/immunogen/scan.mjs https://myapp.com --authorize
 ```
 
 The first non-flag argument is the target (a local path or an `http(s)://`
-URL). `--authorize`, `--allow-private`, and `--offline` (skip the OSV.dev
-dependency lookup — no network at all) are forwarded to the scan when
-present.
+URL). These flags are forwarded to the scan when present: `--authorize`,
+`--allow-private`, `--offline` (skip the OSV.dev and package-registry
+lookups), `--no-ignore` (score findings the repo silenced with
+`immunogen-ignore` — use it when auditing a repo the user did not write),
+`--no-data-probes` (URL mode: skip the Supabase / Firebase read check) and
+`--min-severity <level>`.
+
+Findings a repo silenced with `immunogen-ignore` comments are not scored, but
+the report's warnings say how many there were — mention it to the user if a
+clean-looking result has suppressed findings.
 
 ### Live URL support
 
@@ -54,7 +61,8 @@ node .claude/skills/immunogen/scan.mjs https://myapp.com --authorize
 
 See the immunogen repo's README "Screen a live URL" section for what it
 checks (security headers, CORS misconfig, exposed `.env`/`.git`, secrets in
-served bundles, cookie flags). This makes REAL bounded network requests
+served bundles, cookie flags, and whether the site's Supabase / Firebase data
+can be read with the public key it ships — row counts and names only). This makes REAL bounded network requests
 against the target host, so it requires the caller's explicit authorization
 (`--authorize`) — **only screen sites the user owns or is explicitly
 authorized to test.** A URL passed without `--authorize` is refused by the

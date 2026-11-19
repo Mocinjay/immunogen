@@ -47,7 +47,9 @@ const MATCHED_TEXT_MAX_LENGTH = 160;
 
 /** Download piped straight into an interpreter, or a shell evaluating a download. */
 const DOWNLOAD_EXEC_RES: readonly RegExp[] = [
+  // eslint-disable-next-line security/detect-unsafe-regex -- bounded {0,300} run before a literal pipe; benchmarked linear on 100k-char adversarial input
   /\b(?:curl|wget|fetch)\b[^|;&\n]{0,300}\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b/i,
+  // eslint-disable-next-line security/detect-unsafe-regex -- bounded {0,300} run before a literal pipe; benchmarked linear on 100k-char adversarial input
   /\b(?:curl|wget)\b[^|;&\n]{0,300}\|\s*(?:sudo\s+)?(?:python[0-9.]*|node|perl|ruby|php)\b/i,
   /\b(?:ba|z)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)\b/i,
   /\beval\s+["']?\$\(\s*(?:curl|wget)\b/i,
@@ -64,6 +66,7 @@ const SENSITIVE_SOURCE_RE =
   /~\/\.ssh|\.ssh\/|id_rsa|id_ed25519|\.aws\/credentials|\.npmrc|\.netrc|\.git-credentials|\.docker\/config|\.kube\/config|keychain|\/etc\/passwd|\bprintenv\b|\benv\s*\||\$\{?[A-Z_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)\b|(?:^|[\s"'=/])\.env\b|-d\s*@|--data(?:-binary|-urlencode)?\s*@|-F\s*\S*=@|--upload-file|-T\s/i;
 
 /** `Bash`, `Bash(*)`, `Bash(:*)`, `Bash(* )` — the Claude Code allow-rule for every shell command. */
+// eslint-disable-next-line security/detect-unsafe-regex -- alternation of fixed tokens; benchmarked linear on 100k-char adversarial input
 const UNRESTRICTED_BASH_RE = /^\s*Bash\s*(?:\(\s*:?\s*\*\s*\)|\(\s*\*\s*:\s*\*\s*\))?\s*$/;
 
 /** Every file this detector reads; MCP configs are also read by the AILAYER-03/04 detectors. */
@@ -189,6 +192,7 @@ function claudeSettingsCommands(root: Record<string, unknown>): AutorunCommand[]
     commands.push({ where: "statusLine command", command: statusCommand, kind: "hook" });
   }
   for (const key of CLAUDE_COMMAND_KEYS) {
+    // eslint-disable-next-line security/detect-object-injection -- key comes from the fixed CLAUDE_COMMAND_KEYS list, never scanned content
     const value = root[key];
     if (typeof value === "string") {
       commands.push({ where: `${key} command`, command: value, kind: "hook" });

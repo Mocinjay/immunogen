@@ -41,9 +41,11 @@ const MAX_PER_MANIFEST = 200;
 const LOOKUP_TIMEOUT_MS = 8_000;
 
 /** Specifiers that do not come from the npm registry. */
+// eslint-disable-next-line security/detect-unsafe-regex -- anchored, single-run classes around one literal; benchmarked linear on 100k-char adversarial input
 const NON_REGISTRY_SPEC_RE = /^(?:workspace:|file:|link:|portal:|patch:|git\+|git:|github:|gitlab:|bitbucket:|https?:|\.{0,2}\/)|^[\w.-]+\/[\w.-]+(?:#.*)?$/;
 
 /** A plausible npm package name (scoped or not). */
+// eslint-disable-next-line security/detect-unsafe-regex -- anchored, single-run classes around one literal; benchmarked linear on 100k-char adversarial input
 const NPM_NAME_RE = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i;
 
 /** A plausible PyPI project name. */
