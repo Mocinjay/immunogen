@@ -326,6 +326,6 @@ on immunogen itself.
 ## Outcome
 
 `typecheck` clean, `lint` 0 errors (the same 3 intentional warnings as
-before), **1,160+ tests** (was 1,053), `build` and `test:dist` pass. The real
+before), **71 files / 1,158 tests** (was 66 / 1,053), `build` and `test:dist` pass. The real
 project above: 146 findings / 120 CRITICAL → 10 findings / 0 CRITICAL. The
 self-scan: F (blocked; CRITICAL `simple-git`, HIGH `extract-zip`) → 95/A.
