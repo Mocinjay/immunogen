@@ -73,10 +73,10 @@
     "@babel/types": "7.29.14",
     "commander": "15.1.0",
     "fast-glob": "3.3.3",
-    "ignore": "7.0.14",
+    "ignore": "7.0.16",
     "openai": "6.49.0",
     "picocolors": "1.1.1",
-    "simple-git": "4.0.2",
+    "simple-git": "4.1.0",
     "undici": "7.30.2",
     "yauzl": "3.4.0"
   },
