@@ -39,11 +39,19 @@ import { secretsDetector, committedEnvDetector } from "./secrets/index.js";
 import { clientExposureDetector } from "./client-exposure/index.js";
 import { configDebugDetector } from "./config/index.js";
 import { corsDetector, cspDetector } from "./cors-headers/index.js";
-import { stripeDetector } from "./payment/index.js";
+import { commerceLogicDetector, stripeDetector } from "./payment/index.js";
 import { legalDetector } from "./legal/index.js";
 import { firebaseRulesDetector, supabaseDetector, supabaseRlsDetector } from "./storage/index.js";
-import { pyGoRouteAuthDetector, routeAuthDetector, serverRouteAuthDetector } from "./auth/index.js";
-import { dangerousCodeDetector, pyGoCodeDetector, xssDetector } from "./injection/index.js";
+import {
+  adminAccessDetector,
+  idorDetector,
+  insecureRandomDetector,
+  massAssignmentDetector,
+  pyGoRouteAuthDetector,
+  routeAuthDetector,
+  serverRouteAuthDetector,
+} from "./auth/index.js";
+import { dangerousCodeDetector, fileUploadDetector, pyGoCodeDetector, xssDetector } from "./injection/index.js";
 import { osvDetector, packageRegistryDetector } from "./deps/index.js";
 import { rateLimitDetector } from "./abuse/index.js";
 import {
@@ -52,6 +60,7 @@ import {
   mcpPoisoningDetector,
   mcpLeastPrivilegeDetector,
   agentAutorunDetector,
+  llmAppDetector,
 } from "./ai-layer/index.js";
 
 import { isParseable, parseSource } from "../core/parse/ast-cache.js";
@@ -65,7 +74,12 @@ import type { Detector, DetectorContext, Finding, ScanContext, Severity, Suppres
  * covers CONFIG-01 and CONFIG-02). The AI-layer family is
  * `promptInjectionDetector` (AILAYER-01), `exfiltrationDetector`
  * (AILAYER-02), `mcpPoisoningDetector` (AILAYER-03), and
- * `mcpLeastPrivilegeDetector` (AILAYER-04).
+ * `mcpLeastPrivilegeDetector` (AILAYER-04). The business-logic rules from
+ * the "what a hacker tries on your vibe-coded app" checklist are
+ * `idorDetector` (AUTH-08), `adminAccessDetector` (AUTH-09),
+ * `massAssignmentDetector` (AUTH-10), `insecureRandomDetector` (AUTH-11),
+ * `commerceLogicDetector` (PAY-03..PAY-06), `fileUploadDetector`
+ * (UPLOAD-01), and `llmAppDetector` (AILAYER-07 / AILAYER-08).
  */
 export const DEFAULT_DETECTORS: Detector[] = [
   secretsDetector,
@@ -75,6 +89,7 @@ export const DEFAULT_DETECTORS: Detector[] = [
   corsDetector,
   cspDetector,
   stripeDetector,
+  commerceLogicDetector,
   legalDetector,
   firebaseRulesDetector,
   supabaseDetector,
@@ -82,9 +97,14 @@ export const DEFAULT_DETECTORS: Detector[] = [
   routeAuthDetector,
   serverRouteAuthDetector,
   pyGoRouteAuthDetector,
+  idorDetector,
+  adminAccessDetector,
+  massAssignmentDetector,
+  insecureRandomDetector,
   xssDetector,
   dangerousCodeDetector,
   pyGoCodeDetector,
+  fileUploadDetector,
   rateLimitDetector,
   osvDetector,
   packageRegistryDetector,
@@ -93,6 +113,7 @@ export const DEFAULT_DETECTORS: Detector[] = [
   mcpPoisoningDetector,
   mcpLeastPrivilegeDetector,
   agentAutorunDetector,
+  llmAppDetector,
 ];
 
 /** Escapes every regex metacharacter in `char` except `*` and `{`/`}`/`,`, which `globToRegex` handles itself. */

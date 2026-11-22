@@ -86,22 +86,22 @@ Every finding costs points by severity (CRITICAL 50, HIGH 25, MEDIUM 10, LOW 5) 
 
 ## What it catches
 
-25 detectors across 12 categories on a repo scan, plus 5 web probes and a backend data-exposure check when you screen a live URL.
+32 detectors across 12 categories on a repo scan, plus 5 web probes and a backend data-exposure check when you screen a live URL. Beyond leaked keys, they catch the business-logic holes a hacker tries first on a vibe-coded app — changing the id in the URL, typing `/admin`, signing up as an admin, editing the price, faking a payment, reusing a coupon, ordering -1 items, guessing the login code, prompt-injecting the support bot, and uploading a "photo" that isn't one.
 
 | Category | What it catches |
 |---|---|
 | **Secrets** | Hardcoded provider keys (Stripe, AWS, OpenAI incl. `sk-proj-`, Anthropic, Gemini / Google `AIza` keys outside Firebase/Maps client config, Supabase `service_role` / `sb_secret_`, GitHub, Slack, SendGrid, Resend, Groq, xAI, Hugging Face, Replicate, npm), database connection strings with a password (Postgres / Supabase / Neon, MySQL, MongoDB Atlas, Redis), committed private keys and service-account JSON, committed `.env` files that hold secrets, high-entropy tokens (prose, URLs, hashes, lockfiles and documentation placeholders such as `sk_live_YOUR_KEY` are ignored) |
 | **Client-bundle exposure** | Secret-named env vars inlined into the client via `NEXT_PUBLIC_` / `VITE_` / `EXPO_PUBLIC_` / `REACT_APP_` / `NUXT_PUBLIC_` / `GATSBY_` (public-by-design keys such as the Supabase anon key are not flagged); LLM SDKs running in the browser with `dangerouslyAllowBrowser` |
-| **Auth & RLS** | Unauthenticated routes — Next.js App Router handlers, Pages Router API routes, Server Actions, Express / Fastify / Hono / Koa, FastAPI / Flask, Go (Gin / Echo / Chi / Fiber / net/http); Supabase tables without RLS and `using (true)` write policies; open Firebase rules; JWTs decoded without verification; auth tokens in `localStorage` |
-| **Abuse / rate limiting** | Paid-LLM endpoints and login / sign-up / password-reset endpoints with no rate limiting |
-| **Payment safety** | Stripe webhooks that skip signature verification; charge amounts taken from the request |
+| **Auth & RLS** | Unauthenticated routes — Next.js App Router handlers, Pages Router API routes, Server Actions, Express / Fastify / Hono / Koa, FastAPI / Flask, Go (Gin / Echo / Chi / Fiber / net/http); records loaded, updated or deleted by an id from the URL without checking they belong to the signed-in user (IDOR); admin pages and endpoints with no admin role check, or one that only runs in the browser; request bodies written straight into user records, or `role` / `isAdmin` / `plan` / `credits` taken from the request (mass assignment); login codes and reset tokens from `Math.random()`; Supabase tables without RLS and `using (true)` write policies; open Firebase rules; JWTs decoded without verification; auth tokens in `localStorage` |
+| **Abuse / rate limiting** | Paid-LLM endpoints, login / sign-up / password-reset / MFA endpoints, and hand-rolled one-time-code checks with no rate or attempt limit |
+| **Payment safety** | Stripe webhooks that skip signature verification; prices, totals and charge amounts taken from the request (any provider or database); orders marked paid by an endpoint that never confirms the payment; coupons applied with no redemption tracking; quantities never checked to be positive whole numbers |
 | **Dependencies** | Known vulnerabilities in every resolved package, direct and transitive, from npm / pnpm / yarn / bun / Poetry / uv / Pipenv lockfiles or manifests — rated by each advisory's real severity (one level lower for dev-only packages), with the version to upgrade to and an offline fallback; dependencies that don't exist on the public npm / PyPI registry (hallucinated names an attacker could register) |
-| **Injection / XSS** | Unsanitized `dangerouslySetInnerHTML`; SQL built by string interpolation; `eval` / `exec` / shell / unsafe YAML or pickle on dynamic input; server-side request forgery; open redirects |
+| **Injection / XSS** | Unsanitized `dangerouslySetInnerHTML`, `innerHTML` / `insertAdjacentHTML` / `document.write`, Vue `v-html` and Svelte `{@html}`; HTML responses built from request input; SQL built by string interpolation (inline or in a variable first); `eval` / `exec` / shell / unsafe YAML or pickle on dynamic input; server-side request forgery; open redirects; file uploads with no type check or stored under the client's file name |
 | **CORS & headers** | Wildcard or reflected origins combined with credentials; missing Content-Security-Policy |
 | **Storage** | Public Firebase / Firestore / Storage rules; Supabase buckets with no access policy |
 | **Legal** | No privacy policy or terms when the app collects user data |
 | **Config / debug** | Whole-environment dumps (`process.env`, `os.environ`, `os.Environ()`) to logs or HTTP responses |
-| **AI layer** | Prompt-injection strings, data-exfiltration directives, MCP tool poisoning and least-privilege gaps in skills, rules and agent prompts (Claude, Cursor, Copilot, Windsurf, Gemini, Cline, Kiro, ...); agent hooks, VS Code folder-open tasks and MCP launch commands that download-and-run code or send credentials out; `Bash(*)`, `bypassPermissions` and auto-approved MCP servers in committed agent settings |
+| **AI layer** | Prompt-injection strings, data-exfiltration directives, MCP tool poisoning and least-privilege gaps in skills, rules and agent prompts (Claude, Cursor, Copilot, Windsurf, Gemini, Cline, Kiro, ...); agent hooks, VS Code folder-open tasks and MCP launch commands that download-and-run code or send credentials out; `Bash(*)`, `bypassPermissions` and auto-approved MCP servers in committed agent settings; in the app's own AI features, LLM tools that refund, transfer, grant roles or run SQL with no human approval, and request input placed in the system prompt |
 
 ## How it compares
 
@@ -318,7 +318,7 @@ ln -s "$PWD/.claude/skills/immunogen" ~/.claude/skills/immunogen
 ```mermaid
 flowchart LR
     R["Folder · ZIP · git URL"] --> I["Ingest<br/>walk + parse"]
-    I --> D["25 detectors<br/>12 categories"]
+    I --> D["32 detectors<br/>12 categories"]
     U["Live URL<br/>--authorize"] --> F["Bounded fetch<br/>SSRF-guarded"]
     F --> W["5 web probes<br/>+ data exposure"]
     D --> S["Ship Score<br/>grade · verdict"]

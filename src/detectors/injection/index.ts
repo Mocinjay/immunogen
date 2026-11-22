@@ -4,3 +4,5 @@ export { xssDetector } from "./xss-detector.js";
 export { dangerousCodeDetector } from "./dangerous-code-detector.js";
 /** Barrel re-export of pyGoCodeDetector (INJECT-02 / INJECT-03 / AUTH-06 for Python and Go). */
 export { pyGoCodeDetector } from "./py-go-code-detector.js";
+/** Barrel re-export of fileUploadDetector (UPLOAD-01 unrestricted file upload). */
+export { fileUploadDetector } from "./file-upload-detector.js";

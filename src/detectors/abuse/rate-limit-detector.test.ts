@@ -98,3 +98,39 @@ describe("rateLimitDetector — authentication endpoints", () => {
     expect(await summarize(CHAT_ROUTE, "app/api/chat/route.test.ts")).toEqual([]);
   });
 });
+
+describe("rateLimitDetector — one-time code verification", () => {
+  const VERIFY_ROUTE = [
+    "export async function POST(req: Request) {",
+    "  const { email, code } = await req.json();",
+    "  const user = await prisma.user.findUnique({ where: { email } });",
+    "  if (!user || user.otp !== code) return Response.json({ error: \"Wrong code. Try again.\" }, { status: 401 });",
+    "  return createSession(user);",
+    "}",
+  ].join("\n");
+
+  it("flags a hand-rolled OTP check with no attempt limit as HIGH, even on a neutral path", async () => {
+    const result = await summarize(VERIFY_ROUTE, "app/api/session/route.ts");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatch(/^HIGH\/MEDIUM .*One-time login/);
+  });
+
+  it("reports the OTP message instead of the generic auth message on an auth path", async () => {
+    const result = await summarize(VERIFY_ROUTE, "app/api/auth/verify-code/route.ts");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatch(/^HIGH\/MEDIUM .*One-time login/);
+  });
+
+  it("flags a verify-code / MFA path even without OTP content", async () => {
+    const result = await summarize("export async function POST(req) { return check(req); }", "app/api/auth/mfa/route.ts");
+    expect(result[0]).toMatch(/^MEDIUM\/MEDIUM .*Authentication endpo/);
+  });
+
+  it.each([
+    ["a limiter in the file", `import { Ratelimit } from "@upstash/ratelimit";\n${VERIFY_ROUTE}\nawait ratelimit.limit(email);`],
+    ["Supabase-managed OTP", 'export async function POST(req) {\n  const { email, token } = await req.json();\n  const { error } = await supabase.auth.verifyOtp({ email, token, type: "email" });\n  if (token === "") return;\n}'],
+    ["a status-code comparison with no OTP vocabulary", 'app.post("/api/orders", (req, res) => { if (res.statusCode === 200) {} });'],
+  ])("does NOT flag %s", async (_label, content) => {
+    expect(await summarize(content, "app/api/session/route.ts")).toEqual([]);
+  });
+});
