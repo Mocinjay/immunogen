@@ -7,6 +7,28 @@ exports[`golden suite — vulnerable fixtures assert exact ruleId/count summarie
 }
 `;
 
+exports[`golden suite — vulnerable fixtures assert exact ruleId/count summaries > hacker-checklist: normalized finding summary matches the committed snapshot 1`] = `
+{
+  "AILAYER-07": 1,
+  "AUTH-08": 1,
+  "AUTH-09": 2,
+  "AUTH-10": 1,
+  "AUTH-11": 1,
+  "BUNDLE-01": 1,
+  "BUNDLE-02": 1,
+  "INJECT-01": 1,
+  "INJECT-02": 1,
+  "PAY-03": 1,
+  "PAY-04": 1,
+  "PAY-05": 1,
+  "PAY-06": 1,
+  "RATE-01": 3,
+  "SEC-05": 1,
+  "SEC-10": 1,
+  "UPLOAD-01": 2,
+}
+`;
+
 exports[`golden suite — vulnerable fixtures assert exact ruleId/count summaries > mcp-least-privilege: normalized finding summary matches the committed snapshot 1`] = `
 {
   "AILAYER-04": 2,

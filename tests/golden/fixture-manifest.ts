@@ -68,6 +68,11 @@ export const VULNERABLE_FIXTURES: VulnerableFixture[] = [
     dir: "tests/fixtures/scan/with-secret",
     osvMock: "reject",
   },
+  {
+    name: "hacker-checklist",
+    dir: "tests/fixtures/vulnerable-apps/hacker-checklist",
+    osvMock: "resolveEmpty",
+  },
 ];
 
 /**
@@ -81,6 +86,7 @@ export const CLEAN_FIXTURES: CleanFixture[] = [
   { name: "tests-path-only", dir: "tests/fixtures/clean-apps/tests-path-only" },
   { name: "ai-layer-clean", dir: "tests/fixtures/clean-apps/ai-layer-clean" },
   { name: "scan-clean", dir: "tests/fixtures/scan/clean" },
+  { name: "hacker-checklist-clean", dir: "tests/fixtures/clean-apps/hacker-checklist-clean" },
 ];
 
 /**

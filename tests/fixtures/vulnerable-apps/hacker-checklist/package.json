@@ -1,0 +1,18 @@
+{
+  "name": "hacker-checklist",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Integration fixture: one deliberately vulnerable file per attack in the 'What a HACKER tries on your vibe coded app' checklist (see README.md).",
+  "dependencies": {
+    "next": "14.2.0",
+    "react": "18.3.0",
+    "react-dom": "18.3.0",
+    "stripe": "14.25.0",
+    "ai": "4.0.0",
+    "@ai-sdk/openai": "1.0.0",
+    "openai": "4.70.0",
+    "@prisma/client": "5.20.0",
+    "pg": "8.13.0",
+    "zod": "3.23.8"
+  }
+}

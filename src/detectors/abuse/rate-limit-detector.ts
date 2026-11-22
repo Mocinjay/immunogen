@@ -17,7 +17,13 @@
  *     Anthropic, Google Gen AI, the Vercel AI SDK, Groq, Mistral, Cohere,
  *     Replicate, LangChain, LiteLLM, go-openai, ...) — HIGH/MEDIUM;
  *   - a login endpoint when one of its route paths names login / sign-in /
- *     sign-up / register / password reset / OTP / magic link — MEDIUM/MEDIUM.
+ *     sign-up / register / password reset / OTP / magic link / MFA —
+ *     MEDIUM/MEDIUM;
+ *   - a one-time-code check: the file compares a submitted OTP /
+ *     verification code (or calls a TOTP verify) itself, rather than through
+ *     an identity provider that limits attempts (Supabase, Firebase, Clerk,
+ *     Auth0, Cognito) — HIGH/MEDIUM, since a 6-digit code falls to a script
+ *     in minutes ("guess the login code").
  *
  * No finding when the file itself applies a limiter, or a global limiter
  * covers every route (Next.js middleware calling a rate limiter,
@@ -37,12 +43,26 @@ import type { Detector, DetectorContext, Finding, Severity } from "../../core/ty
 import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** LLM SDK imports / calls (JS, Python, Go). */
-const LLM_USAGE_RE =
-  /from\s+["'](?:openai|@anthropic-ai\/sdk|@google\/generative-ai|@google\/genai|ai|@ai-sdk\/[\w-]+|groq-sdk|@mistralai\/mistralai|cohere-ai|replicate|together-ai|@langchain\/[\w-]+|langchain)["']|require\(\s*["'](?:openai|@anthropic-ai\/sdk|groq-sdk|replicate)["']\s*\)|^\s*(?:import|from)\s+(?:openai|anthropic|google\.generativeai|google\.genai|groq|mistralai|cohere|replicate|litellm|langchain\w*)\b|"github\.com\/(?:sashabaranov\/go-openai|anthropics\/anthropic-sdk-go|openai\/openai-go|google\/generative-ai-go)|api\.openai\.com|api\.anthropic\.com|generativelanguage\.googleapis\.com/m;
+export const LLM_USAGE_RE =
+  /from\s+["'](?:openai|@anthropic-ai\/sdk|@google\/generative-ai|@google\/genai|ai|@ai-sdk\/[\w-]+|groq-sdk|@mistralai\/mistralai|cohere-ai|replicate|together-ai|@langchain\/[\w-]+|langchain)["']|from\s+["'](?:@langchain\/[\w-]+|@ai-sdk\/[\w-]+|openai|ai|langchain)\/[\w./-]+["']|require\(\s*["'](?:openai|@anthropic-ai\/sdk|groq-sdk|replicate)["']\s*\)|^\s*(?:import|from)\s+(?:openai|anthropic|google\.generativeai|google\.genai|groq|mistralai|cohere|replicate|litellm|langchain\w*)\b|"github\.com\/(?:sashabaranov\/go-openai|anthropics\/anthropic-sdk-go|openai\/openai-go|google\/generative-ai-go)|api\.openai\.com|api\.anthropic\.com|generativelanguage\.googleapis\.com/m;
 
 /** Route-path words that mark an authentication endpoint. */
 const AUTH_ENDPOINT_WORD_RE =
-  /(?:^|[/_-])(?:login|log-in|signin|sign-in|signup|sign-up|register|forgot-password|reset-password|password-reset|otp|verify-otp|magic-link|send-code|2fa)(?:$|[/_-])/i;
+  /(?:^|[/_-])(?:login|log-in|signin|sign-in|signup|sign-up|register|forgot-password|reset-password|password-reset|otp|verify-otp|magic-link|send-code|2fa|verify-code|verify-email|verify-phone|confirm-code|login-code|mfa|totp|passcode|two-factor)(?:$|[/_-])/i;
+
+/**
+ * A hand-rolled one-time-code check: OTP vocabulary plus a comparison of a
+ * submitted code (`if (code !== user.otp)`, `record.code === body.code`) or
+ * a TOTP library verify. A 6-digit code has only 1,000,000 values, so an
+ * endpoint that checks one with no attempt limit falls to a script.
+ */
+const OTP_VOCABULARY_RE =
+  /\botp\b|one[-_ ]?time[-_ ]?(?:code|password|pin)|verification[-_ ]?code|verificationCode|login[-_ ]?code|loginCode|magic[-_ ]?code|sms[-_ ]?code|email[-_ ]?code|\b2fa\b|two[-_ ]?factor|\btotp\b|passcode|\b\d-digit/i;
+const OTP_COMPARISON_RE =
+  /\b(?:otp|code|pin|passcode|token|verificationCode|loginCode)\b\s*(?:!==|===|!=|==)|(?:!==|===|!=|==)\s*[\w.?!]*\b(?:otp|code|pin|passcode|verificationCode|loginCode)\b|\btotp\.(?:verify|check)\(|\bauthenticator\.(?:check|verify)\(|\bspeakeasy\.totp\.verify\(|(?<!auth\.)\bverify(?:Otp|OTP|Code|LoginCode)\s*\(/;
+
+/** One-time codes verified by an identity provider, which rate-limits them itself. */
+const MANAGED_OTP_RE = /\bauth\.(?:verifyOtp|signInWithOtp)\(|\bconfirmationResult\.confirm\(|\bclerk|\b(?:auth0|cognito|firebase\/auth|@supabase)/i;
 
 /** A limiter applied in code (JS, Python, Go). */
 const RATE_LIMIT_CODE_RE =
@@ -166,7 +186,9 @@ export const rateLimitDetector: Detector = {
 
       const isAiEndpoint = LLM_USAGE_RE.test(ctx.content);
       const authPath = paths.find((path) => AUTH_ENDPOINT_WORD_RE.test(path));
-      if (!isAiEndpoint && authPath === undefined) {
+      const checksOtp =
+        OTP_VOCABULARY_RE.test(ctx.content) && OTP_COMPARISON_RE.test(ctx.content) && !MANAGED_OTP_RE.test(ctx.content);
+      if (!isAiEndpoint && authPath === undefined && !checksOtp) {
         return Promise.resolve([]);
       }
 
@@ -201,7 +223,13 @@ export const rateLimitDetector: Detector = {
           "Add a per-user / per-IP limit before the LLM call (e.g. @upstash/ratelimit or express-rate-limit; SlowAPI / Flask-Limiter in Python; golang.org/x/time/rate in Go), require a signed-in user, and set a spend cap in the provider dashboard.",
         );
       }
-      if (authPath !== undefined) {
+      if (checksOtp) {
+        push(
+          "HIGH",
+          "One-time login / verification code is checked with no attempt limit — a script can try all 1,000,000 six-digit codes and take over the account.",
+          "Cap attempts per code and per account (e.g. 5 tries, then invalidate the code and require a new one), rate-limit per IP, expire codes within minutes, and compare with crypto.timingSafeEqual.",
+        );
+      } else if (authPath !== undefined) {
         push(
           "MEDIUM",
           `Authentication endpoint (${authPath}) has no rate limiting — open to credential stuffing and email/SMS bombing.`,

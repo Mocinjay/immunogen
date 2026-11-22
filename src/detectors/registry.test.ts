@@ -76,6 +76,13 @@ describe("runDetectors — fan-out and aggregation", () => {
       "mcp-least-privilege",
       "agent-autorun",
       "package-registry",
+      "idor",
+      "admin-access",
+      "mass-assignment",
+      "insecure-random",
+      "commerce-logic",
+      "file-upload",
+      "llm-app",
     ];
 
     for (const expectedName of expectedNames) {
