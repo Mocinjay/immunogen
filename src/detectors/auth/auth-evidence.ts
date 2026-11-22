@@ -106,16 +106,43 @@ export const PUBLIC_BY_NATURE_SEGMENTS = new Set([
   // One-time-code / recovery steps also run before a session exists.
   "verify-code",
   "verify-otp",
-  "otp",
   "magic-link",
   "verify-email",
   "forgot-password",
   "reset-password",
   "password-reset",
-  "two-factor",
-  "2fa",
-  "mfa",
 ]);
+
+/**
+ * Second-factor segments. Only the sign-in step that checks a code runs
+ * before a session exists (`/api/auth/2fa`, `/auth/mfa/verify`); managing a
+ * second factor (`/api/settings/2fa`, `/api/auth/mfa/disable`) needs a
+ * session and is exactly what an attacker wants to reach unauthenticated, so
+ * these are never public on their own.
+ */
+const SECOND_FACTOR_SEGMENTS = new Set(["otp", "2fa", "mfa", "two-factor", "totp"]);
+/** Parent segments marking a sign-in flow. */
+const SIGN_IN_FLOW_SEGMENTS = new Set(["auth", "login", "signin", "sign-in"]);
+/** Segments after a second-factor segment that make it account management, not sign-in. */
+const SECOND_FACTOR_MANAGEMENT_SEGMENTS = new Set(["disable", "enable", "setup", "remove", "delete", "reset", "settings", "manage", "recovery-codes", "backup-codes"]);
+
+/**
+ * True when route path `segments` are public by nature: a segment in
+ * `PUBLIC_BY_NATURE_SEGMENTS`, or a second-factor verification step inside a
+ * sign-in flow (`auth/2fa`, `login/otp/verify`) that is not management.
+ */
+export function isPublicByNaturePath(segments: readonly string[]): boolean {
+  const lower = segments.map((segment) => segment.toLowerCase());
+  if (lower.some((segment) => PUBLIC_BY_NATURE_SEGMENTS.has(segment))) {
+    return true;
+  }
+  const factorIndex = lower.findIndex((segment) => SECOND_FACTOR_SEGMENTS.has(segment));
+  return (
+    factorIndex > 0 &&
+    lower.slice(0, factorIndex).some((segment) => SIGN_IN_FLOW_SEGMENTS.has(segment)) &&
+    !lower.slice(factorIndex + 1).some((segment) => SECOND_FACTOR_MANAGEMENT_SEGMENTS.has(segment))
+  );
+}
 
 /**
  * Handler text that reads the identity an auth middleware attached to the

@@ -41,7 +41,7 @@ export type {
   StackHints,
 } from "./core/types.js";
 
-import { ingest } from "./core/ingest/index.js";
+import { ingest, NO_FILES_SCANNED_CODE } from "./core/ingest/index.js";
 import { computeScore } from "./core/scoring.js";
 import { runDetectorsDetailed } from "./detectors/registry.js";
 import { NoopAdapter } from "./llm/adapters/index.js";
@@ -163,7 +163,8 @@ async function scanUnfiltered(path: string, options?: ScanOptions): Promise<Scan
   const { findings, suppressed } = await runDetectorsDetailed(ctx);
   const score = computeScore(findings);
   const depsOffline = findings.some((finding) => finding.ruleId === "DEP-OFFLINE");
-  const scanIncomplete = depsOffline || ctx.diagnostics.some((diagnostic) => diagnostic.code === "SCAN_TRUNCATED");
+  const scanIncomplete =
+    depsOffline || ctx.diagnostics.some((diagnostic) => diagnostic.code === "SCAN_TRUNCATED" || diagnostic.code === NO_FILES_SCANNED_CODE);
 
   // --no-llm forces NoopAdapter regardless of env. Otherwise
   // selectAdapter(process.env) is the sole provider decision point — Noop

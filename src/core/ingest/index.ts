@@ -29,6 +29,9 @@ import { detectStack } from "./stack-detector.js";
 
 import type { ScanContext, ScanOptions } from "../types.js";
 
+/** Diagnostic code for a scan that read no files at all. */
+export const NO_FILES_SCANNED_CODE = "NO_FILES_SCANNED";
+
 /**
  * Resolves `input` (a local directory path, a git URL, or a ZIP file path),
  * walks the resolved working directory into a `fileSet`, detects stack
@@ -37,15 +40,34 @@ import type { ScanContext, ScanOptions } from "../types.js";
  * function returns or throws — no git/zip temp directory is ever leaked.
  */
 export async function ingest(input: string, options?: ScanOptions): Promise<ScanContext> {
-  const opts = options ?? {};
-  const { workingDir, kind, cleanup, diagnostics: inputDiagnostics } = await resolveInput(input, opts);
+  const requested = options ?? {};
+  const { workingDir, kind, cleanup, diagnostics: inputDiagnostics } = await resolveInput(input, requested);
+  // A git URL or ZIP is someone else's code: its own `.immunogenignore` and
+  // `immunogen-ignore` comments must not be able to silence the scan.
+  const untrusted = kind === "git" || kind === "zip";
+  const opts: ScanOptions = untrusted ? { ...requested, noIgnore: true } : requested;
 
   try {
     // A ZIP has no git history and everything inside it shipped with it, so
-    // its env files are scanned even when its .gitignore lists them.
-    const walked = await walkFiles(workingDir, opts, { keepIgnoredEnvFiles: kind === "zip" });
+    // nothing it says to exclude (.gitignore, .git/info/exclude, worktree
+    // pointers) is honored, and its env files are always scanned.
+    const walked = await walkFiles(workingDir, opts, { keepIgnoredEnvFiles: kind === "zip", ignoreInputExclusions: kind === "zip" });
     const { fileSet } = walked;
     const diagnostics = [...(inputDiagnostics ?? []), ...walked.diagnostics];
+    if (untrusted && requested.noIgnore !== true) {
+      diagnostics.push({
+        level: "info",
+        code: "INPUT_IGNORES_DISREGARDED",
+        message: `This ${kind === "zip" ? "ZIP archive" : "git repository"} is scanned as untrusted input: its .immunogenignore file and immunogen-ignore comments${kind === "zip" ? ", .gitignore files, and .git/info/exclude" : ""} were not honored.`,
+      });
+    }
+    if (fileSet.size === 0) {
+      diagnostics.push({
+        level: "warn",
+        code: NO_FILES_SCANNED_CODE,
+        message: `No files were scanned in ${input} — the path is empty, or everything in it was excluded. A score from a scan that read nothing is meaningless.`,
+      });
+    }
     const stackHints = detectStack(fileSet);
 
     return {

@@ -20,7 +20,7 @@
 import { simpleGit } from "simple-git";
 import { openPromise } from "yauzl";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
-import { createWriteStream, statSync } from "node:fs";
+import { createWriteStream, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -261,13 +261,12 @@ async function resolveGit(url: string): Promise<ResolvedInput> {
   }
   let workingDir = tempDir;
   if (subdir !== undefined) {
-    workingDir = resolve(tempDir, subdir);
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- a directory inside our own fresh clone, containment-checked above
-    const subdirStat = statSync(workingDir, { throwIfNoEntry: false });
-    if (!workingDir.startsWith(tempDir + sep) || subdirStat?.isDirectory() !== true) {
+    const realSubdir = containedSubdirectory(tempDir, subdir);
+    if (realSubdir === undefined) {
       await rm(tempDir, { recursive: true, force: true });
       throw new Error(`Path "${subdir}" is not a directory in ${target.cloneUrl}${target.ref === undefined ? "" : ` at ${target.ref}`}`);
     }
+    workingDir = realSubdir;
   }
   return {
     workingDir,
@@ -455,4 +454,31 @@ export async function resolveInput(
   }
 
   return resolveDir(input);
+}
+
+/**
+ * The real path of directory `subdir` under `root`, or undefined when it
+ * does not exist, is not a directory, or resolves outside `root`.
+ * Containment is checked on real paths: a committed symlink
+ * (`link -> /Users/me`, `link -> ../../..`) passes a text-prefix check on
+ * the joined path but points outside the clone.
+ */
+export function containedSubdirectory(root: string, subdir: string): string | undefined {
+  const realRoot = realPathOrUndefined(root);
+  const realSubdir = realPathOrUndefined(resolve(root, subdir));
+  if (realRoot === undefined || realSubdir === undefined || !realSubdir.startsWith(realRoot + sep)) {
+    return undefined;
+  }
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- a real path confirmed to be inside root
+  return statSync(realSubdir, { throwIfNoEntry: false })?.isDirectory() === true ? realSubdir : undefined;
+}
+
+/** The canonical (symlink-free) path of `path`, or undefined when it does not exist. */
+function realPathOrUndefined(path: string): string | undefined {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- paths under our own temp clone directory
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
 }

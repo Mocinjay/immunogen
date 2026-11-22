@@ -49,6 +49,31 @@ follows [Semantic Versioning](https://semver.org/).
   and its safe twin `clean-apps/hacker-checklist-clean`, both in the golden
   suite.
 
+### Security
+
+- A scan that reads no files (an empty path, or one where everything is
+  excluded) is now marked incomplete with a `NO_FILES_SCANNED` warning, and
+  the CLI exits `2` instead of reporting 100 / "Ready to ship".
+- Git URLs and ZIP archives are scanned as untrusted input: their
+  `.immunogenignore` and `immunogen-ignore` comments are no longer honored, and a
+  ZIP's `.gitignore`, `.git/info/exclude` and worktree pointers no longer hide
+  its own contents (a one-line `.gitignore` of `*` used to earn a clean score).
+- A git `/tree/<ref>/<subdir>` URL whose subdirectory is a committed symlink
+  pointing outside the clone is rejected; containment is now checked on real
+  paths, so host files can no longer be read into a scan.
+- The Claude Code skill tells Claude to run `scan.mjs` from the skill's own
+  absolute directory, never a relative path that could resolve inside the
+  scanned repo, and always passes `noLlm`.
+- Three Supabase RLS regexes with stacked lazy gaps (cubic time; a 64 KB
+  migration took 25 s) are replaced with a linear in-order matcher.
+
+### Fixed
+
+- AUTH-01 again flags unauthenticated second-factor management routes
+  (`/api/settings/2fa`, `/api/auth/mfa/disable`). Only the sign-in
+  verification step (`/api/auth/2fa`, `/login/otp`, `verify-code`) is treated as
+  public by nature.
+
 ### Changed
 
 - AUTH-01 treats one-time-code and password-recovery routes (`verify-code`,

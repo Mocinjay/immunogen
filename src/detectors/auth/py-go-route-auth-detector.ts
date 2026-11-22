@@ -40,7 +40,7 @@
  * No-throw contract (src/core/types.ts Detector.detect): the whole body runs
  * inside a try/catch returning `[]` on any failure.
  */
-import { PUBLIC_BY_NATURE_SEGMENTS } from "./auth-evidence.js";
+import { isPublicByNaturePath } from "./auth-evidence.js";
 
 import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
 import { isTestOrFixturePath } from "../shared/test-paths.js";
@@ -73,9 +73,8 @@ function isPublicPath(path: string): boolean {
   if (path === "/" || path === "") {
     return true;
   }
-  return path
-    .split("/")
-    .some((segment) => segment.toLowerCase() === "public" || PUBLIC_BY_NATURE_SEGMENTS.has(segment.toLowerCase()));
+  const segments = path.split("/");
+  return segments.some((segment) => segment.toLowerCase() === "public") || isPublicByNaturePath(segments);
 }
 
 /** True when a `public` marker comment sits on line `index` or the line above. */

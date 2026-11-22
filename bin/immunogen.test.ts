@@ -55,6 +55,20 @@ describe("runCli — exit codes derived from verdict (criterion 4)", () => {
 
     expect(exitCode).toBe(0);
   });
+
+  it("resolves to 2, never a pass, when the scan read no files", async () => {
+    const empty = await mkdtemp(join(tmpdir(), "immunogen-cli-empty-"));
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const exitCode = await runCli(empty, { format: "json" });
+
+      expect(exitCode).toBe(2);
+      expect((JSON.parse(captured) as { scanIncomplete: boolean }).scanIncomplete).toBe(true);
+      expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain("No files were scanned");
+    } finally {
+      await rm(empty, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("runCli — --format json produces valid, parseable ScanResult JSON (criterion 2)", () => {

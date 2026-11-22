@@ -133,16 +133,59 @@ function splitStatements(sql: string): Statement[] {
 /** A dollar-quoted body (`do $$ ... $$`, a plpgsql function body), tag-matched. */
 const DOLLAR_BODY_RE = /\$([\w]*)\$([\s\S]*?)\$\1\$/g;
 
-/** Dynamic SQL that enables RLS: an `execute` of a built string naming `enable row level security`. */
-const DYNAMIC_ENABLE_RE = /\bexecute\b[\s\S]*?enable\s+row\s+level\s+security/i;
+/*
+ * The phrase sequences below ("execute ... revoke ... on all tables") are
+ * matched with `findInOrder`, never as one regex with `[\s\S]*?` gaps: two
+ * or more lazy gaps make a regex cubic in the input, and these run on
+ * every SQL file and dollar-quoted body of a scanned (possibly hostile) repo
+ * — a 64 KB migration took 25 s before (see the ReDoS regression test).
+ */
 
-/** Revoking every table privilege in `public` from the API's `anon` role (statically or via dynamic SQL). */
-const REVOKE_ANON_RE = /revoke\s[\s\S]*?\bon\s+all\s+tables\s+in\s+schema\s+public\s+from\s+[^;]*?\banon\b/i;
-const DYNAMIC_REVOKE_RE = /\bexecute\b[\s\S]*?revoke\s[\s\S]*?on\s+all\s+tables\s+in\s+schema\s+public/i;
+/** Dynamic SQL that enables RLS: an `execute` of a built string naming `enable row level security`. */
+const DYNAMIC_ENABLE_SEQUENCE = [/\bexecute\b/i, /enable\s+row\s+level\s+security/i] as const;
+
+/** Revoking every table privilege in `public` from the API's `anon` role (statically, within one statement, or via dynamic SQL). */
+const REVOKE_ANON_SEQUENCE = [/revoke\s/i, /\bon\s+all\s+tables\s+in\s+schema\s+public\s+from\s/i, /\banon\b/i] as const;
+const DYNAMIC_REVOKE_SEQUENCE = [/\bexecute\b/i, /revoke\s/i, /on\s+all\s+tables\s+in\s+schema\s+public/i] as const;
 
 /** Mechanisms that also cover tables created later: an event trigger, or revoked default privileges. */
 const EVENT_TRIGGER_RE = /create\s+event\s+trigger/i;
-const DEFAULT_PRIVILEGES_REVOKE_RE = /alter\s+default\s+privileges\s[\s\S]*?revoke\s[\s\S]*?\bon\s+tables\b/i;
+const DEFAULT_PRIVILEGES_REVOKE_SEQUENCE = [/alter\s+default\s+privileges\s/i, /revoke\s/i, /\bon\s+tables\b/i] as const;
+
+/**
+ * Offset where `patterns` first occur one after another in `text` (each
+ * match starting at or after the end of the previous one), or undefined.
+ * Taking the earliest match of each pattern is optimal for "do these occur
+ * in this order", so this is one linear pass per pattern. Patterns must be
+ * non-global.
+ */
+export function findInOrder(text: string, patterns: readonly RegExp[]): number | undefined {
+  let offset = 0;
+  let start: number | undefined;
+  for (const pattern of patterns) {
+    const match = text.slice(offset).match(pattern);
+    if (match === null) {
+      return undefined;
+    }
+    const index = match.index ?? 0;
+    start ??= offset + index;
+    offset += index + match[0].length;
+  }
+  return start;
+}
+
+/** Offset of the first statement in `sql` (split on `;`) that contains `patterns` in order. */
+function findInOrderWithinStatement(sql: string, patterns: readonly RegExp[]): number | undefined {
+  let statementStart = 0;
+  for (const statement of sql.split(";")) {
+    const found = findInOrder(statement, patterns);
+    if (found !== undefined) {
+      return statementStart + found;
+    }
+    statementStart += statement.length + 1;
+  }
+  return undefined;
+}
 
 /** A file that protects tables in bulk (see the module comment). */
 interface BulkProtection {
@@ -177,11 +220,10 @@ function stripComments(sql: string): string {
 function bulkProtectionIn(file: string, content: string): BulkProtection | undefined {
   const sql = stripComments(content);
   const bodies = [...sql.matchAll(DOLLAR_BODY_RE)];
-  const enableBody = bodies.find((body) => DYNAMIC_ENABLE_RE.test(body[2] ?? ""));
-  const revokeBody = bodies.find((body) => DYNAMIC_REVOKE_RE.test(body[2] ?? "") && /\banon\b/i.test(body[2] ?? ""));
+  const enableBody = bodies.find((body) => findInOrder(body[2] ?? "", DYNAMIC_ENABLE_SEQUENCE) !== undefined);
+  const revokeBody = bodies.find((body) => findInOrder(body[2] ?? "", DYNAMIC_REVOKE_SEQUENCE) !== undefined && /\banon\b/i.test(body[2] ?? ""));
   const masked = maskNonStatementText(content);
-  const staticRevoke = masked.match(REVOKE_ANON_RE);
-  const revokeIndex = revokeBody?.index ?? staticRevoke?.index;
+  const revokeIndex = revokeBody?.index ?? findInOrderWithinStatement(masked, REVOKE_ANON_SEQUENCE);
   if (enableBody === undefined && revokeIndex === undefined) {
     return undefined;
   }
@@ -192,7 +234,7 @@ function bulkProtectionIn(file: string, content: string): BulkProtection | undef
     line: lineAt(sql, Math.min(enableBody?.index ?? Infinity, revokeIndex ?? Infinity)),
     coversFuture:
       (enableBody !== undefined && EVENT_TRIGGER_RE.test(sql)) ||
-      (revokeIndex !== undefined && DEFAULT_PRIVILEGES_REVOKE_RE.test(sql)),
+      (revokeIndex !== undefined && findInOrder(sql, DEFAULT_PRIVILEGES_REVOKE_SEQUENCE) !== undefined),
     how: enableBody !== undefined && revokeIndex !== undefined ? `${enabling} and ${revoking}` : enableBody !== undefined ? enabling : revoking,
   };
 }

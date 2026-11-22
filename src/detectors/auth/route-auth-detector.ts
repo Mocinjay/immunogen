@@ -55,7 +55,7 @@
  * inside a try/catch returning `Promise.resolve([])` on any failure.
  */
 import { isBabelFile, traverseAst } from "../ast/ast-utils.js";
-import { isAuthCall, NON_SESSION_AUTH_RE, PUBLIC_BY_NATURE_SEGMENTS } from "./auth-evidence.js";
+import { isAuthCall, NON_SESSION_AUTH_RE, isPublicByNaturePath } from "./auth-evidence.js";
 
 import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
 import type { ExportDefaultDeclaration, ExportNamedDeclaration, File } from "@babel/types";
@@ -102,9 +102,8 @@ function isServerActionModule(ast: File): boolean {
 
 /** True when any path segment of `filePath` is `public` or a public-by-nature route name. */
 function hasPublicPathSegment(filePath: string): boolean {
-  return filePath
-    .split("/")
-    .some((segment) => segment === PUBLIC_SEGMENT || PUBLIC_BY_NATURE_SEGMENTS.has(segment.toLowerCase()));
+  const segments = filePath.split("/");
+  return segments.some((segment) => segment === PUBLIC_SEGMENT) || isPublicByNaturePath(segments);
 }
 
 /** True when the repo's Next.js middleware enforces authentication. */
