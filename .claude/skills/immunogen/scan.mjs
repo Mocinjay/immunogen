@@ -16,14 +16,11 @@
  * cannot rely on a fixed repo-relative path to `dist/index.js` — see
  * `loadScan()`.
  *
- * Determinism / offline-by-default: when `runScanSkill`
- * is called with no `options` (the parity test's usage), it forwards NO
- * options object to `scan()` at all — it never reads or forwards any
- * provider/LLM environment variable itself, and never passes `noLlm` either
- * way. `scan()`'s own default (src/index.ts) is to use `selectAdapter(env)`,
- * which resolves to the offline `NoopAdapter` unless a provider + key are
- * BOTH already configured in the ambient environment — this wrapper does
- * not change that default in either direction, it just doesn't touch it.
+ * Determinism / offline-by-default: `runScanSkill` always passes
+ * `noLlm: true`, so the skill never sends findings to an LLM provider —
+ * not even when a provider + key happen to be configured in the ambient
+ * environment (SKILL.md promises a deterministic, LLM-free scan). It never
+ * reads or forwards any provider/LLM environment variable itself.
  * This keeps every distribution path (CLI, skill, Docker) on the same
  * deterministic scan by construction, which is what the skill-parity test
  * (tests/dist/skill-parity.test.mjs) proves. Callers may still opt in to
@@ -146,13 +143,11 @@ function formatMarkdown(result) {
 
 /**
  * Runs one skill scan action: lazily resolves `scan()` via `loadScan()`,
- * calls it exactly once as `scan(target, options)`, and formats the result.
- * `options` is OPTIONAL and defaults to `{}` so existing callers — notably
- * the parity test's `runScanSkill(path)` — keep calling `scan(target)` with
- * no options object and see no change in behavior (see module doc comment
- * on determinism). When a caller does pass `options` (Task 2: `authorize`/
- * `allowPrivate` for live-URL screening), it is forwarded to `scan()`
- * unmodified — this wrapper does not itself default or infer either flag.
+ * calls it exactly once as `scan(target, { ...options, noLlm: true })`, and
+ * formats the result. `options` is OPTIONAL and defaults to `{}`. Caller
+ * flags (`authorize` / `allowPrivate` for live-URL screening, ...) are
+ * forwarded unmodified; the only thing this wrapper adds is `noLlm: true`
+ * (see module doc comment on determinism).
  *
  * Returns `{ markdown, score, count }` as a plain object — NOT a stdout
  * string — so the parity test (tests/dist/skill-parity.test.mjs) can assert
@@ -163,7 +158,7 @@ function formatMarkdown(result) {
  */
 export async function runScanSkill(target, options = {}) {
   const scan = await loadScan();
-  const result = await scan(target, options);
+  const result = await scan(target, { ...options, noLlm: true });
   return {
     markdown: formatMarkdown(result),
     score: result.score.score,

@@ -315,6 +315,14 @@ export interface WalkSettings {
    * with it, so a gitignored `.env` in a ZIP is exactly the leak to report.
    */
   keepIgnoredEnvFiles?: boolean;
+  /**
+   * Ignore every exclusion rule the input itself supplies: `.gitignore`
+   * files, `.git/info/exclude`, nested worktree pointers, and
+   * `.immunogenignore`. Set for ZIP input, whose contents the scanned party
+   * controls entirely: a one-line `.gitignore` of `*` must not be able to
+   * hide the whole archive and earn a clean score.
+   */
+  ignoreInputExclusions?: boolean;
 }
 
 /** Why a candidate produced no content. */
@@ -414,11 +422,12 @@ export async function walkFiles(
     absolute: false,
     ignore: HARD_EXCLUDE_GLOBS,
   });
-  const gitignores = await loadGitignores(rootDir, candidates);
-  const isInfoExcluded = await loadInfoExclude(rootDir);
+  const untrustedExclusions = settings.ignoreInputExclusions === true;
+  const gitignores = untrustedExclusions ? [] : await loadGitignores(rootDir, candidates);
+  const isInfoExcluded = untrustedExclusions ? undefined : await loadInfoExclude(rootDir);
   const trackedFiles = await readTrackedFiles(rootDir);
-  const scanIgnore = options?.noIgnore === true ? undefined : await loadScanIgnore(rootDir);
-  const worktrees = await findNestedWorktrees(rootDir);
+  const scanIgnore = options?.noIgnore === true || untrustedExclusions ? undefined : await loadScanIgnore(rootDir);
+  const worktrees = untrustedExclusions ? [] : await findNestedWorktrees(rootDir);
   let scanIgnored = 0;
 
   if (worktrees.length > 0) {

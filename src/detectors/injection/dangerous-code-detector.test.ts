@@ -34,8 +34,21 @@ describe("dangerousCodeDetector — INJECT-02 SQL injection", () => {
     ["mysql .execute with a concatenated UPDATE", "await conn.execute('UPDATE users SET name = \"' + name + '\" WHERE id = 1');"],
     ["knex.raw with an interpolated query", "await knex.raw(`select * from t where name = '${name}'`);"],
     ["better-sqlite3 prepare with interpolation", "db.prepare(`SELECT * FROM notes WHERE id = ${req.params.id}`).get();"],
+    [
+      "a search query built in a variable first (the video's ' OR 1=1; DROP TABLE users;--)",
+      "const sql = `SELECT * FROM products WHERE name LIKE '%${search}%'`;\nconst { rows } = await pool.query(sql);",
+    ],
+    ["a SQL string extended with +=", "let sql = 'SELECT * FROM users WHERE 1=1';\nif (name) sql += ` AND name = '${name}'`;\nawait db.all(sql);"],
+    ["Prisma $queryRawUnsafe with a prebuilt string", "const q = 'SELECT * FROM t WHERE id = ' + id;\nawait prisma.$queryRawUnsafe(q);"],
   ])("flags %s", async (_label, code) => {
     expect(await ruleIds(code)).toEqual(["INJECT-02"]);
+  });
+
+  it.each([
+    ["a static SQL variable", "const sql = 'SELECT * FROM products WHERE name LIKE $1';\nawait pool.query(sql, [`%${search}%`]);"],
+    ["a static SQL variable extended with a literal", "let sql = 'SELECT * FROM t';\nsql += ' ORDER BY id';\nawait db.all(sql);"],
+  ])("does NOT flag %s", async (_label, code) => {
+    expect(await ruleIds(code)).toEqual([]);
   });
 
   it.each([

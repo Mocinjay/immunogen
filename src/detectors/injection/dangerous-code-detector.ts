@@ -6,8 +6,11 @@
  *   handed to a raw-query API — Prisma `$queryRawUnsafe`/`$executeRawUnsafe`,
  *   or `.query()` / `.execute()` / `.raw()` / `.unsafe()` called with a
  *   template literal or `+` concatenation whose text starts like a SQL
- *   statement. Tagged templates (`sql\`...\``, Prisma `$queryRaw\`...\``)
- *   parameterize their values and are never flagged.
+ *   statement — or with a variable the file built that way first
+ *   (`const q = \`SELECT ... LIKE '%${search}%'\`; await pool.query(q)`,
+ *   including `sql += \` AND name = '${name}'\``). Tagged templates
+ *   (`sql\`...\``, Prisma `$queryRaw\`...\``) parameterize their values and
+ *   are never flagged.
  *
  *   INJECT-03 (HIGH): dynamic code or shell execution — `eval(x)`,
  *   `new Function(x)`, `vm.runIn*Context(x)` with a non-literal argument,
@@ -52,7 +55,7 @@ import { isBabelFile, traverseAst } from "../ast/ast-utils.js";
 import { collectRequestTaintedNames, isRequestControlled } from "./request-input.js";
 
 import type { Category, Detector, DetectorContext, Finding } from "../../core/types.js";
-import type { CallExpression, Expression, NewExpression, Node } from "@babel/types";
+import type { CallExpression, Expression, File, NewExpression, Node } from "@babel/types";
 import { isTestOrFixturePath } from "../shared/test-paths.js";
 
 /** Prisma's explicitly-unsafe raw query APIs: any non-literal SQL string is injectable. */
@@ -249,6 +252,40 @@ function isNonLiteral(node: Node | undefined): boolean {
   return !(node.type === "TemplateLiteral" && node.expressions.length === 0);
 }
 
+/**
+ * Names the file binds to SQL text assembled at runtime: a declaration
+ * initialized with an interpolated / concatenated SQL string, or a SQL
+ * string variable later extended with `+=` and a non-literal value.
+ */
+function collectDynamicSqlNames(ast: File): Set<string> {
+  const sqlNames = new Set<string>();
+  const dynamic = new Set<string>();
+  traverseAst(ast, {
+    VariableDeclarator(path) {
+      const { id, init } = path.node;
+      if (id.type !== "Identifier" || init === null || init === undefined) {
+        return;
+      }
+      const isSqlString =
+        (init.type === "StringLiteral" || init.type === "TemplateLiteral" || (init.type === "BinaryExpression" && init.operator === "+")) &&
+        SQL_START_RE.test(leadingText(init));
+      if (isSqlString) {
+        sqlNames.add(id.name);
+        if (isDynamicString(init)) {
+          dynamic.add(id.name);
+        }
+      }
+    },
+    AssignmentExpression(path) {
+      const { left, operator, right } = path.node;
+      if (left.type === "Identifier" && operator === "+=" && sqlNames.has(left.name) && isNonLiteral(right)) {
+        dynamic.add(left.name);
+      }
+    },
+  });
+  return dynamic;
+}
+
 interface Site {
   ruleId: "INJECT-02" | "INJECT-03" | "AUTH-06" | "INJECT-04" | "REDIRECT-01" | "AUTH-07";
   line: number;
@@ -318,6 +355,8 @@ export const dangerousCodeDetector: Detector = {
       const checksSsrf = !isClientCode(ctx.filePath, ctx.content) && !URL_ALLOWLIST_RE.test(ctx.content);
       const checksRedirects = !REDIRECT_VALIDATION_RE.test(ctx.content);
       const tainted = collectRequestTaintedNames(ctx.ast, ctx.content);
+      const dynamicSql = collectDynamicSqlNames(ctx.ast);
+      const isDynamicSqlVariable = (node: Node | undefined): boolean => node?.type === "Identifier" && dynamicSql.has(node.name);
 
       const checkCall = (call: CallExpression | NewExpression): void => {
         const name = calleeName(call);
@@ -328,14 +367,13 @@ export const dangerousCodeDetector: Detector = {
         const firstArg = call.arguments.at(0) as Expression | undefined;
         const lastArg = call.arguments.at(-1) as Expression | undefined;
 
-        if (RAW_UNSAFE_METHODS.has(name) && isNonLiteral(firstArg) && isDynamicString(firstArg)) {
+        if (RAW_UNSAFE_METHODS.has(name) && ((isNonLiteral(firstArg) && isDynamicString(firstArg)) || isDynamicSqlVariable(firstArg))) {
           sites.push({ ruleId: "INJECT-02", line, matchedText: name });
         } else if (
           call.type === "CallExpression" &&
           QUERY_METHODS.has(name) &&
           firstArg !== undefined &&
-          isDynamicString(firstArg) &&
-          SQL_START_RE.test(leadingText(firstArg))
+          ((isDynamicString(firstArg) && SQL_START_RE.test(leadingText(firstArg))) || isDynamicSqlVariable(firstArg))
         ) {
           sites.push({ ruleId: "INJECT-02", line, matchedText: name });
         } else if (call.type === "CallExpression" && call.callee.type === "Identifier" && name === "eval" && isNonLiteral(firstArg)) {

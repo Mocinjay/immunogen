@@ -363,3 +363,32 @@ describe("routeAuthDetector — Server Actions", () => {
     expect(await routeAuthDetector.detect(makeContext(content, ACTIONS_PATH))).toEqual([]);
   });
 });
+
+describe("routeAuthDetector — second-factor routes (managing 2FA needs a session)", () => {
+  const disable2fa = [
+    "export async function DELETE(req) {",
+    "  const { userId } = await req.json();",
+    "  await db.user.update({ where: { id: userId }, data: { twoFactorSecret: null } });",
+    "  return Response.json({ ok: true });",
+    "}",
+    "",
+  ].join("\n");
+
+  it.each(["app/api/settings/2fa/route.ts", "app/api/account/mfa/route.ts", "app/api/auth/mfa/disable/route.ts", "app/api/user/otp/route.ts"])(
+    "still flags an unauthenticated handler at %s",
+    async (filePath) => {
+      const findings = await routeAuthDetector.detect(makeContext(disable2fa, filePath));
+
+      expect(findings.map((finding) => finding.ruleId)).toContain("AUTH-01");
+    },
+  );
+
+  it.each(["app/api/auth/2fa/route.ts", "app/api/login/otp/route.ts", "app/api/auth/mfa/verify/route.ts", "app/api/verify-code/route.ts"])(
+    "treats the sign-in verification step at %s as public by nature",
+    async (filePath) => {
+      const findings = await routeAuthDetector.detect(makeContext(disable2fa, filePath));
+
+      expect(findings).toHaveLength(0);
+    },
+  );
+});

@@ -42,7 +42,7 @@
  * inside a try/catch returning `[]` on any failure.
  */
 import { isBabelFile, traverseAst } from "../ast/ast-utils.js";
-import { isAuthCall, NON_SESSION_AUTH_RE, PUBLIC_BY_NATURE_SEGMENTS } from "./auth-evidence.js";
+import { isAuthCall, NON_SESSION_AUTH_RE, isPublicByNaturePath } from "./auth-evidence.js";
 
 import type { Detector, DetectorContext, Finding, Severity } from "../../core/types.js";
 import type { CallExpression, Node, ObjectExpression } from "@babel/types";
@@ -106,9 +106,8 @@ function isPublicPath(path: string): boolean {
   if (path === "/" || path === "*") {
     return true;
   }
-  return path
-    .split("/")
-    .some((segment) => segment.toLowerCase() === "public" || PUBLIC_BY_NATURE_SEGMENTS.has(segment.toLowerCase()));
+  const segments = path.split("/");
+  return segments.some((segment) => segment.toLowerCase() === "public") || isPublicByNaturePath(segments);
 }
 
 /** Reads an object-literal property by key name. */

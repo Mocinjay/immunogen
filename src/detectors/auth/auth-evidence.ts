@@ -74,8 +74,9 @@ export const NON_SESSION_AUTH_RE =
 /**
  * Route-path segments that are public by their nature: health/uptime
  * probes, Open Graph / icon / sitemap / robots / manifest generators, and
- * the sign-in, sign-up, and OAuth-callback endpoints that by definition run
- * before a session exists.
+ * the sign-in, sign-up, OAuth-callback, one-time-code, and password-reset
+ * endpoints that by definition run before a session exists (RATE-01 covers
+ * their abuse instead).
  */
 export const PUBLIC_BY_NATURE_SEGMENTS = new Set([
   "health",
@@ -102,7 +103,91 @@ export const PUBLIC_BY_NATURE_SEGMENTS = new Set([
   "register",
   "callback",
   "oauth",
+  // One-time-code / recovery steps also run before a session exists.
+  "verify-code",
+  "verify-otp",
+  "magic-link",
+  "verify-email",
+  "forgot-password",
+  "reset-password",
+  "password-reset",
 ]);
+
+/**
+ * Second-factor segments. Only the sign-in step that checks a code runs
+ * before a session exists (`/api/auth/2fa`, `/auth/mfa/verify`); managing a
+ * second factor (`/api/settings/2fa`, `/api/auth/mfa/disable`) needs a
+ * session and is exactly what an attacker wants to reach unauthenticated, so
+ * these are never public on their own.
+ */
+const SECOND_FACTOR_SEGMENTS = new Set(["otp", "2fa", "mfa", "two-factor", "totp"]);
+/** Parent segments marking a sign-in flow. */
+const SIGN_IN_FLOW_SEGMENTS = new Set(["auth", "login", "signin", "sign-in"]);
+/** Segments after a second-factor segment that make it account management, not sign-in. */
+const SECOND_FACTOR_MANAGEMENT_SEGMENTS = new Set(["disable", "enable", "setup", "remove", "delete", "reset", "settings", "manage", "recovery-codes", "backup-codes"]);
+
+/**
+ * True when route path `segments` are public by nature: a segment in
+ * `PUBLIC_BY_NATURE_SEGMENTS`, or a second-factor verification step inside a
+ * sign-in flow (`auth/2fa`, `login/otp/verify`) that is not management.
+ */
+export function isPublicByNaturePath(segments: readonly string[]): boolean {
+  const lower = segments.map((segment) => segment.toLowerCase());
+  if (lower.some((segment) => PUBLIC_BY_NATURE_SEGMENTS.has(segment))) {
+    return true;
+  }
+  const factorIndex = lower.findIndex((segment) => SECOND_FACTOR_SEGMENTS.has(segment));
+  return (
+    factorIndex > 0 &&
+    lower.slice(0, factorIndex).some((segment) => SIGN_IN_FLOW_SEGMENTS.has(segment)) &&
+    !lower.slice(factorIndex + 1).some((segment) => SECOND_FACTOR_MANAGEMENT_SEGMENTS.has(segment))
+  );
+}
+
+/**
+ * Handler text that reads the identity an auth middleware attached to the
+ * request (`req.user`, `req.session`, Koa `ctx.state.user`, Hono
+ * `c.get("jwtPayload")`).
+ */
+export const USER_IDENTITY_READ_RE =
+  /\b(?:req|request)\.(?:user|session|auth|isAuthenticated)\b|\bctx\.state\.(?:user|auth)\b|\bc\.get\(\s*['"`](?:user|session|auth|jwtPayload)['"`]\s*\)|\bc\.var\.(?:user|session|auth)\b/;
+
+/**
+ * Authorization by role, not just authentication: a role comparison
+ * (`user.role === "admin"`, `role !== 'admin'`), a role/permission helper
+ * (`requireAdmin()`, `hasRole()`, `checkPermission()`, `isAdmin`), an
+ * admin allowlist (`ADMIN_EMAILS.includes(...)`), or provider role claims
+ * (Clerk `sessionClaims.metadata.role`, `has({ role })`).
+ */
+export const ROLE_CHECK_RE =
+  /\broles?\b\s*(?:===|!==|==|!=)|(?:===|!==|==|!=)\s*["'`](?:admin|super_?admin|owner|staff|moderator)["'`]|\broles?\??\.(?:includes|has|some|indexOf)\(|\bis_?(?:admin|Admin|super_?admin|SuperAdmin|superuser|Superuser|staff|Staff)\b|\b(?:has|check|require|ensure|assert|verify|with|is)(?:Role|Roles|Permission|Permissions|Admin|AdminRole|AdminUser|Scope|Scopes)\b|\badmin_?only\b|\badminOnly\b|\bpermissions?\??\.(?:includes|has|some)\(|\bcan\(|\bability\.|\bADMIN_(?:EMAILS?|IDS?|USERS?|LIST)\b|\badmin(?:Emails|Ids|Users|List)\??\.(?:includes|has|some)\(|\bsessionClaims[?.\w]{0,24}\.role\b|\bpublicMetadata\??\.role\b|\bhas\(\s*\{\s*(?:role|permission)\b/;
+
+/**
+ * A role GUARD — stricter than ROLE_CHECK_RE, which also accepts a mere
+ * mention such as an `isAdmin` field: a role comparison, a role/permission
+ * helper call (`requireAdmin()`, `hasRole(...)`), a negated or tested
+ * admin flag (`if (!user.isAdmin)`), or an admin allowlist. Used where the
+ * privileged field itself would otherwise count as its own guard.
+ */
+export const ROLE_GUARD_RE =
+  /\broles?\b\s*(?:===|!==|==|!=)|(?:===|!==|==|!=)\s*["'`](?:admin|super_?admin|owner|staff|moderator)["'`]|\broles?\??\.(?:includes|has|some|indexOf)\(|\b(?:has|check|require|ensure|assert|verify|with|is)(?:Role|Roles|Permission|Permissions|Admin|AdminRole|AdminUser|Scope|Scopes)\s*\(|!\s*[\w.?]*\bis_?(?:admin|Admin|superuser|Superuser|staff|Staff)\b|\bif\s*\(\s*[\w.?]*\bis_?(?:admin|Admin|superuser|Superuser|staff|Staff)\s*\)|\badmin_?[oO]nly\b|\bpermissions?\??\.(?:includes|has|some)\(|\bcan\(|\bability\.|\bADMIN_(?:EMAILS?|IDS?|USERS?|LIST)\b|\bsessionClaims[?.\w]{0,24}\.role\b|\bhas\(\s*\{\s*(?:role|permission)\b/;
+
+/**
+ * Record keys / columns that scope a query to its owner (`userId`,
+ * `owner_id`, `authorId`, `tenantId`, ...). A lookup that filters on one of
+ * these is not an insecure direct object reference.
+ */
+export const OWNERSHIP_KEY_RE =
+  /^(?:user|owner|author|creator|created_?by|account|tenant|org|organization|team|workspace|customer|member|profile|buyer|seller|uploader|sender|recipient|patient|student|company)_?(?:id|Id|ID|uid|Uid)?$|^(?:createdBy|created_by|userEmail|user_email|ownerEmail|owner_email|email)$/;
+
+/**
+ * Text evidence that a handler compares a fetched record's owner with the
+ * caller (`if (order.userId !== session.user.id)`), or calls an
+ * object-level authorization helper (`assertOwner`, `canAccess`, CASL
+ * `ability.can`, a policy object).
+ */
+export const OWNERSHIP_CHECK_RE =
+  /\.\s*(?:user|owner|author|creator|account|tenant|org|organization|team|workspace|customer|member|profile)_?(?:id|Id|ID)\s*(?:!==|===|!=|==)|(?:!==|===|!=|==)\s*[\w.?!]*\.(?:user|owner|author|creator|account|tenant|org|team|workspace|customer|member)_?(?:id|Id|ID)\b|\.createdBy\s*(?:!==|===)|\b(?:assert|check|ensure|verify|require)\w*(?:Owner|Ownership|Access|Permission|Member|Membership)\w*\s*\(|\bcan(?:Access|Edit|View|Read|Update|Delete|Manage|Modify)\w*\s*\(|\bisOwner\b|\bability\.|\bpolicy\.|\bauthorize\w*\s*\(/;
 
 /** True when `call` is a recognized auth helper call (bare identifier OR member method). */
 export function isAuthCall(call: CallExpression): boolean {

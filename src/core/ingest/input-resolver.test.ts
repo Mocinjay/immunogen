@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, rm, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, afterEach } from "vitest";
 
-import { chargeZipBudget, InputRejectedError, isGitRepoUrl, resolveInput } from "./input-resolver.js";
+import { chargeZipBudget, containedSubdirectory, InputRejectedError, isGitRepoUrl, resolveInput } from "./input-resolver.js";
 import { writeZipFile } from "../../../tests/helpers/make-zip.js";
 
 const cleanupPaths: string[] = [];
@@ -314,3 +314,44 @@ describe("resolveInput — ZIP symlink entries (write-through-symlink attack)", 
     }
   });
 });
+
+/* eslint-disable security/detect-non-literal-fs-filename -- every path below is under a temp dir this test created itself */
+describe("containedSubdirectory — git /tree/<ref>/<subdir> confinement", () => {
+  it("returns the real path of a directory inside the clone", async () => {
+    const clone = await makeScratchDir("immunogen-test-clone-");
+    await mkdir(join(clone, "apps", "web"), { recursive: true });
+
+    const result = containedSubdirectory(clone, "apps/web");
+
+    expect(result?.endsWith(join("apps", "web"))).toBe(true);
+  });
+
+  it("rejects a committed symlink that points outside the clone", async () => {
+    const clone = await makeScratchDir("immunogen-test-clone-");
+    const outside = await makeScratchDir("immunogen-test-outside-");
+    await writeFile(join(outside, "secret.env"), "API_KEY=host-secret");
+    await symlink(outside, join(clone, "link"));
+    await symlink("../../..", join(clone, "up"));
+
+    expect(containedSubdirectory(clone, "link")).toBeUndefined();
+    expect(containedSubdirectory(clone, "up")).toBeUndefined();
+  });
+
+  it("rejects ../ traversal, missing paths, and files", async () => {
+    const clone = await makeScratchDir("immunogen-test-clone-");
+    await writeFile(join(clone, "README.md"), "hi");
+
+    expect(containedSubdirectory(clone, "../")).toBeUndefined();
+    expect(containedSubdirectory(clone, "nope")).toBeUndefined();
+    expect(containedSubdirectory(clone, "README.md")).toBeUndefined();
+  });
+
+  it("allows a symlink that stays inside the clone", async () => {
+    const clone = await makeScratchDir("immunogen-test-clone-");
+    await mkdir(join(clone, "src"));
+    await symlink("src", join(clone, "alias"));
+
+    expect(containedSubdirectory(clone, "alias")?.endsWith("src")).toBe(true);
+  });
+});
+/* eslint-enable security/detect-non-literal-fs-filename */

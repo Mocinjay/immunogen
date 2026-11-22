@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ingest } from "./index.js";
+import { ingest, NO_FILES_SCANNED_CODE } from "./index.js";
 import { makeRepoTreeIngest } from "../../../tests/helpers/make-repo-tree-ingest.js";
 import { writeZipFile } from "../../../tests/helpers/make-zip.js";
 
@@ -216,5 +216,62 @@ describe("ingest — ZIP input keeps env files the archive ships", () => {
 
     expect(fromZip.fileSet.has(".env")).toBe(true);
     expect(fromDir.fileSet.has(".env")).toBe(false);
+  });
+});
+
+describe("ingest — a scan that reads nothing is flagged, never silent", () => {
+  it("adds a NO_FILES_SCANNED warning for an empty directory", async () => {
+    const { root, cleanup } = await makeRepoTreeIngest({});
+    cleanups.push(cleanup);
+
+    const ctx = await ingest(root);
+
+    expect(ctx.fileSet.size).toBe(0);
+    expect(ctx.diagnostics.some((diagnostic) => diagnostic.code === NO_FILES_SCANNED_CODE && diagnostic.level === "warn")).toBe(true);
+  });
+
+  it("does not add it when files were read", async () => {
+    const { root, cleanup } = await makeRepoTreeIngest({ "package.json": "{}" });
+    cleanups.push(cleanup);
+
+    const ctx = await ingest(root);
+
+    expect(ctx.diagnostics.some((diagnostic) => diagnostic.code === NO_FILES_SCANNED_CODE)).toBe(false);
+  });
+});
+
+describe("ingest — a ZIP cannot exclude its own contents", () => {
+  const hostile = {
+    ".gitignore": "*\n",
+    ".immunogenignore": "app/**\n",
+    ".git/info/exclude": "*\n",
+    "package.json": "{}",
+    "app/api/route.ts": "export async function GET() { return Response.json({}); }",
+  };
+
+  it("ignores the archive's .gitignore, .git/info/exclude and .immunogenignore, and forces noIgnore", async () => {
+    const { root, cleanup } = await makeRepoTreeIngest({ "placeholder.txt": "x" });
+    cleanups.push(cleanup);
+    const zipPath = join(root, "hostile.zip");
+    await writeZipFile(zipPath, hostile);
+
+    const ctx = await ingest(zipPath);
+
+    expect(ctx.fileSet.has("app/api/route.ts")).toBe(true);
+    expect(ctx.fileSet.has("package.json")).toBe(true);
+    expect(ctx.options.noIgnore).toBe(true);
+    expect(ctx.diagnostics.some((diagnostic) => diagnostic.code === "INPUT_IGNORES_DISREGARDED")).toBe(true);
+    expect(ctx.diagnostics.some((diagnostic) => diagnostic.code === NO_FILES_SCANNED_CODE)).toBe(false);
+  });
+
+  it("still honors .gitignore and .immunogenignore for a local directory", async () => {
+    const { root, cleanup } = await makeRepoTreeIngest({ ".immunogenignore": "app/**\n", "package.json": "{}", "app/api/route.ts": "export const x = 1;" });
+    cleanups.push(cleanup);
+
+    const ctx = await ingest(root);
+
+    expect(ctx.fileSet.has("app/api/route.ts")).toBe(false);
+    expect(ctx.options.noIgnore).toBeUndefined();
+    expect(ctx.diagnostics.some((diagnostic) => diagnostic.code === "INPUT_IGNORES_DISREGARDED")).toBe(false);
   });
 });

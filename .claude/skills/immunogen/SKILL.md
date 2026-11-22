@@ -34,15 +34,25 @@ the current directory if no path is given), or against a live `http(s)://`
 URL to screen a deployed site (see "Live URL support" below):
 
 ```bash
-node .claude/skills/immunogen/scan.mjs <path-to-repo>
-node .claude/skills/immunogen/scan.mjs https://myapp.com --authorize
+node "<skill-dir>/scan.mjs" <path-to-repo>
+node "<skill-dir>/scan.mjs" https://myapp.com --authorize
 ```
+
+`<skill-dir>` is this skill's own folder: the absolute "Base directory for
+this skill" path Claude Code shows when the skill loads (for a global install,
+`~/.claude/skills/immunogen`). **Always use that absolute path.** Never run a
+relative `.claude/skills/immunogen/scan.mjs`: when your working directory is
+the repo being scanned, that path resolves to a file inside the scanned repo,
+which could be a planted script. If the only `scan.mjs` you can find lives
+inside the target repo, stop and tell the user instead of running it.
 
 The first non-flag argument is the target (a local path or an `http(s)://`
 URL). These flags are forwarded to the scan when present: `--authorize`,
 `--allow-private`, `--offline` (skip the OSV.dev and package-registry
 lookups), `--no-ignore` (score findings the repo silenced with
-`immunogen-ignore` — use it when auditing a repo the user did not write),
+`immunogen-ignore` or `.immunogenignore` — use it when auditing a local
+folder the user did not write; git URLs and ZIP archives are always scanned
+as untrusted, so their ignore files and comments are never honored),
 `--no-data-probes` (URL mode: skip the Supabase / Firebase read check) and
 `--min-severity <level>`.
 
@@ -56,7 +66,7 @@ This wrapper **now forwards** a live-URL target and the `--authorize` /
 `--allow-private` flags, so it can screen a deployed website directly:
 
 ```bash
-node .claude/skills/immunogen/scan.mjs https://myapp.com --authorize
+node "<skill-dir>/scan.mjs" https://myapp.com --authorize
 ```
 
 See the immunogen repo's README "Screen a live URL" section for what it
@@ -86,7 +96,8 @@ misrepresent the scan result.
 ## Determinism and offline behavior
 
 This scan is **deterministic and needs no API key** — none is read or
-forwarded by this wrapper. Its only network call is the OSV.dev dependency
+forwarded by this wrapper, and it always passes `noLlm`, so findings are never
+sent to an LLM provider even when one is configured in the environment. Its only network call is the OSV.dev dependency
 lookup (package names + versions only); add `--offline` to skip it and use
 the bundled advisory list instead. The same directory
 always produces the same Ship Score and finding count (parity with the

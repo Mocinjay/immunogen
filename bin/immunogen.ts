@@ -40,6 +40,7 @@ import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
 
 import { scan } from "../src/index.js";
+import { NO_FILES_SCANNED_CODE } from "../src/core/ingest/index.js";
 import { getReporter } from "../src/reporters/index.js";
 import { VERSION } from "../src/version.js";
 
@@ -57,7 +58,8 @@ const MIN_SEVERITIES = ["info", "low", "medium", "high", "critical"] as const;
  * allowPrivate })` exactly once, selects the reporter for `format` via
  * `getReporter()`, writes `reporter.render(result)` to stdout, and returns
  * the exit code derived from the verdict — `1` when
- * `result.score.verdict === "blocked"`, `0` otherwise. Returns a number
+ * `result.score.verdict === "blocked"`, `2` when the scan read no files at
+ * all (an empty or fully excluded target is never a pass), `0` otherwise. Returns a number
  * (rather than calling `process.exit()` directly) so callers — including
  * tests — can invoke this without killing the host process; the commander
  * `.action()` below assigns the returned number to `process.exitCode`.
@@ -119,6 +121,12 @@ export async function runCli(
 
   const reporter = getReporter(opts.format);
   process.stdout.write(reporter.render(result));
+  const noFiles = result.diagnostics.find((diagnostic) => diagnostic.code === NO_FILES_SCANNED_CODE);
+  if (noFiles !== undefined) {
+    // A scan that read nothing must never pass a CI gate.
+    process.stderr.write(`immunogen: ${noFiles.message}\n`);
+    return 2;
+  }
   return result.score.verdict === "blocked" ? 1 : 0;
 }
 

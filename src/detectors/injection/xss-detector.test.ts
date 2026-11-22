@@ -167,3 +167,49 @@ describe("xssDetector — config", () => {
     expect(xssDetector.config.category).toBe("injection");
   });
 });
+
+describe("xssDetector — INJECT-01 beyond React (the video's <script> username)", () => {
+  async function sinks(content: string, filePath = "src/profile.ts"): Promise<string[]> {
+    const findings = await xssDetector.detect(makeContext(content, filePath));
+    return findings.map((finding) => `${finding.ruleId} L${finding.line} ${finding.matchedText ?? ""}`);
+  }
+
+  it.each([
+    ["innerHTML with a template literal", "card.innerHTML = `<h2>${user.username}</h2>`;", "INJECT-01 L1 innerHTML"],
+    ["innerHTML with a property read", "el.innerHTML = comment.body;", "INJECT-01 L1 innerHTML"],
+    ["innerHTML += concatenation", "list.innerHTML += '<li>' + item.name + '</li>';", "INJECT-01 L1 innerHTML"],
+    ["insertAdjacentHTML", "feed.insertAdjacentHTML('beforeend', `<p>${post.text}</p>`);", "INJECT-01 L1 insertAdjacentHTML"],
+    ["document.write", "document.write('<b>' + params.get('name') + '</b>');", "INJECT-01 L1 document.write"],
+  ])("flags %s", async (_label, code, expected) => {
+    expect(await sinks(code)).toEqual([expected]);
+  });
+
+  it.each([
+    ["a literal innerHTML", "el.innerHTML = '<span>Loading…</span>';"],
+    ["clearing innerHTML", 'el.innerHTML = "";'],
+    ["textContent", "el.textContent = user.username;"],
+    ["a sanitized value", "el.innerHTML = DOMPurify.sanitize(`<h2>${user.username}</h2>`);"],
+    ["an escaped value", "el.innerHTML = `<h2>${escapeHtml(user.username)}</h2>`;"],
+  ])("does NOT flag %s", async (_label, code) => {
+    expect(await sinks(code)).toEqual([]);
+  });
+
+  it("flags server HTML built from request input (reflected XSS)", async () => {
+    const express = 'app.get("/hello", (req, res) => { res.send(`<h1>Hello ${req.query.name}</h1>`); });';
+    expect(await sinks(express, "server/index.ts")).toEqual(["INJECT-01 L1 res.send"]);
+    const next = ["export async function GET(req) {", '  const q = req.nextUrl.searchParams.get("q");', "  return new Response(`<p>Results for ${q}</p>`, { headers: { 'content-type': 'text/html' } });", "}"].join("\n");
+    expect(await sinks(next, "app/search/route.ts")).toEqual(["INJECT-01 L3 new Response"]);
+  });
+
+  it("does NOT flag server responses without request input or without HTML", async () => {
+    expect(await sinks('app.get("/", (req, res) => { res.send(`<h1>${APP_NAME}</h1>`); });', "server/index.ts")).toEqual([]);
+    expect(await sinks('app.get("/", (req, res) => { res.send(`Hello ${req.query.name}`); });', "server/index.ts")).toEqual([]);
+  });
+
+  it("flags Vue v-html and Svelte {@html} with non-literal values", async () => {
+    expect(await sinks('<template>\n  <div v-html="user.bio"></div>\n</template>', "src/components/Bio.vue")).toEqual(["INJECT-01 L2 v-html"]);
+    expect(await sinks("<p>{@html comment.body}</p>", "src/lib/Comment.svelte")).toEqual(["INJECT-01 L1 {@html}"]);
+    expect(await sinks('<div v-html="\'<b>static</b>\'"></div>', "src/components/Static.vue")).toEqual([]);
+    expect(await sinks('<script>import DOMPurify from "dompurify";</script>\n<div v-html="clean(user.bio)"></div>', "src/components/Safe.vue")).toEqual([]);
+  });
+});

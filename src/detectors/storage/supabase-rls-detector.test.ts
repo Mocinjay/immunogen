@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { supabaseRlsDetector } from "./supabase-rls-detector.js";
+import { findInOrder, supabaseRlsDetector } from "./supabase-rls-detector.js";
 
 import type { DetectorContext, StackHints } from "../../core/types.js";
 
@@ -184,5 +184,40 @@ describe("supabaseRlsDetector — bulk protection (dynamic SQL, event triggers, 
       [INIT]: "create table public.users (id uuid);\ndo $$ begin alter table public.users enable row level security; end $$;\n",
     };
     expect(await summarize(files, INIT)).toEqual([]);
+  });
+});
+
+describe("supabaseRlsDetector — hostile SQL cannot stall the scan (ReDoS)", () => {
+  it.each([
+    ["execute revoke x "],
+    ["revoke on all tables in schema public from x "],
+    ["alter default privileges revoke x "],
+    ["execute enable "],
+  ])("analyzes a 256 KB migration repeating %j in well under a second", async (unit) => {
+    const body = unit.repeat(Math.ceil((256 * 1024) / unit.length));
+    const files = {
+      "supabase/migrations/0001_init.sql": "create table public.users (id uuid primary key);\n",
+      "supabase/migrations/0002_evil.sql": `do $$ begin ${body} end $$;\n${body}`,
+    };
+    const started = performance.now();
+    await supabaseRlsDetector.detect(makeContext(files, "supabase/migrations/0001_init.sql"));
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe("findInOrder", () => {
+  const sequence = [/\bexecute\b/i, /revoke\s/i, /on\s+all\s+tables/i];
+
+  it("returns the offset of the first pattern when all occur in order", () => {
+    expect(findInOrder("x; EXECUTE format('revoke all on all tables ...')", sequence)).toBe(3);
+  });
+
+  it("returns undefined when the patterns occur out of order or are missing", () => {
+    expect(findInOrder("revoke x on all tables; execute y", sequence)).toBeUndefined();
+    expect(findInOrder("execute revoke x", sequence)).toBeUndefined();
+  });
+
+  it("requires each match to start after the previous one ends", () => {
+    expect(findInOrder("executerevoke on all tables", [/execute/i, /execute/i])).toBeUndefined();
   });
 });

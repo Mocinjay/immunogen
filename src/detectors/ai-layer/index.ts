@@ -7,3 +7,5 @@ export { mcpPoisoningDetector } from "./mcp-poisoning-detector.js";
 /** Barrel re-export of mcpLeastPrivilegeDetector (CAT-11 AI Layer, AILAYER-04). */
 export { mcpLeastPrivilegeDetector } from "./mcp-least-privilege-detector.js";
 export { agentAutorunDetector } from "./agent-autorun-detector.js";
+/** Barrel re-export of llmAppDetector (AILAYER-07 privileged LLM tools without approval, AILAYER-08 request input in the system prompt). */
+export { llmAppDetector } from "./llm-app-detector.js";
